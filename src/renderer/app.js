@@ -377,6 +377,42 @@ function wrapAndFitText(ctx, text, maxW, maxLines, baseFontSize, fontFamily) {
  *   labelPos         'bottom' | 'center' | 'top'
  *   badge            overlay badge text (✓, ✕, 1, A, etc.)
  */
+const BADGE_TOGGLE_PRESETS = [
+  { name: '🟢 ON / 🔴 OFF', s1: { text: 'ON', bg: '#107c41', color: '#ffffff' }, s2: { text: 'OFF', bg: '#e53935', color: '#ffffff' } },
+  { name: '🟢 开 / 🔴 关', s1: { text: '开', bg: '#107c41', color: '#ffffff' }, s2: { text: '关', bg: '#e53935', color: '#ffffff' } },
+  { name: '🔴 REC / ⚪ IDLE', s1: { text: 'REC', bg: '#e53935', color: '#ffffff' }, s2: { text: 'IDLE', bg: '#546e7a', color: '#ffffff' } },
+  { name: '🟢 MIC / 🔴 MUTE', s1: { text: 'MIC', bg: '#107c41', color: '#ffffff' }, s2: { text: 'MUTE', bg: '#d32f2f', color: '#ffffff' } },
+  { name: '🔵 1 / 🟣 2', s1: { text: '1', bg: '#1976d2', color: '#ffffff' }, s2: { text: '2', bg: '#7b1fa2', color: '#ffffff' } },
+];
+
+function getActiveBadge(spec) {
+  if (!spec) return null;
+  if (spec.badgeToggle) {
+    const s1 = spec.badgeState1 || { text: 'ON', bg: '#107c41', color: '#ffffff' };
+    const s2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935', color: '#ffffff' };
+    const stateIdx = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
+    const sObj = stateIdx === 1 ? s2 : s1;
+    const text = String(sObj.text || '').trim();
+    if (!text) return null;
+    return {
+      text,
+      bg: sObj.bg || (stateIdx === 1 ? '#e53935' : '#107c41'),
+      color: sObj.color || '#ffffff',
+      state: stateIdx,
+      isToggle: true,
+    };
+  }
+  const text = String(spec.badge || '').trim();
+  if (!text) return null;
+  return {
+    text,
+    bg: spec.badgeBg || '#e53935',
+    color: spec.badgeColor || '#ffffff',
+    state: 0,
+    isToggle: false,
+  };
+}
+
 async function paintKey(spec, size, keyPos) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
@@ -432,33 +468,32 @@ async function paintKey(spec, size, keyPos) {
     ctx.fillText(glyphFor(spec.type), size / 2, iconTop + iconBox / 2);
   }
 
-  // 简易自定义角标徽章（对号、叉号、数字、字母、箭头等）
-  if (spec && spec.badge) {
-    const badgeText = String(spec.badge).trim();
-    if (badgeText) {
-      ctx.save();
-      const bh = Math.max(14, Math.round(size * 0.20));
-      const bw = Math.max(bh, Math.round(badgeText.length * bh * 0.65 + 6));
-      const bx = size - bw - size * 0.06;
-      const by = size * 0.06;
-      ctx.shadowColor = 'rgba(0,0,0,0.4)';
-      ctx.shadowBlur = 4;
-      ctx.fillStyle = spec.badgeBg || '#e53935';
-      ctx.beginPath();
-      if (ctx.roundRect) {
-        ctx.roundRect(bx, by, bw, bh, bh / 2);
-      } else {
-        ctx.rect(bx, by, bw, bh);
-      }
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-      ctx.fillStyle = spec.badgeColor || '#ffffff';
-      ctx.font = `bold ${Math.round(bh * 0.72)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(badgeText, bx + bw / 2, by + bh / 2 + 0.5);
-      ctx.restore();
+  // 自定义角标徽章（静态徽章或动态双态 Toggle 徽章）
+  const activeBadge = getActiveBadge(spec);
+  if (activeBadge && activeBadge.text) {
+    const badgeText = activeBadge.text;
+    ctx.save();
+    const bh = Math.max(14, Math.round(size * 0.20));
+    const bw = Math.max(bh, Math.round(badgeText.length * bh * 0.65 + 6));
+    const bx = size - bw - size * 0.06;
+    const by = size * 0.06;
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = 4;
+    ctx.fillStyle = activeBadge.bg || '#e53935';
+    ctx.beginPath();
+    if (ctx.roundRect) {
+      ctx.roundRect(bx, by, bw, bh, bh / 2);
+    } else {
+      ctx.rect(bx, by, bw, bh);
     }
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = activeBadge.color || '#ffffff';
+    ctx.font = `bold ${Math.round(bh * 0.72)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, bx + bw / 2, by + bh / 2 + 0.5);
+    ctx.restore();
   }
 
   // 宏循环活跃状态：硬件按键边框高亮 + RUN 徽章
@@ -930,11 +965,13 @@ function refreshGrid() {
       cell.appendChild(el('span', 'glyph', glyphFor(spec.type)));
     }
 
-    // 角标微标 (Badge Overlay)
-    if (spec.badge) {
-      const bEl = el('span', 'badge-overlay', spec.badge);
-      if (spec.badgeBg) bEl.style.backgroundColor = spec.badgeBg;
-      if (spec.badgeColor) bEl.style.color = spec.badgeColor;
+    // 角标微标 (Badge Overlay，静态或动态双态)
+    const activeBadge = getActiveBadge(spec);
+    if (activeBadge && activeBadge.text) {
+      const bEl = el('span', 'badge-overlay', activeBadge.text);
+      if (activeBadge.bg) bEl.style.backgroundColor = activeBadge.bg;
+      if (activeBadge.color) bEl.style.color = activeBadge.color;
+      if (activeBadge.isToggle) bEl.classList.add('badge-toggle');
       cell.appendChild(bEl);
     }
 
@@ -1193,6 +1230,17 @@ function saveConfig() {
 }
 
 async function commit(repaint) {
+  if (selected && selected.col !== 5) {
+    const s = pageButtons()[selected.row + ',' + selected.col];
+    if (s && s.badgeToggle) {
+      const ab = getActiveBadge(s);
+      if (ab) {
+        s.badge = ab.text;
+        s.badgeBg = ab.bg;
+        s.badgeColor = ab.color;
+      }
+    }
+  }
   await saveConfig();
   refreshGrid();
   if (repaint) await repaintSelected();
@@ -2186,6 +2234,9 @@ function renderInspector() {
 
   if (inspTabs) inspTabs.hidden = false;
 
+  const curBadge = getActiveBadge(spec);
+  const curBadgeState = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
+
   const t = (id, val) => `<input id="${id}" value="${escapeAttr(val)}" />`;
   box.className = 'inspector';
   box.innerHTML = `
@@ -2286,8 +2337,14 @@ function renderInspector() {
         </div>
 
         <div class="row" style="margin-top: 10px;">
-          <label>角标 / 标记（右上角微标，可点选或输入）</label>
-          <div class="badge-ctrl-row">
+          <label>角标 / 状态微标（右上角微标，支持静态或双态切换）</label>
+          <div class="color-capsule-group" style="margin-bottom: 8px;">
+            <button type="button" id="i-badgemode-static" class="color-capsule-pill ${!spec.badgeToggle ? 'active' : ''}">📌 静态角标</button>
+            <button type="button" id="i-badgemode-toggle" class="color-capsule-pill ${spec.badgeToggle ? 'active' : ''}">⚡ 动态双态 (Toggle)</button>
+          </div>
+
+          <!-- 静态角标区 -->
+          <div id="i-badgesec-static" class="badge-ctrl-row" style="${spec.badgeToggle ? 'display: none;' : ''}">
             <div class="badge-presets" id="i-badgepresets">
               <button class="badge-pill ${!spec.badge ? 'active' : ''}" data-val="">无</button>
               <button class="badge-pill ${spec.badge === '✓' ? 'active' : ''}" data-val="✓">✓</button>
@@ -2301,6 +2358,69 @@ function renderInspector() {
             <div class="badge-custom-row">
               <input id="i-badgetext" class="badge-input" maxlength="4" placeholder="自定义" value="${escapeAttr(spec.badge || '')}" />
               <input id="i-badgebg" type="color" class="badge-color" title="微标背景色" value="${spec.badgeBg || '#e53935'}" />
+            </div>
+          </div>
+
+          <!-- 动态双态角标区 -->
+          <div id="i-badgesec-toggle" class="badge-toggle-container" style="${!spec.badgeToggle ? 'display: none;' : ''}">
+            <div class="badge-toggle-presets" id="i-toggle-presets">
+              ${BADGE_TOGGLE_PRESETS.map((p, idx) => `
+                <button type="button" class="badge-toggle-preset-pill" data-idx="${idx}">${p.name}</button>
+              `).join('')}
+            </div>
+            <div class="badge-toggle-grid">
+              <div class="badge-toggle-card ${curBadgeState === 0 ? 'active-state' : ''}">
+                <div class="badge-toggle-card-head">
+                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState1 && spec.badgeState1.bg) || '#107c41'};"></span>
+                  <span class="badge-toggle-title">状态 1 (默认态)</span>
+                  ${curBadgeState === 0 ? '<span class="badge-current-tag">当前激活</span>' : ''}
+                </div>
+                <div class="badge-toggle-card-inputs">
+                  <input id="i-toggle-s1-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState1 && spec.badgeState1.text) || 'ON')}" />
+                  <input id="i-toggle-s1-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState1 && spec.badgeState1.bg) || '#107c41'}" />
+                </div>
+              </div>
+              <div class="badge-toggle-card ${curBadgeState === 1 ? 'active-state' : ''}">
+                <div class="badge-toggle-card-head">
+                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState2 && spec.badgeState2.bg) || '#e53935'};"></span>
+                  <span class="badge-toggle-title">状态 2 (触发态)</span>
+                  ${curBadgeState === 1 ? '<span class="badge-current-tag">当前激活</span>' : ''}
+                </div>
+                <div class="badge-toggle-card-inputs">
+                  <input id="i-toggle-s2-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState2 && spec.badgeState2.text) || 'OFF')}" />
+                  <input id="i-toggle-s2-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState2 && spec.badgeState2.bg) || '#e53935'}" />
+                </div>
+              </div>
+            </div>
+            <div class="badge-toggle-actions">
+              <button type="button" class="ghost tiny badge-try-btn" id="i-toggle-try-btn">
+                🔄 试切状态预览（当前：${(curBadge && curBadge.text) || (curBadgeState === 0 ? ((spec.badgeState1 && spec.badgeState1.text) || 'ON') : ((spec.badgeState2 && spec.badgeState2.text) || 'OFF'))}）
+              </button>
+            </div>
+            <div class="badge-toggle-action-row">
+              <label class="badge-toggle-action-label">
+                <input type="checkbox" id="i-toggle-action-chk" ${spec.toggleAction ? 'checked' : ''} />
+                <span>开启状态 2 独立触发动作（默认同动作只切角标）</span>
+              </label>
+            </div>
+            <div id="i-toggle-action2-box" class="badge-action2-box" style="${!spec.toggleAction ? 'display: none;' : ''}">
+              <div class="row">
+                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 动作类型</label>
+                <select id="i-toggle-action2-type">
+                  <option value="hotkey" ${(!spec.action2 || spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
+                  <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 路径 (App)</option>
+                  <option value="url" ${(spec.action2 && spec.action2.type === 'url') ? 'selected' : ''}>打开网址 (URL)</option>
+                  <option value="command" ${(spec.action2 && spec.action2.type === 'command') ? 'selected' : ''}>命令行 (CMD)</option>
+                </select>
+              </div>
+              <div class="row" id="i-toggle-action2-hotkey-row" style="${(spec.action2 && spec.action2.type && spec.action2.type !== 'hotkey') ? 'display: none;' : ''}">
+                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 快捷键组合</label>
+                ${renderHotkeyBuilderHtml('i-toggle-action2-hk', (spec.action2 && (spec.action2.hotkey || spec.action2.target)) || '')}
+              </div>
+              <div class="row" id="i-toggle-action2-target-row" style="${(!spec.action2 || !spec.action2.type || spec.action2.type === 'hotkey') ? 'display: none;' : ''}">
+                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 目标（程序/网址/命令）</label>
+                <textarea id="i-toggle-action2-target">${escapeHtml((spec.action2 && spec.action2.target) || '')}</textarea>
+              </div>
             </div>
           </div>
         </div>
@@ -2501,6 +2621,7 @@ function renderInspector() {
     });
   }
 
+  // 静态角标控制
   box.querySelectorAll('#i-badgepresets .badge-pill').forEach((btn) => {
     btn.onclick = async () => {
       spec.badge = btn.dataset.val;
@@ -2521,6 +2642,127 @@ function renderInspector() {
     bgBadge.addEventListener('change', async () => {
       spec.badgeBg = bgBadge.value;
       await commit(true);
+    });
+  }
+
+  // 动态双态角标模式切换
+  const btnBadgeModeStatic = $('i-badgemode-static');
+  const btnBadgeModeToggle = $('i-badgemode-toggle');
+  if (btnBadgeModeStatic && btnBadgeModeToggle) {
+    btnBadgeModeStatic.onclick = async () => {
+      spec.badgeToggle = false;
+      await commit(true);
+      renderInspector();
+    };
+    btnBadgeModeToggle.onclick = async () => {
+      spec.badgeToggle = true;
+      if (!spec.badgeState1) spec.badgeState1 = { text: 'ON', bg: '#107c41', color: '#ffffff' };
+      if (!spec.badgeState2) spec.badgeState2 = { text: 'OFF', bg: '#e53935', color: '#ffffff' };
+      if (spec._activeState === undefined) spec._activeState = 0;
+      await commit(true);
+      renderInspector();
+    };
+  }
+
+  // 双态角标快捷预设
+  box.querySelectorAll('#i-toggle-presets .badge-toggle-preset-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      const idx = Number(btn.dataset.idx);
+      const p = BADGE_TOGGLE_PRESETS[idx];
+      if (p) {
+        spec.badgeState1 = Object.assign({}, p.s1);
+        spec.badgeState2 = Object.assign({}, p.s2);
+        await commit(true);
+        renderInspector();
+      }
+    };
+  });
+
+  // 状态 1 / 状态 2 文字与色彩输入
+  const s1Text = $('i-toggle-s1-text');
+  if (s1Text) {
+    s1Text.addEventListener('input', () => {
+      if (!spec.badgeState1) spec.badgeState1 = {};
+      spec.badgeState1.text = s1Text.value.trim();
+      commit(true);
+    });
+  }
+  const s1Bg = $('i-toggle-s1-bg');
+  if (s1Bg) {
+    s1Bg.addEventListener('input', () => {
+      if (!spec.badgeState1) spec.badgeState1 = {};
+      spec.badgeState1.bg = s1Bg.value;
+      commit(true);
+    });
+  }
+
+  const s2Text = $('i-toggle-s2-text');
+  if (s2Text) {
+    s2Text.addEventListener('input', () => {
+      if (!spec.badgeState2) spec.badgeState2 = {};
+      spec.badgeState2.text = s2Text.value.trim();
+      commit(true);
+    });
+  }
+  const s2Bg = $('i-toggle-s2-bg');
+  if (s2Bg) {
+    s2Bg.addEventListener('input', () => {
+      if (!spec.badgeState2) spec.badgeState2 = {};
+      spec.badgeState2.bg = s2Bg.value;
+      commit(true);
+    });
+  }
+
+  // 动态角标试切按钮
+  const tryBtn = $('i-toggle-try-btn');
+  if (tryBtn) {
+    tryBtn.onclick = async () => {
+      const cur = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+      spec._activeState = (cur === 1 ? 0 : 1);
+      refreshGrid();
+      await pushKey(selected.row, selected.col);
+      renderInspector();
+    };
+  }
+
+  // 双态独立动作开关与配置
+  const chkToggleAct = $('i-toggle-action-chk');
+  if (chkToggleAct) {
+    chkToggleAct.onchange = async () => {
+      spec.toggleAction = chkToggleAct.checked;
+      if (spec.toggleAction && !spec.action2) {
+        spec.action2 = { type: 'hotkey', target: '', hotkey: '' };
+      }
+      await commit(false);
+      renderInspector();
+    };
+  }
+
+  const selAct2Type = $('i-toggle-action2-type');
+  if (selAct2Type) {
+    selAct2Type.onchange = async () => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.type = selAct2Type.value;
+      await commit(false);
+      renderInspector();
+    };
+  }
+  const iptAct2Target = $('i-toggle-action2-target');
+  if (iptAct2Target) {
+    iptAct2Target.addEventListener('input', async () => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.target = iptAct2Target.value;
+      await commit(false);
+    });
+  }
+  const iptAct2Hk = $('i-toggle-action2-hk');
+  if (iptAct2Hk) {
+    bindHotkeyBuilder(box, 'i-toggle-action2-hk', async (val) => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.type = 'hotkey';
+      spec.action2.hotkey = val;
+      spec.action2.target = val;
+      await commit(false);
     });
   }
 
@@ -2684,7 +2926,18 @@ function renderInspector() {
     renderInspector();
   };
   $('i-test').onclick = async () => {
-    const r = await api.actionRun(spec);
+    let act = spec;
+    if (spec.badgeToggle) {
+      const cur = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+      if (spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey) && cur === 1) {
+        act = spec.action2;
+      }
+      spec._activeState = (cur === 1 ? 0 : 1);
+      refreshGrid();
+      await pushKey(selected.row, selected.col);
+      renderInspector();
+    }
+    const r = !DEMO ? await api.actionRun(act) : { ok: true };
     toast(r && r.ok ? '已启动' : '启动失败：' + (r && r.error));
   };
   $('i-push').onclick = () => repaintSelected();
@@ -4603,6 +4856,23 @@ function bindDevice() {
   api.on('key:unconfigured', (k) => flashUnconfigured(k.row, k.col));
   api.on('key:result', (payload) => {
     if (payload) flashKeyResult(payload.row, payload.col, payload.success, payload.text);
+  });
+  api.on('key:toggleState', async ({ pageId, row, col, activeState }) => {
+    if (!cfg || !cfg.pages) return;
+    const p = cfg.pages.find((x) => x.id === pageId);
+    if (p && p.buttons) {
+      const s = p.buttons[`${row},${col}`];
+      if (s) {
+        s._activeState = activeState;
+      }
+    }
+    if (curPage() && curPage().id === pageId) {
+      refreshGrid();
+      await pushKey(row, col);
+      if (selected && selected.row === row && selected.col === col) {
+        renderInspector();
+      }
+    }
   });
 
   // A key on the device switched pages (or a sub page's back key was pressed).

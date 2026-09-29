@@ -12,18 +12,38 @@ function getGitHubToken() {
   return m ? m[1].trim() : null;
 }
 
-const TAG = 'v0.1.0';
-const RELEASE_NAME = 'AKP153 控制台 v0.1.0 (绿色免安装便携版)';
-const ZIP_PATH = path.resolve(__dirname, '..', 'dist', 'AKP153-Dock-v0.1.0-portable.zip');
-const ZIP_NAME = 'AKP153-Dock-v0.1.0-portable.zip';
+const PKG = require(path.resolve(__dirname, '..', 'package.json'));
+const TAG = `v${PKG.version}`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (按键双态动态角标 + 绿色便携版)`;
+const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
+const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
-const RELEASE_BODY = `# 🚀 AKP153 控制台 v0.1.0 绿色免安装便携版
+const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version} (按键双态动态角标 + 绿色便携版)
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
 
 ---
 
-## 🌟 核心特性与亮点
+## 🌟 v0.2.0 新增核心特性
+
+### ⚡ 按键动态双态角标 (Dynamic Toggle Badge)
+- **按键实时交替翻转**：
+  - 支持自定义状态 1（默认态，如亮绿 \`ON\`）与状态 2（触发态，如警示红 \`OFF\`）；
+  - 物理按压按键或界面测试运行时，微标与底色自动毫秒级交替翻转（\`ON\` ↔ \`OFF\`）；
+  - **软硬件无缝实时同步**：AKP153 实体液晶按键与控制台 UI 实时刷新对应角标。
+- **高频预设卡片一键套用**：
+  - \`[ 🟢 ON / 🔴 OFF ]\`
+  - \`[ 🟢 开 / 🔴 关 ]\`
+  - \`[ 🔴 REC / ⚪ IDLE ]\`
+  - \`[ 🟢 MIC / 🔴 MUTE ]\`
+  - \`[ 🔵 1 / 🟣 2 ]\`
+- **即时交互试切**：属性面板自带 \`[ 🔄 试切状态预览 ]\` 按钮，界面点选即刻验证视觉与硬件 LCD 变化；
+- **运行期内存保持，零额外磁盘 IO**：运行期间（切页、休眠唤醒）全程保持当前翻转状态，冷启动时恢复初始默认；
+- **双态独立动作扩展**：预留“开启状态 2 独立触发动作”开关，可为状态 2 绑定不同的快捷键或系统指令。
+
+---
+
+## 🌟 既有经典特性与亮点
 
 ### 📦 绿色免安装便携 (Zero-Dependency)
 - **解压即用**：内置独立运行时，无需在电脑上预装 Node.js 或任何开发环境，双击 \`AKP153 控制台.exe\` 秒开；
@@ -55,7 +75,7 @@ const RELEASE_BODY = `# 🚀 AKP153 控制台 v0.1.0 绿色免安装便携版
 
 ## 📥 下载与运行指南
 
-1. 下载附件中的 **\`AKP153-Dock-v0.1.0-portable.zip\`**；
+1. 下载附件中的 **\`${ZIP_NAME}\`**；
 2. 解压到任意你喜欢的文件夹；
 3. 双击运行解压目录内的 **\`AKP153 控制台.exe\`**；
 4. 将文件、程序、网址直接拖拽到按键格子上即可开始使用！

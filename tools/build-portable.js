@@ -17,9 +17,10 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+const PKG = require(path.join(ROOT, 'package.json'));
 const DIST = path.join(ROOT, 'dist');
 const STAGE = path.join(DIST, 'AKP153-Dock');
-const ZIP_NAME = 'AKP153-Dock-v0.1.0-portable.zip';
+const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.join(DIST, ZIP_NAME);
 
 function log(...args) {

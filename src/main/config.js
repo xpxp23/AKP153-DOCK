@@ -185,7 +185,7 @@ function pageTree() {
 
 function save(cfg) {
   cache = cfg;
-  const text = JSON.stringify(cfg, null, 2);
+  const text = JSON.stringify(cfg, (key, value) => key.startsWith('_') ? undefined : value, 2);
   const tmp = FILE + '.tmp';
   fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, FILE);

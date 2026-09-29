@@ -478,6 +478,70 @@ app.whenReady().then(async () => {
   await js('document.getElementById("settingsBtn").click()');
   await sleep2(100);
 
+  // 5. 按键动态双态角标（ON/OFF Toggle 徽标）全流程测试
+  await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
+  await sleep2(150);
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(100);
+
+  check('外观面板包含角标模式切换胶囊组',
+    await js('!!document.getElementById("i-badgemode-static") && !!document.getElementById("i-badgemode-toggle")'));
+  check('默认处于静态角标模式',
+    await js('document.getElementById("i-badgesec-static").style.display !== "none" && document.getElementById("i-badgesec-toggle").style.display === "none"'));
+
+  // 切换为动态双态模式
+  await js('document.getElementById("i-badgemode-toggle").click()');
+  await sleep2(150);
+  check('点击切换为动态双态角标模式',
+    await js('document.getElementById("i-badgesec-toggle").style.display !== "none" && document.getElementById("i-badgesec-static").style.display === "none"'));
+  check('双态面板包含预设胶囊条与状态 1/状态 2 编辑卡片',
+    await js('document.querySelectorAll("#i-toggle-presets .badge-toggle-preset-pill").length >= 5 && !!document.getElementById("i-toggle-s1-text") && !!document.getElementById("i-toggle-s2-text")'));
+  check('双态面板包含试切按钮',
+    await js('!!document.getElementById("i-toggle-try-btn")'));
+
+  // 初始状态验证：DOM 格子徽标为 ON
+  const initialBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
+  check('初始状态下 DOM 格子角标微标为 ON', initialBadgeText === 'ON', initialBadgeText);
+
+  // 点击试切预览按钮 -> 翻转为 OFF
+  await js('document.getElementById("i-toggle-try-btn").click()');
+  await sleep2(150);
+  const toggledBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
+  check('点击试切按钮后角标翻转为状态 2 (OFF)', toggledBadgeText === 'OFF', toggledBadgeText);
+  check('状态 2 卡片高亮当前激活状态',
+    await js('document.querySelectorAll(".badge-toggle-card")[1].classList.contains("active-state")'));
+
+  // 再次点击试切按钮 -> 翻转回 ON
+  await js('document.getElementById("i-toggle-try-btn").click()');
+  await sleep2(150);
+  const backBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
+  check('再次点击试切按钮角标翻转回状态 1 (ON)', backBadgeText === 'ON', backBadgeText);
+
+  // 点击预设胶囊「🟢 开 / 🔴 关」
+  await js('Array.from(document.querySelectorAll("#i-toggle-presets .badge-toggle-preset-pill")).find(b => b.textContent.includes("开 / 🔴 关")).click()');
+  await sleep2(150);
+  const s1Val = await js('document.getElementById("i-toggle-s1-text").value');
+  const s2Val = await js('document.getElementById("i-toggle-s2-text").value');
+  check('套用预设成功更新状态 1 与状态 2 文字 (开/关)', s1Val === '开' && s2Val === '关', `${s1Val}/${s2Val}`);
+  const kaiBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
+  check('DOM 格子微标即时更新为「开」', kaiBadgeText === '开', kaiBadgeText);
+
+  // 点击「测试运行」联动翻转
+  await js('document.getElementById("i-test").click()');
+  await sleep2(150);
+  const testToggledText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
+  check('点击测试运行联动触发状态翻转为「关」', testToggledText === '关', testToggledText);
+
+  // 独立双态动作测试
+  check('包含开启状态 2 独立触发动作复选框',
+    await js('!!document.getElementById("i-toggle-action-chk")'));
+  await js('document.getElementById("i-toggle-action-chk").click()');
+  await sleep2(150);
+  check('勾选后展开状态 2 动作配置卡片',
+    await js('document.getElementById("i-toggle-action2-box").style.display !== "none"'));
+  check('状态 2 动作支持类型选择与快捷键构建器',
+    await js('!!document.getElementById("i-toggle-action2-type") && !!document.getElementById("i-toggle-action2-hk")'));
+
 
   put('--- UI smoke test ---');
   let failed = 0;

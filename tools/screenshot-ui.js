@@ -130,6 +130,15 @@ const SHOTS = [
       })()`,
     ],
   },
+  {
+    name: 'ui-16-toggle-badge', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-badgemode-toggle").click()',
+      'document.getElementById("i-toggle-try-btn").click()',
+    ],
+  },
 ];
 
 

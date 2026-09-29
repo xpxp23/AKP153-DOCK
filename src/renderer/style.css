@@ -990,6 +990,181 @@ body[data-theme="dark"] .badge-pill.active { background: var(--accent); color: #
   background: #e53935; box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
   pointer-events: none; z-index: 3;
 }
+.cell .badge-overlay.badge-toggle {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+/* Dynamic Toggle Badge in Inspector */
+.badge-toggle-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-card, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 4px;
+}
+body[data-theme="dark"] .badge-toggle-container {
+  background: #1e242d;
+  border-color: #333d4b;
+}
+
+.badge-toggle-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.badge-toggle-preset-pill {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--ink);
+  transition: all .15s ease;
+}
+.badge-toggle-preset-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+body[data-theme="dark"] .badge-toggle-preset-pill {
+  background: #252c36;
+  border-color: #384250;
+  color: #c9d1d9;
+}
+body[data-theme="dark"] .badge-toggle-preset-pill:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.badge-toggle-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.badge-toggle-card {
+  box-sizing: border-box;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 7px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all .2s ease;
+  overflow: hidden;
+}
+body[data-theme="dark"] .badge-toggle-card {
+  background: #232932;
+  border-color: #353f4d;
+}
+.badge-toggle-card.active-state {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.badge-toggle-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+body[data-theme="dark"] .badge-toggle-card-head {
+  color: #e6edf3;
+}
+.badge-toggle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.badge-toggle-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.badge-current-tag {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(22, 119, 255, 0.12);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.badge-toggle-card-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.badge-toggle-card-inputs .badge-input {
+  flex: 1;
+  min-width: 0 !important;
+  width: auto !important;
+}
+.badge-toggle-card-inputs .badge-color {
+  flex: none;
+  width: 28px !important;
+  height: 26px !important;
+}
+
+.badge-toggle-actions {
+  display: flex;
+  justify-content: stretch;
+}
+.badge-try-btn {
+  width: 100%;
+  font-weight: 600;
+  padding: 6px 10px;
+  background: rgba(22, 119, 255, 0.06);
+  border: 1px solid rgba(22, 119, 255, 0.3) !important;
+  color: var(--accent) !important;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.badge-try-btn:hover {
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+
+.badge-toggle-action-row {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+.badge-toggle-action-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink);
+  cursor: pointer;
+}
+body[data-theme="dark"] .badge-toggle-action-label {
+  color: #c9d1d9;
+}
+.badge-action2-box {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+body[data-theme="dark"] .badge-action2-box {
+  background: #181d24;
+  border-color: #2e3642;
+}
 
 /* -------------------------------------------------------- image cropper */
 .cropper-box {

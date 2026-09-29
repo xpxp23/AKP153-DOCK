@@ -314,7 +314,7 @@ async function onKeyDown(row, col) {
 
   const isMulti = spec && (spec.type === 'multi' || spec.type === 'macro');
   const isQr = spec && (spec.type === 'qr_decode' || spec.type === 'qr');
-  if (!spec || (!spec.target && !isMulti && !isQr)) {
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     // Show it on the device too: the user is looking at the panel, not the PC.
     broadcast('key:unconfigured', { row, col });
@@ -322,8 +322,20 @@ async function onKeyDown(row, col) {
     return;
   }
 
-  log(`key r${row}c${col} -> ${spec.type} ${isMulti ? 'Macro (' + ((spec.actions && spec.actions.length) || 0) + ' actions)' : (spec.target || '')}`);
-  const res = await runner.run(spec, { row, col, pageId: page.id });
+  let actionToRun = spec;
+  if (spec.badgeToggle) {
+    const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+    if (spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey) && curState === 1) {
+      actionToRun = spec.action2;
+    }
+    const nextState = (curState === 1 ? 0 : 1);
+    spec._activeState = nextState;
+    broadcast('key:toggleState', { pageId: page.id, row, col, activeState: nextState });
+  }
+
+  const actMulti = actionToRun && (actionToRun.type === 'multi' || actionToRun.type === 'macro');
+  log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || '')}`);
+  const res = await runner.run(actionToRun, { row, col, pageId: page.id });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
   if (isQr) {
