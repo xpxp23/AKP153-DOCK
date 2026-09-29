@@ -378,6 +378,8 @@ function wrapAndFitText(ctx, text, maxW, maxLines, baseFontSize, fontFamily) {
  *   badge            overlay badge text (✓, ✕, 1, A, etc.)
  */
 const BADGE_TOGGLE_PRESETS = [
+  { name: '🟢 运行中 / 无', s1: { text: '', bg: '#546e7a', color: '#ffffff' }, s2: { text: '运行中', bg: '#107c41', color: '#ffffff' } },
+  { name: '🟢 运行中 / ⚪ 未运行', s1: { text: '未运行', bg: '#546e7a', color: '#ffffff' }, s2: { text: '运行中', bg: '#107c41', color: '#ffffff' } },
   { name: '🟢 ON / 🔴 OFF', s1: { text: 'ON', bg: '#107c41', color: '#ffffff' }, s2: { text: 'OFF', bg: '#e53935', color: '#ffffff' } },
   { name: '🟢 开 / 🔴 关', s1: { text: '开', bg: '#107c41', color: '#ffffff' }, s2: { text: '关', bg: '#e53935', color: '#ffffff' } },
   { name: '🔴 REC / ⚪ IDLE', s1: { text: 'REC', bg: '#e53935', color: '#ffffff' }, s2: { text: 'IDLE', bg: '#546e7a', color: '#ffffff' } },
@@ -474,9 +476,11 @@ async function paintKey(spec, size, keyPos) {
     const badgeText = activeBadge.text;
     ctx.save();
     const bh = Math.max(14, Math.round(size * 0.20));
-    const bw = Math.max(bh, Math.round(badgeText.length * bh * 0.65 + 6));
-    const bx = size - bw - size * 0.06;
-    const by = size * 0.06;
+    ctx.font = `bold ${Math.round(bh * 0.72)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+    const textWidth = ctx.measureText ? ctx.measureText(badgeText).width : (badgeText.length * bh * 0.65);
+    const bw = Math.max(bh, Math.round(textWidth + 8));
+    const bx = size - bw - size * 0.05;
+    const by = size * 0.05;
     ctx.shadowColor = 'rgba(0,0,0,0.4)';
     ctx.shadowBlur = 4;
     ctx.fillStyle = activeBadge.bg || '#e53935';
@@ -489,7 +493,6 @@ async function paintKey(spec, size, keyPos) {
     ctx.fill();
     ctx.shadowColor = 'transparent';
     ctx.fillStyle = activeBadge.color || '#ffffff';
-    ctx.font = `bold ${Math.round(bh * 0.72)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeText, bx + bw / 2, by + bh / 2 + 0.5);
@@ -1008,6 +1011,23 @@ function el(tag, cls, text) {
 
 // ------------------------------------------------------------------- editing
 
+function applyAppDualStateDefaults(spec, cls, targetPath) {
+  if (!cls || cls.type !== 'app') return;
+  const rawTarget = targetPath || (spec && spec.target) || '';
+  const procName = cls.processName || (rawTarget ? rawTarget.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '');
+  if (procName) {
+    spec.toggleAction = true;
+    spec.action2 = {
+      type: 'command',
+      target: `taskkill /F /IM ${procName}.exe`,
+      args: ''
+    };
+    spec.badgeToggle = true;
+    spec.badgeState1 = { text: '', bg: '#546e7a' };
+    spec.badgeState2 = { text: '运行中', bg: '#107c41' };
+  }
+}
+
 async function onDrop(row, col, e) {
   if (isBackCell(row, col)) {
     toast('这是子页右下角的自动返回键 —— 退出子页后你原来放在这里的按键会恢复');
@@ -1049,6 +1069,7 @@ async function onDrop(row, col, e) {
     spec = { type: cls.type, label: cls.label, target: abs, args: '', icon: '', color: colorFor(cls.type) };
     const icon = await api.iconExtract(abs);
     if (icon) spec.icon = icon;
+    applyAppDualStateDefaults(spec, cls, abs);
   }
 
   pageButtons()[row + ',' + col] = spec;
@@ -2243,77 +2264,182 @@ function renderInspector() {
     <details class="sec" data-sec="action" ${secOpen.action ? 'open' : ''}>
       <summary>按键动作配置</summary>
       <div class="body">
-        <div class="row"><label>快捷动作预设</label>
-          <select id="i-quickpreset" class="quick-preset-select">
-            ${ACTION_TEMPLATES.map((t) => `<option value="${t.id}">${t.name}</option>`).join('')}
-          </select>
-        </div>
         <div class="row"><label>显示名称（支持自动换行或回车折行）</label><textarea id="i-label">${escapeHtml(spec.label || '')}</textarea></div>
 
-        <div class="btnrow">
-          <button class="ghost" id="i-pickapp">选择程序…</button>
-          <button class="ghost" id="i-pickdir">选择文件夹…</button>
-        </div>
-        <div class="btnrow">
-          <button class="ghost" id="i-pickurl">设为网址</button>
-          <button class="ghost" id="i-pickcmd">设为命令</button>
-        </div>
-        <div class="btnrow">
-          <button class="ghost" id="i-pickmacro">设为复合宏</button>
-          <button class="ghost" id="i-pickhotkey">设为快捷键</button>
-          <button class="ghost" id="i-page">${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
-        </div>
-        ${spec.type === 'hotkey' ? `
-          <div class="row">
-            <label>快捷键组合（支持免冲突点选、录制或直接输入）</label>
-            ${renderHotkeyBuilderHtml('i-hotkey', spec.hotkey || spec.target || '')}
+        <div class="row">
+          <label>动作模式</label>
+          <div class="color-capsule-group">
+            <button type="button" id="i-toggle-act-single" class="color-capsule-pill ${!spec.toggleAction ? 'active' : ''}">🟢 单一动作</button>
+            <button type="button" id="i-toggle-act-dual" class="color-capsule-pill ${spec.toggleAction ? 'active' : ''}">⚡ 双态独立动作</button>
           </div>
-        ` : ''}
-        <div class="row"><label>类型</label>
-          <select id="i-type">
-            ${Object.keys(TYPE_NAMES).map((x) =>
-              `<option value="${x}" ${spec.type === x ? 'selected' : ''}>${TYPE_NAMES[x]}</option>`).join('')}
-          </select>
         </div>
-        ${spec.type === 'multi' || spec.type === 'macro' ? `
-          <div id="i-macro-editor-container">
-            ${renderMacroEditorHtml(spec)}
-          </div>
-        ` : spec.type === 'page' ? `
-          <div class="page-inspector-card">
-            <div class="page-insp-head">
-              <span class="page-insp-label">${(PAGE_MODE_INFOS.find(m => m.id === (spec.mode || 'next')) || {}).icon || '📄'} ${escapeHtml(pageActionLabel(spec))}</span>
-              <span class="page-insp-badge">模式: ${escapeHtml(spec.mode || 'next')}</span>
+
+        ${!spec.toggleAction ? `
+          <div id="i-single-action-box">
+            <div class="row"><label>快捷动作预设</label>
+              <select id="i-quickpreset" class="quick-preset-select">
+                ${ACTION_TEMPLATES.map((t) => `<option value="${t.id}">${t.name}</option>`).join('')}
+              </select>
             </div>
-            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">快速切换翻页行为：</div>
-            <div class="page-mode-pills">
-              ${PAGE_MODE_INFOS.map((m) => `
-                <button type="button" class="page-pill ${(spec.mode || 'next') === m.id ? 'active' : ''}" data-mode="${m.id}">
-                  ${m.icon} ${m.name}
-                </button>
-              `).join('')}
+            <div class="btnrow">
+              <button class="ghost" id="i-pickapp">选择程序…</button>
+              <button class="ghost" id="i-pickdir">选择文件夹…</button>
             </div>
-            ${(spec.mode === 'goto') ? `
-              <div class="page-target-wrap" style="margin-top: 6px;">
-                <label style="font-size: 11px; color: var(--muted); margin-bottom: 4px; display: block;">🎯 目标跳转页面：</label>
-                <select id="i-page-target-select" class="page-select-styled">
-                  ${pageTree().map(({ page, depth }) => `
-                    <option value="${page.id}" ${spec.pageId === page.id ? 'selected' : ''}>
-                      ${'　'.repeat(depth)}${depth ? '↳ ' : ''}${escapeHtml(page.name)}
-                    </option>
-                  `).join('')}
-                </select>
+            <div class="btnrow">
+              <button class="ghost" id="i-pickurl">设为网址</button>
+              <button class="ghost" id="i-pickcmd">设为命令</button>
+            </div>
+            <div class="btnrow">
+              <button class="ghost" id="i-pickmacro">设为复合宏</button>
+              <button class="ghost" id="i-pickhotkey">设为快捷键</button>
+              <button class="ghost" id="i-page">${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
+            </div>
+            ${spec.type === 'hotkey' ? `
+              <div class="row">
+                <label>快捷键组合（支持免冲突点选、录制或直接输入）</label>
+                ${renderHotkeyBuilderHtml('i-hotkey', spec.hotkey || spec.target || '')}
               </div>
             ` : ''}
-            <p class="path" style="font-size: 11px; color: var(--muted); margin-top: 6px;">实际目标：切至「${escapeHtml(pageActionLabel(spec))}」</p>
-            <button type="button" class="ghost tiny" id="i-page-open-modal" style="width: 100%; margin-top: 6px;">
-              ⚙️ 打开高级翻页配置器…
-            </button>
+            <div class="row"><label>类型</label>
+              <select id="i-type">
+                ${Object.keys(TYPE_NAMES).map((x) =>
+                  `<option value="${x}" ${spec.type === x ? 'selected' : ''}>${TYPE_NAMES[x]}</option>`).join('')}
+              </select>
+            </div>
+            ${spec.type === 'multi' || spec.type === 'macro' ? `
+              <div id="i-macro-editor-container">
+                ${renderMacroEditorHtml(spec)}
+              </div>
+            ` : spec.type === 'page' ? `
+              <div class="page-inspector-card">
+                <div class="page-insp-head">
+                  <span class="page-insp-label">${(PAGE_MODE_INFOS.find(m => m.id === (spec.mode || 'next')) || {}).icon || '📄'} ${escapeHtml(pageActionLabel(spec))}</span>
+                  <span class="page-insp-badge">模式: ${escapeHtml(spec.mode || 'next')}</span>
+                </div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">快速切换翻页行为：</div>
+                <div class="page-mode-pills">
+                  ${PAGE_MODE_INFOS.map((m) => `
+                    <button type="button" class="page-pill ${(spec.mode || 'next') === m.id ? 'active' : ''}" data-mode="${m.id}">
+                      ${m.icon} ${m.name}
+                    </button>
+                  `).join('')}
+                </div>
+                ${(spec.mode === 'goto') ? `
+                  <div class="page-target-wrap" style="margin-top: 6px;">
+                    <label style="font-size: 11px; color: var(--muted); margin-bottom: 4px; display: block;">🎯 目标跳转页面：</label>
+                    <select id="i-page-target-select" class="page-select-styled">
+                      ${pageTree().map(({ page, depth }) => `
+                        <option value="${page.id}" ${spec.pageId === page.id ? 'selected' : ''}>
+                          ${'　'.repeat(depth)}${depth ? '↳ ' : ''}${escapeHtml(page.name)}
+                        </option>
+                      `).join('')}
+                    </select>
+                  </div>
+                ` : ''}
+                <p class="path" style="font-size: 11px; color: var(--muted); margin-top: 6px;">实际目标：切至「${escapeHtml(pageActionLabel(spec))}」</p>
+                <button type="button" class="ghost tiny" id="i-page-open-modal" style="width: 100%; margin-top: 6px;">
+                  ⚙️ 打开高级翻页配置器…
+                </button>
+              </div>
+            ` : `
+              <div class="row"><label>目标（程序 / 路径 / 网址 / 命令 / 快捷键）</label><textarea id="i-target">${escapeHtml(spec.target || '')}</textarea></div>
+              <div class="row"><label>参数（可留空）</label>${t('i-args', spec.args || '')}</div>
+              <p class="path">实际目标：${escapeHtml(spec.target || '(空)')}</p>
+            `}
           </div>
+          <div id="i-toggle-action2-box" style="display: none;"></div>
         ` : `
-          <div class="row"><label>目标（程序 / 路径 / 网址 / 命令 / 快捷键）</label><textarea id="i-target">${escapeHtml(spec.target || '')}</textarea></div>
-          <div class="row"><label>参数（可留空）</label>${t('i-args', spec.args || '')}</div>
-          <p class="path">实际目标：${escapeHtml(spec.target || '(空)')}</p>
+          <div id="i-single-action-box" style="display: none;"></div>
+          <div id="i-toggle-action2-box" class="dual-action-container">
+            <!-- 形态 1 卡片 -->
+            <div class="dual-action-card state1-card">
+              <div class="dual-action-head">
+                <div class="dual-head-left">
+                  <span class="dual-dot state1-dot"></span>
+                  <span class="dual-title">形态 1 · 默认动作</span>
+                </div>
+                <span class="dual-tag tag-state1">默认态 (未运行)</span>
+              </div>
+              <div class="btnrow" style="margin-top: 6px;">
+                <button class="ghost tiny" id="i-pickapp">选择程序…</button>
+                <button class="ghost tiny" id="i-pickdir">选择文件夹…</button>
+                <button class="ghost tiny" id="i-pickhotkey">设为快捷键</button>
+                <button class="ghost tiny" id="i-pickcmd">设为命令</button>
+              </div>
+              ${spec.type === 'hotkey' ? `
+                <div class="row" style="margin-top: 6px;">
+                  <label style="font-size: 11px;">形态 1 快捷键组合</label>
+                  ${renderHotkeyBuilderHtml('i-hotkey', spec.hotkey || spec.target || '')}
+                </div>
+              ` : ''}
+              <div class="row" style="margin-top: 6px;"><label style="font-size: 11px;">形态 1 类型</label>
+                <select id="i-type">
+                  <option value="app" ${spec.type === 'app' ? 'selected' : ''}>应用程序 / 路径 (App)</option>
+                  <option value="hotkey" ${spec.type === 'hotkey' ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
+                  <option value="command" ${spec.type === 'command' ? 'selected' : ''}>命令行 (CMD)</option>
+                  <option value="url" ${spec.type === 'url' ? 'selected' : ''}>打开网址 (URL)</option>
+                  <option value="folder" ${spec.type === 'folder' ? 'selected' : ''}>打开文件夹</option>
+                  <option value="multi" ${spec.type === 'multi' ? 'selected' : ''}>复合宏动作</option>
+                </select>
+              </div>
+              ${spec.type === 'multi' ? `
+                <div id="i-macro-editor-container">
+                  ${renderMacroEditorHtml(spec)}
+                </div>
+              ` : spec.type !== 'hotkey' ? `
+                <div class="row"><label style="font-size: 11px;">形态 1 目标（程序/网址/命令）</label><textarea id="i-target" style="min-height: 48px;">${escapeHtml(spec.target || '')}</textarea></div>
+                <div class="row"><label style="font-size: 11px;">参数（可留空）</label>${t('i-args', spec.args || '')}</div>
+              ` : ''}
+            </div>
+
+            <!-- 互换动作条 -->
+            <div class="dual-action-swap-bar">
+              <div class="swap-line"></div>
+              <button type="button" id="i-swap-actions" class="swap-action-btn" title="互换形态 1 与形态 2 的执行动作">
+                <span class="swap-icon">🔁</span> 互换形态 1 与形态 2 动作
+              </button>
+              <div class="swap-line"></div>
+            </div>
+            <div class="swap-action-hint">纯动作互换 · 角标文字与颜色保持不变</div>
+
+            <!-- 形态 2 卡片 -->
+            <div class="dual-action-card state2-card">
+              <div class="dual-action-head">
+                <div class="dual-head-left">
+                  <span class="dual-dot state2-dot"></span>
+                  <span class="dual-title">形态 2 · 触发动作</span>
+                </div>
+                <span class="dual-tag tag-state2">触发态 (运行中)</span>
+              </div>
+              <div class="btnrow" style="margin-top: 6px;">
+                <button class="ghost tiny" id="i-act2-pickkill" title="提取主进程名一键填充 taskkill 退出命令">⚡ 设为退出命令</button>
+                <button class="ghost tiny" id="i-act2-pickapp">选择程序…</button>
+                <button class="ghost tiny" id="i-act2-pickhk">设为快捷键</button>
+                <button class="ghost tiny" id="i-act2-pickcmd">设为命令</button>
+              </div>
+              <div class="row" style="margin-top: 6px;">
+                <label style="font-size: 11px;">形态 2 动作类型</label>
+                <select id="i-toggle-action2-type">
+                  <option value="command" ${((spec.action2 && spec.action2.type) === 'command' || (!spec.action2 && spec.type === 'app')) ? 'selected' : ''}>命令行 (CMD / taskkill)</option>
+                  <option value="hotkey" ${(spec.action2 && spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
+                  <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 路径 (App)</option>
+                  <option value="url" ${(spec.action2 && spec.action2.type === 'url') ? 'selected' : ''}>打开网址 (URL)</option>
+                </select>
+              </div>
+              <div class="row" id="i-toggle-action2-hotkey-row" style="${(spec.action2 && spec.action2.type === 'hotkey') ? '' : 'display: none;'}">
+                <label style="font-size: 11px;">形态 2 快捷键组合</label>
+                ${renderHotkeyBuilderHtml('i-toggle-action2-hk', (spec.action2 && (spec.action2.hotkey || spec.action2.target)) || '')}
+              </div>
+              <div class="row" id="i-toggle-action2-target-row" style="${(spec.action2 && spec.action2.type === 'hotkey') ? 'display: none;' : ''}">
+                <label style="font-size: 11px;">形态 2 目标（命令行 / 程序 / 网址）</label>
+                <textarea id="i-toggle-action2-target" style="min-height: 48px;">${escapeHtml((spec.action2 && spec.action2.target) || '')}</textarea>
+              </div>
+              <div class="row" id="i-toggle-action2-args-row" style="${(spec.action2 && spec.action2.type === 'app') ? '' : 'display: none;'}">
+                <label style="font-size: 11px;">形态 2 参数（可留空）</label>
+                <input id="i-toggle-action2-args" value="${escapeAttr((spec.action2 && spec.action2.args) || '')}" />
+              </div>
+            </div>
+          </div>
         `}
       </div>
     </details>
@@ -2396,32 +2522,6 @@ function renderInspector() {
               <button type="button" class="ghost tiny badge-try-btn" id="i-toggle-try-btn">
                 🔄 试切状态预览（当前：${(curBadge && curBadge.text) || (curBadgeState === 0 ? ((spec.badgeState1 && spec.badgeState1.text) || 'ON') : ((spec.badgeState2 && spec.badgeState2.text) || 'OFF'))}）
               </button>
-            </div>
-            <div class="toggle-action-capsule-row">
-              <span class="toggle-action-label">动作联动</span>
-              <div class="color-capsule-group" id="i-toggle-act-group">
-                <button type="button" id="i-toggle-act-single" class="color-capsule-pill ${!spec.toggleAction ? 'active' : ''}">🔄 单动作交替</button>
-                <button type="button" id="i-toggle-act-dual" class="color-capsule-pill ${spec.toggleAction ? 'active' : ''}">⚡ 双态独立动作</button>
-              </div>
-            </div>
-            <div id="i-toggle-action2-box" class="badge-action2-box" style="${!spec.toggleAction ? 'display: none;' : ''}">
-              <div class="row">
-                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 动作类型</label>
-                <select id="i-toggle-action2-type">
-                  <option value="hotkey" ${(!spec.action2 || spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
-                  <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 路径 (App)</option>
-                  <option value="url" ${(spec.action2 && spec.action2.type === 'url') ? 'selected' : ''}>打开网址 (URL)</option>
-                  <option value="command" ${(spec.action2 && spec.action2.type === 'command') ? 'selected' : ''}>命令行 (CMD)</option>
-                </select>
-              </div>
-              <div class="row" id="i-toggle-action2-hotkey-row" style="${(spec.action2 && spec.action2.type && spec.action2.type !== 'hotkey') ? 'display: none;' : ''}">
-                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 快捷键组合</label>
-                ${renderHotkeyBuilderHtml('i-toggle-action2-hk', (spec.action2 && (spec.action2.hotkey || spec.action2.target)) || '')}
-              </div>
-              <div class="row" id="i-toggle-action2-target-row" style="${(!spec.action2 || !spec.action2.type || spec.action2.type === 'hotkey') ? 'display: none;' : ''}">
-                <label style="font-size: 11px; margin-bottom: 4px;">状态 2 目标（程序/网址/命令）</label>
-                <textarea id="i-toggle-action2-target">${escapeHtml((spec.action2 && spec.action2.target) || '')}</textarea>
-              </div>
             </div>
           </div>
         </div>
@@ -2726,7 +2826,7 @@ function renderInspector() {
     };
   }
 
-  // 双态独立动作胶囊切换与配置
+  // 动作模式胶囊切换
   const btnActSingle = $('i-toggle-act-single');
   const btnActDual = $('i-toggle-act-dual');
   if (btnActSingle && btnActDual) {
@@ -2738,8 +2838,107 @@ function renderInspector() {
     btnActDual.onclick = async () => {
       spec.toggleAction = true;
       if (!spec.action2) {
-        spec.action2 = { type: 'hotkey', target: '', hotkey: '' };
+        let targetKill = '';
+        if (spec.target) {
+          const proc = spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+          if (proc) targetKill = `taskkill /F /IM ${proc}.exe`;
+        }
+        spec.action2 = { type: targetKill ? 'command' : 'hotkey', target: targetKill || 'Alt+F4', hotkey: targetKill ? '' : 'Alt+F4', args: '' };
       }
+      if (!spec.badgeToggle) {
+        spec.badgeToggle = true;
+        spec.badgeState1 = spec.badgeState1 || { text: 'ON', bg: '#107c41' };
+        spec.badgeState2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+      }
+      await commit(false);
+      renderInspector();
+    };
+  }
+
+  // 一键互换形态 1 与形态 2 动作
+  const btnSwap = $('i-swap-actions');
+  if (btnSwap) {
+    btnSwap.onclick = async () => {
+      const s1 = {
+        type: spec.type || 'app',
+        target: spec.target || '',
+        args: spec.args || '',
+        hotkey: spec.hotkey || ''
+      };
+      const s2 = spec.action2 ? {
+        type: spec.action2.type || 'command',
+        target: spec.action2.target || '',
+        args: spec.action2.args || '',
+        hotkey: spec.action2.hotkey || ''
+      } : {
+        type: 'command',
+        target: '',
+        args: '',
+        hotkey: ''
+      };
+      spec.type = s2.type;
+      spec.target = s2.target;
+      spec.args = s2.args;
+      spec.hotkey = s2.hotkey;
+      spec.action2 = {
+        type: s1.type,
+        target: s1.target,
+        args: s1.args,
+        hotkey: s1.hotkey
+      };
+      await commit(true);
+      renderInspector();
+      toast('已互换形态 1 与形态 2 的执行动作');
+    };
+  }
+
+  // 状态 2 快捷辅助按钮
+  const btnAct2Kill = $('i-act2-pickkill');
+  if (btnAct2Kill) {
+    btnAct2Kill.onclick = async () => {
+      if (!spec.action2) spec.action2 = {};
+      let proc = '';
+      if (spec.target) {
+        proc = spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+      }
+      spec.action2.type = 'command';
+      spec.action2.target = proc ? `taskkill /F /IM ${proc}.exe` : 'taskkill /F /IM app.exe';
+      spec.action2.args = '';
+      await commit(false);
+      renderInspector();
+      toast('已设为退出命令：' + spec.action2.target);
+    };
+  }
+  const btnAct2App = $('i-act2-pickapp');
+  if (btnAct2App) {
+    btnAct2App.onclick = async () => {
+      const p = await api.dialogPick({ properties: ['openFile'] });
+      if (!p) return;
+      const cls = await api.actionClassify(p);
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.type = 'app';
+      spec.action2.target = cls.abs || p;
+      spec.action2.args = '';
+      await commit(false);
+      renderInspector();
+    };
+  }
+  const btnAct2Hk = $('i-act2-pickhk');
+  if (btnAct2Hk) {
+    btnAct2Hk.onclick = async () => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.type = 'hotkey';
+      spec.action2.hotkey = 'Alt+F4';
+      spec.action2.target = 'Alt+F4';
+      await commit(false);
+      renderInspector();
+    };
+  }
+  const btnAct2Cmd = $('i-act2-pickcmd');
+  if (btnAct2Cmd) {
+    btnAct2Cmd.onclick = async () => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.type = 'command';
       await commit(false);
       renderInspector();
     };
@@ -2759,6 +2958,14 @@ function renderInspector() {
     iptAct2Target.addEventListener('input', async () => {
       if (!spec.action2) spec.action2 = {};
       spec.action2.target = iptAct2Target.value;
+      await commit(false);
+    });
+  }
+  const iptAct2Args = $('i-toggle-action2-args');
+  if (iptAct2Args) {
+    iptAct2Args.addEventListener('input', async () => {
+      if (!spec.action2) spec.action2 = {};
+      spec.action2.args = iptAct2Args.value;
       await commit(false);
     });
   }
@@ -2918,11 +3125,11 @@ function renderInspector() {
   });
 
 
-  $('i-pickapp').onclick = () => pickInto({ properties: ['openFile'] });
-  $('i-pickdir').onclick = () => pickInto({ properties: ['openDirectory'] });
-  $('i-pickurl').onclick = () => quickSet('url');
-  $('i-pickcmd').onclick = () => quickSet('command');
-  $('i-page').onclick = async () => {
+  if ($('i-pickapp')) $('i-pickapp').onclick = () => pickInto({ properties: ['openFile'] });
+  if ($('i-pickdir')) $('i-pickdir').onclick = () => pickInto({ properties: ['openDirectory'] });
+  if ($('i-pickurl')) $('i-pickurl').onclick = () => quickSet('url');
+  if ($('i-pickcmd')) $('i-pickcmd').onclick = () => quickSet('command');
+  if ($('i-page')) $('i-page').onclick = async () => {
     const r = await askPageAction(spec.type === 'page' ? spec : null);
     if (!r) return;
     let fresh = pageButtons()[selected.row + ',' + selected.col];
@@ -3258,6 +3465,7 @@ async function pickInto(opts) {
     type: cls.type, label: cls.label, target: cls.abs || p,
     args: '', icon: icon || '', color: colorFor(cls.type),
   };
+  applyAppDualStateDefaults(spec, cls, p);
   pageButtons()[selected.row + ',' + selected.col] = spec;
   await commit(true);
   renderInspector();

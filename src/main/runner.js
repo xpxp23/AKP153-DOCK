@@ -555,21 +555,26 @@ function classify(p) {
         }
       }
     } catch (_) {}
+    const procExt = path.extname(absPath).toLowerCase();
+    const procName = path.basename(absPath, procExt);
     return Object.assign(base, {
       abs: absPath,
       originalLnk: full,
       args: shortcutArgs,
       type: 'app',
       label: path.basename(full, ext),
+      processName: procName,
     });
   }
   if (ext === '.url') {
-    return Object.assign(base, { type: 'app', label: path.basename(full, ext) });
+    return Object.assign(base, { type: 'app', label: path.basename(full, ext), processName: '' });
   }
-  if (ext === '.ps1') return Object.assign(base, { type: 'ps1', label: path.basename(full, ext) });
+  if (ext === '.ps1') return Object.assign(base, { type: 'ps1', label: path.basename(full, ext), processName: path.basename(full, ext) });
+  const isExec = EXT_EXEC.has(ext);
   return Object.assign(base, {
-    type: EXT_EXEC.has(ext) ? 'app' : 'file',
+    type: isExec ? 'app' : 'file',
     label: path.basename(full, ext) || full,
+    processName: isExec ? path.basename(full, ext) : '',
   });
 }
 

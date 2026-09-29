@@ -139,6 +139,24 @@ const SHOTS = [
       'document.getElementById("i-toggle-try-btn").click()',
     ],
   },
+  {
+    name: 'ui-17-dual-action', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabAction").click()',
+      'document.getElementById("i-toggle-act-dual").click()',
+      `(function() {
+        var k = selected.row + ',' + selected.col;
+        var s = pageButtons()[k];
+        s.type = 'app';
+        s.target = 'C:\\\\Program Files\\\\Tencent\\\\WeChat\\\\WeChat.exe';
+        s.label = '微信';
+        s.action2 = { type: 'command', target: 'taskkill /F /IM WeChat.exe', args: '' };
+        renderInspector();
+      })()`,
+      'document.querySelector(".insp-body").scrollTop = 110',
+    ],
+  },
 ];
 
 

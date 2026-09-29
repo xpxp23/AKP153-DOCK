@@ -532,10 +532,14 @@ app.whenReady().then(async () => {
   const testToggledText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
   check('点击测试运行联动触发状态翻转为「关」', testToggledText === '关', testToggledText);
 
-  // 独立双态动作测试（二段胶囊选择器）
-  check('包含动作联动二段胶囊选择器 (单动作交替 vs 双态独立动作)',
+  // 切换回动作与快捷选项卡，测试全新解耦的动作页双态布局
+  await js('document.getElementById("tabAction").click()');
+  await sleep2(100);
+
+  // 独立双态动作测试（二段胶囊选择器已位于 Tab 1 顶部）
+  check('包含动作模式二段胶囊选择器 (单一动作 vs 双态独立动作)',
     await js('!!document.getElementById("i-toggle-act-single") && !!document.getElementById("i-toggle-act-dual")'));
-  check('默认处于单动作交替激活态且动作 2 配置框隐藏',
+  check('默认处于单动作激活态且双态配置框隐藏',
     await js('document.getElementById("i-toggle-act-single").classList.contains("active") && document.getElementById("i-toggle-action2-box").style.display === "none"'));
 
   // 点击切换为双态独立动作
@@ -543,16 +547,68 @@ app.whenReady().then(async () => {
   await sleep2(150);
   check('切换后双态独立动作胶囊处于激活态',
     await js('document.getElementById("i-toggle-act-dual").classList.contains("active")'));
-  check('展开状态 2 动作配置卡片',
-    await js('document.getElementById("i-toggle-action2-box").style.display !== "none"'));
-  check('状态 2 动作支持类型选择与快捷键构建器',
+  check('展开双态动作配置容器且单动作容器隐藏',
+    await js('document.getElementById("i-toggle-action2-box").style.display !== "none" && document.getElementById("i-single-action-box").style.display === "none"'));
+  check('包含形态 1 卡片与形态 2 卡片及一键对调按钮',
+    await js('!!document.querySelector(".state1-card") && !!document.querySelector(".state2-card") && !!document.getElementById("i-swap-actions")'));
+  check('形态 2 动作支持类型选择与快捷键构建器',
     await js('!!document.getElementById("i-toggle-action2-type") && !!document.getElementById("i-toggle-action2-hk")'));
 
-  // 再次点击切回单动作交替
+  // 测试一键互换形态动作 (Swap Actions)
+  await js(`(function() {
+    var k = selected.row + ',' + selected.col;
+    var s = pageButtons()[k];
+    s.type = 'app';
+    s.target = 'C:\\\\Apps\\\\wechat.exe';
+    s.action2 = { type: 'command', target: 'taskkill /F /IM wechat.exe', args: '' };
+    s.badgeState1 = { text: '开', bg: '#107c41' };
+    s.badgeState2 = { text: '关', bg: '#e53935' };
+    renderInspector();
+  })()`);
+  await sleep2(100);
+  await js('document.getElementById("i-swap-actions").click()');
+  await sleep2(150);
+  const swappedS1Target = await js('pageButtons()[selected.row + "," + selected.col].target');
+  const swappedS1Type = await js('pageButtons()[selected.row + "," + selected.col].type');
+  const swappedS2Target = await js('pageButtons()[selected.row + "," + selected.col].action2.target');
+  const swappedS2Type = await js('pageButtons()[selected.row + "," + selected.col].action2.type');
+  const badge1AfterSwap = await js('pageButtons()[selected.row + "," + selected.col].badgeState1.text');
+  const badge2AfterSwap = await js('pageButtons()[selected.row + "," + selected.col].badgeState2.text');
+  check('一键互换成功对调形态 1 与形态 2 的执行动作',
+    swappedS1Target === 'taskkill /F /IM wechat.exe' && swappedS1Type === 'command' &&
+    swappedS2Target === 'C:\\Apps\\wechat.exe' && swappedS2Type === 'app',
+    `${swappedS1Type}->${swappedS2Type}`);
+  check('一键互换动作时角标文字与色彩保持不变 (开/关不变)',
+    badge1AfterSwap === '开' && badge2AfterSwap === '关',
+    `${badge1AfterSwap}/${badge2AfterSwap}`);
+
+  // 测试应用拖入默认双态闭环 (applyAppDualStateDefaults)
+  const autoDualTest = await js(`(function() {
+    var dummySpec = { type: 'app', label: '测试应用', target: 'D:\\\\Games\\\\Steam.exe' };
+    applyAppDualStateDefaults(dummySpec, { type: 'app', processName: 'Steam' }, 'D:\\\\Games\\\\Steam.exe');
+    return {
+      toggleAction: dummySpec.toggleAction,
+      act2Type: dummySpec.action2 && dummySpec.action2.type,
+      act2Target: dummySpec.action2 && dummySpec.action2.target,
+      badgeToggle: dummySpec.badgeToggle,
+      b1Text: dummySpec.badgeState1 && dummySpec.badgeState1.text,
+      b2Text: dummySpec.badgeState2 && dummySpec.badgeState2.text
+    };
+  })()`);
+  check('应用程序默认自动配置退出双态闭环与 运行中 微标',
+    autoDualTest.toggleAction === true &&
+    autoDualTest.act2Type === 'command' &&
+    autoDualTest.act2Target === 'taskkill /F /IM Steam.exe' &&
+    autoDualTest.badgeToggle === true &&
+    autoDualTest.b1Text === '' &&
+    autoDualTest.b2Text === '运行中',
+    JSON.stringify(autoDualTest));
+
+  // 再次点击切回单动作
   await js('document.getElementById("i-toggle-act-single").click()');
   await sleep2(150);
-  check('再次点击单动作交替胶囊成功收起动作 2 配置卡片',
-    await js('document.getElementById("i-toggle-action2-box").style.display === "none"'));
+  check('再次点击单一动作胶囊成功收起双态容器并展示单动作容器',
+    await js('document.getElementById("i-toggle-action2-box").style.display === "none" && document.getElementById("i-single-action-box").style.display !== "none"'));
 
   // 验证 Preload 白名单通道
   const preloadRaw = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
