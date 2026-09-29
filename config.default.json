@@ -1,0 +1,236 @@
+{
+  "version": 2,
+  "brightness": 80,
+  "idleSleepMinutes": 5,
+  "sleepMode": "zeros-last",
+  "openAtLogin": true,
+  "theme": "light",
+  "currentPage": "p1",
+  "pages": [
+    {
+      "id": "p1",
+      "name": "常用生产力",
+      "parent": null,
+      "gradient": {
+        "enabled": true,
+        "from": "#141e30",
+        "to": "#243b55",
+        "angle": 135
+      },
+      "buttons": {
+        "0,0": {
+          "type": "hotkey",
+          "label": "显示桌面",
+          "hotkey": "Win+D",
+          "target": "Win+D",
+          "args": "",
+          "icon": "",
+          "color": "#107c41",
+          "badge": "D"
+        },
+        "0,1": {
+          "type": "hotkey",
+          "label": "窗口切换",
+          "hotkey": "Alt+Tab",
+          "target": "Alt+Tab",
+          "args": "",
+          "icon": "",
+          "color": "#1565c0",
+          "badge": "Tab"
+        },
+        "0,2": {
+          "type": "hotkey",
+          "label": "此电脑",
+          "hotkey": "Win+E",
+          "target": "Win+E",
+          "args": "",
+          "icon": "",
+          "color": "#ef6c00",
+          "badge": "E"
+        },
+        "0,3": {
+          "type": "hotkey",
+          "label": "任务管理",
+          "hotkey": "Ctrl+Shift+Esc",
+          "target": "Ctrl+Shift+Esc",
+          "args": "",
+          "icon": "",
+          "color": "#6a1b9a",
+          "badge": "Esc"
+        },
+        "0,4": {
+          "type": "hotkey",
+          "label": "剪贴板",
+          "hotkey": "Win+V",
+          "target": "Win+V",
+          "args": "",
+          "icon": "",
+          "color": "#00838f",
+          "badge": "V"
+        },
+        "1,0": {
+          "type": "hotkey",
+          "label": "系统截屏",
+          "hotkey": "Win+Shift+S",
+          "target": "Win+Shift+S",
+          "args": "",
+          "icon": "",
+          "color": "#00a896",
+          "badge": "✂️"
+        },
+        "1,1": {
+          "type": "hotkey",
+          "label": "区域截图",
+          "hotkey": "Ctrl+Alt+A",
+          "target": "Ctrl+Alt+A",
+          "args": "",
+          "icon": "",
+          "color": "#00695c",
+          "badge": "A"
+        },
+        "1,2": {
+          "type": "hotkey",
+          "label": "一键锁屏",
+          "hotkey": "Win+L",
+          "target": "Win+L",
+          "args": "",
+          "icon": "",
+          "color": "#c62828",
+          "badge": "🔒"
+        },
+        "1,3": {
+          "type": "app",
+          "label": "计算器",
+          "target": "calc.exe",
+          "args": "",
+          "icon": "",
+          "color": "#0277bd"
+        },
+        "1,4": {
+          "type": "app",
+          "label": "终端命令行",
+          "target": "cmd.exe",
+          "args": "",
+          "icon": "",
+          "color": "#37474f",
+          "badge": ">_"
+        },
+        "2,0": {
+          "type": "hotkey",
+          "label": "播放/暂停",
+          "hotkey": "Media_Play_Pause",
+          "target": "Media_Play_Pause",
+          "args": "",
+          "icon": "",
+          "color": "#283593",
+          "badge": "⏯"
+        },
+        "2,1": {
+          "type": "hotkey",
+          "label": "静音切换",
+          "hotkey": "Volume_Mute",
+          "target": "Volume_Mute",
+          "args": "",
+          "icon": "",
+          "color": "#d84315",
+          "badge": "🔇"
+        },
+        "2,2": {
+          "type": "hotkey",
+          "label": "音量 -",
+          "hotkey": "Volume_Down",
+          "target": "Volume_Down",
+          "args": "",
+          "icon": "",
+          "color": "#455a64",
+          "badge": "🔉"
+        },
+        "2,3": {
+          "type": "hotkey",
+          "label": "音量 +",
+          "hotkey": "Volume_Up",
+          "target": "Volume_Up",
+          "args": "",
+          "icon": "",
+          "color": "#37474f",
+          "badge": "🔊"
+        },
+        "2,4": {
+          "type": "url",
+          "label": "必应搜索",
+          "target": "https://cn.bing.com",
+          "args": "",
+          "icon": "",
+          "color": "#0277bd",
+          "badge": "🌐"
+        }
+      },
+      "strips": {
+        "0": {
+          "type": "clock",
+          "label": "",
+          "color": "#141e30"
+        },
+        "1": {
+          "type": "cpu",
+          "label": "CPU\n0%",
+          "color": "#1b2c40"
+        },
+        "2": {
+          "type": "mem",
+          "label": "内存 0%\n0G",
+          "color": "#243b55"
+        }
+      }
+    }
+  ],
+  "library": [
+    {
+      "id": "L_desk",
+      "name": "显示桌面",
+      "tags": ["系统", "快捷键"],
+      "spec": {
+        "type": "hotkey",
+        "label": "显示桌面",
+        "hotkey": "Win+D",
+        "target": "Win+D",
+        "color": "#107c41"
+      }
+    },
+    {
+      "id": "L_qr",
+      "name": "扫码解码",
+      "tags": ["常用", "工具"],
+      "spec": {
+        "type": "qr_decode",
+        "label": "扫码解码",
+        "target": "qr_decode",
+        "color": "#00838f"
+      }
+    },
+    {
+      "id": "L_shot",
+      "name": "区域截图",
+      "tags": ["常用", "工具"],
+      "spec": {
+        "type": "hotkey",
+        "label": "截图",
+        "hotkey": "Ctrl+Alt+A",
+        "target": "Ctrl+Alt+A",
+        "color": "#00695c"
+      }
+    },
+    {
+      "id": "L_lock",
+      "name": "一键锁屏",
+      "tags": ["系统"],
+      "spec": {
+        "type": "hotkey",
+        "label": "锁屏",
+        "hotkey": "Win+L",
+        "target": "Win+L",
+        "color": "#c62828"
+      }
+    }
+  ]
+}

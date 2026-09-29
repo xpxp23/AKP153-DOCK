@@ -1,0 +1,223 @@
+# AKP153 Stream Dock Declarative Keymap Configuration
+# Grid: 5 columns x 3 rows (0,0 to 4,2) + 1 auxiliary column (5,0 to 5,2)
+# Coordinate format: "col,row" (col: 0..5, row: 0..2)
+
+profile_info:
+  name: "AI & Productivity Cockpit"
+  device_uuid: "AKP153"
+  device_model: "20GBA9901"
+
+keys:
+  # ============================================================================
+  # 区域 1: 系统态势感知与硬件总控 (左侧两列: Col 0 & Col 1)
+  # ============================================================================
+  "0,0":
+    name: "CPU(%)"
+    type: "plugin"
+    uuid: "com.hotspot.stream.cpu"
+    title: "CPU 负载"
+    symbol: "monitor"
+    theme: "cyan"
+    settings: {}
+    states:
+      - Image: "images/actions/CpuUsageImage"
+        TitleAlignment: "middle"
+        FSize: "13"
+        FFamily: "HarmonyOS Sans"
+
+  "0,1":
+    name: "切换音频设备"
+    type: "plugin"
+    uuid: "com.mirabox.streamdock.switchAudio.myaction1"
+    title: "耳机/音箱"
+    symbol: "audio"
+    theme: "sky"
+    settings:
+      radio: "1"
+      flag: true
+    states:
+      - Image: "images/headphones"
+      - Image: "images/speakers"
+      - Image: "images/inactive"
+      - Image: "images/active"
+
+  "0,2":
+    name: "麦克风静音"
+    type: "open"
+    path: 'e:\项目\AiProgram\.agents\skills\akp153-streamdock\bin\mic_toggle.exe'
+    title: "麦克风静音"
+    symbol: "mic"
+    theme: "rose"
+
+  "1,0":
+    name: "NetWork"
+    type: "plugin"
+    uuid: "com.hotspot.stream.NetWork"
+    title: "实时网速"
+    symbol: "monitor"
+    theme: "sky"
+    settings: {}
+    states:
+      - Image: "images/actions/NetWork_HardDisk/NetWork_126"
+        TitleAlignment: "middle"
+        FSize: "12"
+        FFamily: "HarmonyOS Sans"
+
+  "1,1":
+    name: "窗口靠左"
+    type: "hotkey"
+    hotkeys:
+      - KeyCmd: true
+        KeyCtrl: false
+        KeyShift: false
+        KeyOption: false
+        VKeyCode: 37 # Left Arrow (Win + Left)
+    title: "窗口靠左"
+    symbol: "snap"
+    theme: "slate"
+
+  "1,2":
+    name: "一键锁屏"
+    type: "hotkey"
+    hotkeys:
+      - KeyCmd: true
+        KeyCtrl: false
+        KeyShift: false
+        KeyOption: false
+        VKeyCode: 76 # 'L' (Win + L)
+    title: "一键锁屏"
+    symbol: "lock"
+    theme: "slate"
+
+  # ============================================================================
+  # 区域 2: 开发者与 AI 驾驶舱 (中间两列: Col 2 & Col 3)
+  # ============================================================================
+  "2,0":
+    name: "终端呼出"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps\wt.exe'
+    title: "终端呼出"
+    symbol: "terminal"
+    theme: "amber"
+
+  "2,1":
+    name: "AI 助手"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Doubao\Application\Doubao.exe'
+    title: "AI 助手"
+    symbol: "ai"
+    theme: "magenta"
+
+  "2,2":
+    name: "Bug 诊断"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Programs\Python\Python311\pythonw.exe "e:\项目\AiProgram\.agents\skills\akp153-streamdock\scripts\ai_prompt_injector.py" --preset bug'
+    title: "Bug 诊断"
+    symbol: "bug"
+    theme: "rose"
+
+  "3,0":
+    name: "VS Code"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Programs\Microsoft VS Code\Code.exe'
+    title: "VS Code"
+    symbol: "vscode"
+    theme: "blue"
+
+  "3,1":
+    name: "代码重构"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Programs\Python\Python311\pythonw.exe "e:\项目\AiProgram\.agents\skills\akp153-streamdock\scripts\ai_prompt_injector.py" --preset refactor'
+    title: "代码重构"
+    symbol: "refactor"
+    theme: "purple"
+
+  "3,2":
+    name: "SQL/正则"
+    type: "open"
+    path: 'C:\Users\Administrator\AppData\Local\Programs\Python\Python311\pythonw.exe "e:\项目\AiProgram\.agents\skills\akp153-streamdock\scripts\ai_prompt_injector.py" --preset sql_regex'
+    title: "SQL / 正则"
+    symbol: "sql"
+    theme: "amber"
+
+  # ============================================================================
+  # 区域 3: 知识、效率与扩展导航 (右侧列: Col 4)
+  # ============================================================================
+  "4,0":
+    name: "思源笔记"
+    type: "open"
+    path: 'C:\Program Files\SiYuan\SiYuan.exe'
+    title: "思源笔记"
+    symbol: "siyuan"
+    theme: "emerald"
+
+  "4,1":
+    name: "屏幕 OCR"
+    type: "hotkey"
+    hotkeys:
+      - KeyCmd: true
+        KeyCtrl: false
+        KeyShift: true
+        KeyOption: false
+        VKeyCode: 84 # 'T' (Win + Shift + T: PowerToys Text Extractor)
+    title: "屏幕 OCR"
+    symbol: "ocr"
+    theme: "sky"
+
+  "4,2":
+    name: "下一页"
+    type: "page_next"
+    uuid: "com.hotspot.streamdock.page.next"
+    title: "下一页"
+    symbol: "page"
+    theme: "slate"
+
+  # ============================================================================
+  # 区域 4: 侧边状态小屏 / 旋钮组件 (Col 5)
+  # ============================================================================
+  "5,0":
+    name: "calendar"
+    type: "plugin"
+    uuid: "com.mirabox.streamdock.calendar.action1"
+    settings:
+      select: "calendar"
+      titleParameters:
+        fontFamily: "HarmonyOS Sans"
+        fontSize: 10
+        fontStyle: "Bold"
+        fontUnderline: false
+        showTitle: true
+        titleAlignment: "bottom"
+        titleColor: "#000000"
+    states:
+      - Image: "images/calendar@40x40.png"
+
+  "5,1":
+    name: "Weather query"
+    type: "plugin"
+    uuid: "com.hotspot.streamdock.weather.action1"
+    settings:
+      radio: "1"
+      radio2: "0"
+      radioUseApi: "qweather"
+      theme: "Modern"
+      timer: 2
+      title: "HOME"
+      titleParameters:
+        fontFamily: "Microsoft YaHei"
+        fontSize: 14
+        fontStyle: "Regular"
+        fontUnderline: false
+        showTitle: true
+        titleAlignment: "bottom"
+        titleColor: "#ffffff"
+    states:
+      - Image: "static/img/default.jpg"
+
+  "5,2":
+    name: "NetWork"
+    type: "plugin"
+    uuid: "com.hotspot.stream.NetWork"
+    settings: {}
+    states:
+      - Image: "images/actions/NetWork_HardDisk/NetWork_126"

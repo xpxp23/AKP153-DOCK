@@ -1,0 +1,32 @@
+{
+  "name": "akp153-dock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "黑爵 AJAZZ AKP153 液晶控制台 - 独立控制台（拖放式配置）",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "host": "node host/device-host.js",
+    "test:runner": "electron tools/test-runner.js",
+    "test:input": "node tools/test-input.js",
+    "test:launch": "electron tools/test-launch.js",
+    "test:ui": "electron tools/test-ui.js",
+    "dev": "electron . --dev",
+    "check": "electron tools/check-target.js",
+    "probe:windows": "electron tools/probe-windows.js",
+    "log:input": "node tools/analyze-input.js",
+    "shot": "electron tools/screenshot-ui.js",
+    "cfg": "node tools/config-cli.js",
+    "test:config": "node tools/test-config.js",
+    "test:sleep": "node tools/test-sleep.js",
+    "build:portable": "node tools/build-portable.js"
+  },
+  "dependencies": {
+    "jpeg-js": "^0.4.4",
+    "jsqr": "^1.4.0",
+    "node-hid": "^3.4.0"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

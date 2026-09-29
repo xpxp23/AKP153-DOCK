@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>AKP153 控制台</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header id="bar">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>AKP153 控制台</h1>
+    <span id="status" class="pill pill-warn">连接中…</span>
+  </div>
+  <div class="actions">
+    <button id="wake" class="ghost">唤醒屏幕</button>
+    <button id="sleep" class="ghost">休眠屏幕</button>
+    <button id="reconnect" class="ghost">重连设备</button>
+    <button id="settingsBtn" class="ghost gear" title="设备设置">⚙</button>
+  </div>
+  <div id="winControls" class="win-controls">
+    <button id="winMin" class="win-btn" title="最小化">─</button>
+    <button id="winMax" class="win-btn" title="最大化/还原">▢</button>
+    <button id="winClose" class="win-btn close" title="关闭并最小化到托盘">✕</button>
+  </div>
+</header>
+
+<!-- 设备设置：低频操作收进弹层，顶栏只留状态和日常动作 -->
+<div id="settingsPanel" class="popover" hidden>
+  <h3>设备设置</h3>
+  <label class="fld">亮度
+    <span class="inline"><input type="range" id="brightness" min="0" max="100" step="1" /> <b id="brightVal">80</b></span>
+  </label>
+  <label class="fld">自动休眠
+    <select id="idle">
+      <option value="0">从不</option>
+      <option value="1">1 分钟</option>
+      <option value="3">3 分钟</option>
+      <option value="5">5 分钟</option>
+      <option value="10">10 分钟</option>
+      <option value="30">30 分钟</option>
+    </select>
+  </label>
+  <label class="fld">休眠方式
+    <select id="sleepMode">
+      <option value="zeros-last">亮度归零后断电（全黑 ✓）</option>
+      <option value="nobright">不发亮度指令（全黑 ✓）</option>
+      <option value="vendor">标准（厂商顺序，微亮）</option>
+      <option value="light">只降亮度（微亮）</option>
+    </select>
+  </label>
+  <label class="fld">屏幕方向
+    <select id="rotate">
+      <option value="ccw">逆时针 90°</option>
+      <option value="cw">顺时针 90°</option>
+      <option value="none">不旋转</option>
+    </select>
+  </label>
+  <label class="fld">界面与机身外观
+    <select id="theme">
+      <option value="light">极光白（默认）</option>
+      <option value="dark">钛空黑（深色）</option>
+    </select>
+  </label>
+  <div class="switch-row">
+    <span class="switch-label">开机自动启动</span>
+    <label class="switch">
+      <input type="checkbox" id="login" />
+      <span class="switch-slider"></span>
+    </label>
+  </div>
+  <div id="conflictAlert" class="conflict-alert" hidden>
+    <div class="conflict-msg">⚠️ 检测到原厂 Stream Dock AJAZZ 正在开机自启，可能抢占硬件端口！</div>
+    <button id="btnDisableConflict" type="button" class="ghost tiny danger" style="margin-top:4px;">一键禁用原厂开机自启</button>
+  </div>
+  <div class="btnrow" style="margin-top:10px;">
+    <button id="repaint" class="ghost" style="width:100%;">全部重画设备屏幕</button>
+  </div>
+</div>
+
+<div class="pagebar">
+  <span class="plabel">页面</span>
+  <div id="pageTabs" class="ptabs"></div>
+  <div class="pactions">
+    <button id="pageGradientBtn" class="ghost" title="设置当前页面的整板无缝渐变">🎨 渐变</button>
+    <button id="pageAddTop" class="ghost">＋ 顶层页</button>
+    <button id="pageAddSub" class="ghost" title="在当前页下面建一个子页（文件夹），右下角会自动出现返回键">＋ 子页</button>
+    <button id="pageRename" class="ghost">改名</button>
+    <button id="pageDup" class="ghost">复制本页</button>
+    <button id="pageSave" class="ghost" title="把这一页的 15 个键 + 3 块屏整页存进按键库">本页入库</button>
+    <button id="pageDel" class="ghost danger">删除本页</button>
+  </div>
+</div>
+
+<main>
+  <section class="stage">
+    <div class="device">
+      <div class="device-bar">
+        <span class="logo">AJAZZ</span>
+        <span class="model">AKP-153</span>
+      </div>
+      <div id="grid" class="grid"></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="insp-head">
+      <h2 id="inspectorTitle">选中的按键</h2>
+      <button id="inspHelp" class="help" title="怎么用">?</button>
+    </div>
+    <div id="inspTabs" class="insp-tabs" hidden>
+      <button id="tabAction" type="button" class="insp-tab active">⚡ 动作与快捷</button>
+      <button id="tabStyle" type="button" class="insp-tab">🎨 外观与图标</button>
+    </div>
+    <div class="insp-body">
+      <div id="inspector" class="inspector empty">
+        <p class="muted">点左边的格子开始编辑</p>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<div id="drawer" class="drawer">
+  <div class="drawer-head">
+    <button id="drawerToggle" class="dhead">
+      <span>按键库</span>
+      <b id="libraryCount">0</b>
+      <span class="chev">▴</span>
+    </button>
+    <input id="libSearch" class="libsearch" placeholder="搜索库…" />
+    <button id="libExpand" class="ghost tiny">展开</button>
+  </div>
+  <div id="library" class="library"></div>
+</div>
+
+<div id="libPanel" class="libpanel" hidden>
+  <div class="libpanel-box">
+    <div class="libpanel-head">
+      <h3>按键库</h3>
+      <input id="libSearch2" class="libsearch" placeholder="搜索名称 / 目标 / 标签" />
+      <button id="libClose" class="ghost">关闭</button>
+    </div>
+    <div id="libTags" class="libtags"></div>
+    <div id="libGrid" class="libgrid"></div>
+    <div class="libpanel-foot">
+      <button id="libImport" class="ghost">导入…</button>
+      <button id="libExportAll" class="ghost">导出全部…</button>
+      <button id="libExportTag" class="ghost">只导出当前标签…</button>
+      <span class="muted" id="libHint">点条目放到选中的格子，或直接拖到格子上</span>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<!-- 右键上下文菜单 -->
+<div id="contextMenu" class="context-menu" hidden>
+  <button id="cmCopy" class="cm-item"><span class="cm-icon">📋</span> 复制按键 <kbd>Ctrl+C</kbd></button>
+  <button id="cmCut" class="cm-item"><span class="cm-icon">✂️</span> 剪切按键 <kbd>Ctrl+X</kbd></button>
+  <button id="cmPaste" class="cm-item"><span class="cm-icon">📥</span> 粘贴按键 <kbd>Ctrl+V</kbd></button>
+  <div class="cm-divider"></div>
+  <button id="cmSaveLib" class="cm-item"><span class="cm-icon">⭐</span> 存入按键库</button>
+  <div class="cm-divider"></div>
+  <button id="cmClear" class="cm-item danger"><span class="cm-icon">🗑️</span> 清空格子 <kbd>Del</kbd></button>
+</div>
+
+<!-- 内置图标库选择弹窗 -->
+<div id="iconPickerModal" class="modal-backdrop" hidden>
+  <div class="icon-picker-box">
+    <div class="ip-head">
+      <h3>精选矢量图标库</h3>
+      <input id="ipSearch" class="ip-search" placeholder="搜索图标名称或标签…" />
+      <button id="ipBatchImport" class="ghost" title="选择多个本地图片、图标或程序批量存入当前分类">📁 批量导入…</button>
+      <button id="ipClose" class="ghost">关闭</button>
+    </div>
+    <div id="ipTags" class="ip-tags"></div>
+    <div id="ipSubTags" class="ip-subtags" hidden></div>
+    <div id="ipGrid" class="ip-grid"></div>
+    <div class="ip-foot">
+      <span class="muted" id="ipFootHint">点击图标套用到当前按键；右键自定义图标可重命名、改分类或删除</span>
+      <button id="ipSaveCurrent" class="ghost tiny" style="margin-left:auto;">⭐ 存入当前按键图标</button>
+    </div>
+  </div>
+</div>
+
+<!-- 自定义图标专用右键上下文菜单 -->
+<div id="ipContextMenu" class="context-menu" hidden>
+  <button id="ipCmApply" class="cm-item"><span class="cm-icon">⚡</span> 套用到当前按键</button>
+  <button id="ipCmRename" class="cm-item"><span class="cm-icon">✏️</span> 重命名图标</button>
+  <button id="ipCmCategory" class="cm-item"><span class="cm-icon">🏷️</span> 变更分类 / 标签…</button>
+  <button id="ipCmCopy" class="cm-item"><span class="cm-icon">📋</span> 复制 Base64 数据</button>
+  <div class="cm-sep"></div>
+  <button id="ipCmDelete" class="cm-item danger"><span class="cm-icon">🗑️</span> 从图标库删除</button>
+</div>
+
+
+<!-- 图片裁剪与压缩模态弹窗 -->
+<div id="cropperModal" class="modal-backdrop" hidden>
+  <div class="cropper-box">
+    <div class="cropper-head">
+      <h3>图片 1:1 裁剪与压缩</h3>
+      <button id="cropClose" class="ghost">关闭</button>
+    </div>
+    <div class="cropper-body">
+      <div class="cropper-canvas-wrap">
+        <canvas id="cropCanvas" width="280" height="280"></canvas>
+        <div class="cropper-mask"></div>
+      </div>
+      <div class="cropper-controls">
+        <div class="cropper-quick-btns">
+          <button id="cropFit" type="button" class="crop-btn" title="适应完整画面 (一键缩小露出全貌)">⊡ 适应</button>
+          <button id="cropCover" type="button" class="crop-btn" title="铺满取景框 (一键满框)">⊞ 填满</button>
+          <button id="cropRotate" type="button" class="crop-btn" title="顺时针旋转90°">↻ 旋转</button>
+          <button id="cropReset" type="button" class="crop-btn" title="居中并重置到100%">↺ 重置</button>
+        </div>
+        <div class="cropper-slider-row">
+          <label>缩放：</label>
+          <input type="range" id="cropZoom" min="0.2" max="4.0" step="0.01" value="1.0" />
+          <span id="cropZoomVal" class="crop-val">100%</span>
+        </div>
+      </div>
+      <div class="cropper-hint muted">
+        <span>💡 拖拽平移，滚轮/滑块缩放。支持旋转与适应留白（透明穿透底色），高保真输出 192×192。</span>
+      </div>
+    </div>
+    <div class="cropper-foot">
+      <button id="cropCancel" class="ghost">取消</button>
+      <button id="cropOk" class="primary">确定裁剪并应用</button>
+    </div>
+  </div>
+</div>
+
+<script src="icons.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

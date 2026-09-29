@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>AKP153 扫码框选</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent;
+      cursor: crosshair;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    #backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+    }
+    #box {
+      position: absolute;
+      display: none;
+      border: 2px solid #00e5ff;
+      background: rgba(0, 229, 255, 0.12);
+      box-shadow: 0 0 16px rgba(0, 229, 255, 0.4), inset 0 0 10px rgba(0, 229, 255, 0.2);
+      pointer-events: none;
+    }
+    #box-size {
+      position: absolute;
+      top: -26px;
+      left: 0;
+      background: #00bcd4;
+      color: #fff;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      white-space: nowrap;
+    }
+    #bar {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 24, 33, 0.94);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 30px;
+      padding: 8px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: #e0e0e0;
+      font-size: 13px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      z-index: 99999;
+      pointer-events: auto;
+    }
+    #bar .tip {
+      color: #90caf9;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+    #bar .btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 5px 14px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.15s;
+    }
+    #bar .btn:hover {
+      background: rgba(0, 229, 255, 0.25);
+      border-color: #00e5ff;
+    }
+    #bar .btn.cancel:hover {
+      background: rgba(244, 67, 54, 0.25);
+      border-color: #f44336;
+    }
+  </style>
+</head>
+<body>
+  <div id="backdrop"></div>
+  <div id="box"><div id="box-size">0 × 0</div></div>
+  <div id="bar">
+    <span class="tip">📷 鼠标左键拖拽框选二维码</span>
+    <span style="opacity: 0.3;">|</span>
+    <button class="btn" id="btnFull">🖥️ 全屏扫描</button>
+    <button class="btn cancel" id="btnCancel">✕ 取消 (Esc / 右键)</button>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron');
+    let down = false;
+    let startX = 0, startY = 0;
+    const box = document.getElementById('box');
+    const boxSize = document.getElementById('box-size');
+
+    window.addEventListener('mousedown', (e) => {
+      if (e.target.closest('#bar')) return;
+      if (e.button === 2) {
+        ipcRenderer.send('snip:cancel');
+        return;
+      }
+      if (e.button !== 0) return;
+      down = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      box.style.left = startX + 'px';
+      box.style.top = startY + 'px';
+      box.style.width = '0px';
+      box.style.height = '0px';
+      box.style.display = 'block';
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!down) return;
+      const curX = e.clientX;
+      const curY = e.clientY;
+      const x = Math.min(startX, curX);
+      const y = Math.min(startY, curY);
+      const w = Math.abs(curX - startX);
+      const h = Math.abs(curY - startY);
+      box.style.left = x + 'px';
+      box.style.top = y + 'px';
+      box.style.width = w + 'px';
+      box.style.height = h + 'px';
+      boxSize.textContent = `${w} × ${h} px`;
+      boxSize.style.top = y > 32 ? '-26px' : '6px';
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (!down) return;
+      down = false;
+      const curX = e.clientX;
+      const curY = e.clientY;
+      const x = Math.min(startX, curX);
+      const y = Math.min(startY, curY);
+      const w = Math.abs(curX - startX);
+      const h = Math.abs(curY - startY);
+      if (w > 12 && h > 12) {
+        ipcRenderer.send('snip:selected', { x, y, width: w, height: h });
+      } else {
+        box.style.display = 'none';
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        ipcRenderer.send('snip:cancel');
+      }
+    });
+
+    document.getElementById('btnFull').onclick = (e) => {
+      e.stopPropagation();
+      ipcRenderer.send('snip:fullscreen');
+    };
+    document.getElementById('btnCancel').onclick = (e) => {
+      e.stopPropagation();
+      ipcRenderer.send('snip:cancel');
+    };
+  </script>
+</body>
+</html>

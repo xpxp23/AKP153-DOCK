@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build releases & portable distributions
+dist/
+
+# Logs & temp files
+logs/
+*.log
+backups/
+
+# Personal local configuration (preserves developer's private shortcuts)
+config.json
+
+# Python cache (from skill scripts)
+__pycache__/
+*.py[cod]
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
