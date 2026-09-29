@@ -532,15 +532,31 @@ app.whenReady().then(async () => {
   const testToggledText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
   check('点击测试运行联动触发状态翻转为「关」', testToggledText === '关', testToggledText);
 
-  // 独立双态动作测试
-  check('包含开启状态 2 独立触发动作复选框',
-    await js('!!document.getElementById("i-toggle-action-chk")'));
-  await js('document.getElementById("i-toggle-action-chk").click()');
+  // 独立双态动作测试（二段胶囊选择器）
+  check('包含动作联动二段胶囊选择器 (单动作交替 vs 双态独立动作)',
+    await js('!!document.getElementById("i-toggle-act-single") && !!document.getElementById("i-toggle-act-dual")'));
+  check('默认处于单动作交替激活态且动作 2 配置框隐藏',
+    await js('document.getElementById("i-toggle-act-single").classList.contains("active") && document.getElementById("i-toggle-action2-box").style.display === "none"'));
+
+  // 点击切换为双态独立动作
+  await js('document.getElementById("i-toggle-act-dual").click()');
   await sleep2(150);
-  check('勾选后展开状态 2 动作配置卡片',
+  check('切换后双态独立动作胶囊处于激活态',
+    await js('document.getElementById("i-toggle-act-dual").classList.contains("active")'));
+  check('展开状态 2 动作配置卡片',
     await js('document.getElementById("i-toggle-action2-box").style.display !== "none"'));
   check('状态 2 动作支持类型选择与快捷键构建器',
     await js('!!document.getElementById("i-toggle-action2-type") && !!document.getElementById("i-toggle-action2-hk")'));
+
+  // 再次点击切回单动作交替
+  await js('document.getElementById("i-toggle-act-single").click()');
+  await sleep2(150);
+  check('再次点击单动作交替胶囊成功收起动作 2 配置卡片',
+    await js('document.getElementById("i-toggle-action2-box").style.display === "none"'));
+
+  // 验证 Preload 白名单通道
+  const preloadRaw = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
+  check('Preload 严格白名单包含 key:toggleState 物理翻转广播通道', preloadRaw.includes("'key:toggleState'"));
 
 
   put('--- UI smoke test ---');

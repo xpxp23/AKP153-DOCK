@@ -48,7 +48,7 @@ contextBridge.exposeInMainWorld('api', {
 
   on: (channel, cb) => {
     const allowed = ['host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
-      'key:unconfigured', 'toast', 'page:changed', 'config:external', 'window:max-changed', 'macro:loopState', 'key:result'];
+      'key:unconfigured', 'toast', 'page:changed', 'config:external', 'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState'];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);
     ipcRenderer.on(channel, handler);

@@ -2397,11 +2397,12 @@ function renderInspector() {
                 🔄 试切状态预览（当前：${(curBadge && curBadge.text) || (curBadgeState === 0 ? ((spec.badgeState1 && spec.badgeState1.text) || 'ON') : ((spec.badgeState2 && spec.badgeState2.text) || 'OFF'))}）
               </button>
             </div>
-            <div class="badge-toggle-action-row">
-              <label class="badge-toggle-action-label">
-                <input type="checkbox" id="i-toggle-action-chk" ${spec.toggleAction ? 'checked' : ''} />
-                <span>开启状态 2 独立触发动作（默认同动作只切角标）</span>
-              </label>
+            <div class="toggle-action-capsule-row">
+              <span class="toggle-action-label">动作联动</span>
+              <div class="color-capsule-group" id="i-toggle-act-group">
+                <button type="button" id="i-toggle-act-single" class="color-capsule-pill ${!spec.toggleAction ? 'active' : ''}">🔄 单动作交替</button>
+                <button type="button" id="i-toggle-act-dual" class="color-capsule-pill ${spec.toggleAction ? 'active' : ''}">⚡ 双态独立动作</button>
+              </div>
             </div>
             <div id="i-toggle-action2-box" class="badge-action2-box" style="${!spec.toggleAction ? 'display: none;' : ''}">
               <div class="row">
@@ -2725,12 +2726,18 @@ function renderInspector() {
     };
   }
 
-  // 双态独立动作开关与配置
-  const chkToggleAct = $('i-toggle-action-chk');
-  if (chkToggleAct) {
-    chkToggleAct.onchange = async () => {
-      spec.toggleAction = chkToggleAct.checked;
-      if (spec.toggleAction && !spec.action2) {
+  // 双态独立动作胶囊切换与配置
+  const btnActSingle = $('i-toggle-act-single');
+  const btnActDual = $('i-toggle-act-dual');
+  if (btnActSingle && btnActDual) {
+    btnActSingle.onclick = async () => {
+      spec.toggleAction = false;
+      await commit(false);
+      renderInspector();
+    };
+    btnActDual.onclick = async () => {
+      spec.toggleAction = true;
+      if (!spec.action2) {
         spec.action2 = { type: 'hotkey', target: '', hotkey: '' };
       }
       await commit(false);
@@ -4859,14 +4866,15 @@ function bindDevice() {
   });
   api.on('key:toggleState', async ({ pageId, row, col, activeState }) => {
     if (!cfg || !cfg.pages) return;
-    const p = cfg.pages.find((x) => x.id === pageId);
+    const p = (pageId && cfg.pages.find((x) => x.id === pageId)) || curPage();
     if (p && p.buttons) {
       const s = p.buttons[`${row},${col}`];
       if (s) {
         s._activeState = activeState;
       }
     }
-    if (curPage() && curPage().id === pageId) {
+    const current = curPage();
+    if (!pageId || (current && current.id === pageId) || (p && current && p.id === current.id)) {
       refreshGrid();
       await pushKey(row, col);
       if (selected && selected.row === row && selected.col === col) {

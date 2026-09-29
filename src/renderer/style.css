@@ -1135,21 +1135,20 @@ body[data-theme="dark"] .badge-toggle-card-head {
   color: #fff !important;
 }
 
-.badge-toggle-action-row {
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--line);
-}
-.badge-toggle-action-label {
+.toggle-action-capsule-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--ink);
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
 }
-body[data-theme="dark"] .badge-toggle-action-label {
-  color: #c9d1d9;
+.toggle-action-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  flex: none;
 }
 .badge-action2-box {
   margin-top: 6px;
