@@ -465,7 +465,7 @@ app.whenReady().then(async () => {
   await sleep2(100);
   check('关闭图标库弹窗成功', await js('document.getElementById("iconPickerModal").hidden'));
 
-  // 4. 休眠方式（4 种模式）与休眠控制按钮测试
+  // 4. 设置中心与休眠方式（4 种模式）及设备维护工具箱测试
   await js('document.getElementById("settingsBtn").click()');
   await sleep2(150);
   check('设备设置弹层包含休眠方式下拉框', await js('!!document.getElementById("sleepMode")'));
@@ -473,10 +473,28 @@ app.whenReady().then(async () => {
   check('休眠方式完整支持 4 种硬件休眠模式 (zeros-last, nobright, vendor, light)',
     ['zeros-last', 'nobright', 'vendor', 'light'].every(m => sleepModes.includes(m)),
     sleepModes.join(', '));
-  check('顶栏具备休眠屏幕按钮', await js('!!document.getElementById("sleep")'));
-  check('顶栏具备唤醒屏幕按钮', await js('!!document.getElementById("wake")'));
-  await js('document.getElementById("settingsBtn").click()');
+  check('设置维护工具箱具备休眠屏幕按钮', await js('!!document.getElementById("sleep")'));
+  check('设置维护工具箱具备唤醒屏幕按钮', await js('!!document.getElementById("wake")'));
+  check('顶栏已移除冗余维护大按钮保持极简',
+    await js('document.querySelectorAll("#bar .actions button").length === 1 && document.getElementById("bar").querySelector("#wake") === null'));
+
+  check('设置中心具备 5 大分类导航 Tab',
+    await js('document.querySelectorAll(".settings-nav-item").length === 5'));
+  await js('document.querySelector(".settings-nav-item[data-tab=\\"behavior\\"]").click()');
   await sleep2(100);
+  check('能切换到交互偏好设置 Tab',
+    await js('document.getElementById("pane-behavior").hidden === false && document.getElementById("settingsTabTitle").textContent.includes("交互偏好")'));
+  check('包含拖拽策略下拉框与防抖滑块',
+    await js('!!document.getElementById("prefAppDropMode") && !!document.getElementById("prefDebounce")'));
+
+  await js('document.querySelector(".settings-nav-item[data-tab=\\"data\\"]").click()');
+  await sleep2(100);
+  check('能切换到备份与数据管理 Tab',
+    await js('document.getElementById("pane-data").hidden === false && !!document.getElementById("btnExportConfig")'));
+
+  await js('document.getElementById("settingsCloseBtn").click()');
+  await sleep2(100);
+  check('点击设置弹窗关闭按钮成功关闭', await js('document.getElementById("settingsPanel").hidden === true'));
 
   // 5. 按键动态双态角标（ON/OFF Toggle 徽标）全流程测试
   await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
@@ -484,9 +502,15 @@ app.whenReady().then(async () => {
   await js('document.getElementById("tabStyle").click()');
   await sleep2(100);
 
-  check('外观面板包含角标模式切换胶囊组',
-    await js('!!document.getElementById("i-badgemode-static") && !!document.getElementById("i-badgemode-toggle")'));
-  check('默认处于静态角标模式',
+  check('外观面板包含角标模式切换三段胶囊组 (无角标 / 静态 / 双态)',
+    await js('!!document.getElementById("i-badgemode-none") && !!document.getElementById("i-badgemode-static") && !!document.getElementById("i-badgemode-toggle")'));
+  check('未设角标时默认处于无角标模式且收起配置区',
+    await js('document.getElementById("i-badgemode-none").classList.contains("active") && document.getElementById("i-badgesec-static").style.display === "none" && document.getElementById("i-badgesec-toggle").style.display === "none"'));
+
+  // 切换为静态角标模式
+  await js('document.getElementById("i-badgemode-static").click()');
+  await sleep2(150);
+  check('点击静态角标胶囊成功展开静态角标区',
     await js('document.getElementById("i-badgesec-static").style.display !== "none" && document.getElementById("i-badgesec-toggle").style.display === "none"'));
 
   // 切换为动态双态模式
@@ -495,7 +519,7 @@ app.whenReady().then(async () => {
   check('点击切换为动态双态角标模式',
     await js('document.getElementById("i-badgesec-toggle").style.display !== "none" && document.getElementById("i-badgesec-static").style.display === "none"'));
   check('双态面板包含预设胶囊条与状态 1/状态 2 编辑卡片',
-    await js('document.querySelectorAll("#i-toggle-presets .badge-toggle-preset-pill").length >= 5 && !!document.getElementById("i-toggle-s1-text") && !!document.getElementById("i-toggle-s2-text")'));
+    await js('document.querySelectorAll("#i-toggle-presets .badge-toggle-preset-pill").length >= 6 && !!document.getElementById("i-toggle-s1-text") && !!document.getElementById("i-toggle-s2-text")'));
   check('双态面板包含试切按钮',
     await js('!!document.getElementById("i-toggle-try-btn")'));
 
@@ -531,6 +555,18 @@ app.whenReady().then(async () => {
   await sleep2(150);
   const testToggledText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
   check('点击测试运行联动触发状态翻转为「关」', testToggledText === '关', testToggledText);
+
+  // 测试清空角标 / 无角标三段胶囊
+  await js('document.getElementById("i-badgemode-none").click()');
+  await sleep2(150);
+  check('点击无角标胶囊成功清空并收起双态与静态区域',
+    await js('document.getElementById("i-badgesec-toggle").style.display === "none" && document.getElementById("i-badgesec-static").style.display === "none" && document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay") === null'));
+
+  // 重新点回静态角标
+  await js('document.getElementById("i-badgemode-static").click()');
+  await sleep2(150);
+  check('重新点击静态角标胶囊成功展开静态区域',
+    await js('document.getElementById("i-badgesec-static").style.display !== "none" && document.getElementById("i-badgesec-toggle").style.display === "none"'));
 
   // 切换回动作与快捷选项卡，测试全新解耦的动作页双态布局
   await js('document.getElementById("tabAction").click()');

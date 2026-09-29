@@ -157,6 +157,20 @@ const SHOTS = [
       'document.querySelector(".insp-body").scrollTop = 110',
     ],
   },
+  {
+    name: 'ui-18-badge-3modes', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-badgemode-static").click()',
+    ],
+  },
+  {
+    name: 'ui-19-settings-modal', w: 1160, h: 800,
+    js: [
+      'document.getElementById("settingsBtn").click()',
+    ],
+  },
 ];
 
 

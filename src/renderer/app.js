@@ -378,6 +378,7 @@ function wrapAndFitText(ctx, text, maxW, maxLines, baseFontSize, fontFamily) {
  *   badge            overlay badge text (✓, ✕, 1, A, etc.)
  */
 const BADGE_TOGGLE_PRESETS = [
+  { name: '🚫 清空 / 无角标', s1: { text: '', bg: '#546e7a', color: '#ffffff' }, s2: { text: '', bg: '#107c41', color: '#ffffff' } },
   { name: '🟢 运行中 / 无', s1: { text: '', bg: '#546e7a', color: '#ffffff' }, s2: { text: '运行中', bg: '#107c41', color: '#ffffff' } },
   { name: '🟢 运行中 / ⚪ 未运行', s1: { text: '未运行', bg: '#546e7a', color: '#ffffff' }, s2: { text: '运行中', bg: '#107c41', color: '#ffffff' } },
   { name: '🟢 ON / 🔴 OFF', s1: { text: 'ON', bg: '#107c41', color: '#ffffff' }, s2: { text: 'OFF', bg: '#e53935', color: '#ffffff' } },
@@ -1013,6 +1014,7 @@ function el(tag, cls, text) {
 
 function applyAppDualStateDefaults(spec, cls, targetPath) {
   if (!cls || cls.type !== 'app') return;
+  if (cfg && cfg.appDropMode === 'single') return;
   const rawTarget = targetPath || (spec && spec.target) || '';
   const procName = cls.processName || (rawTarget ? rawTarget.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '');
   if (procName) {
@@ -2465,12 +2467,13 @@ function renderInspector() {
         <div class="row" style="margin-top: 10px;">
           <label>角标 / 状态微标（右上角微标，支持静态或双态切换）</label>
           <div class="color-capsule-group" style="margin-bottom: 8px;">
-            <button type="button" id="i-badgemode-static" class="color-capsule-pill ${!spec.badgeToggle ? 'active' : ''}">📌 静态角标</button>
-            <button type="button" id="i-badgemode-toggle" class="color-capsule-pill ${spec.badgeToggle ? 'active' : ''}">⚡ 动态双态 (Toggle)</button>
+            <button type="button" id="i-badgemode-none" class="color-capsule-pill ${(!spec.badgeToggle && !spec.badge) ? 'active' : ''}">🚫 无角标</button>
+            <button type="button" id="i-badgemode-static" class="color-capsule-pill ${(!spec.badgeToggle && spec.badge) ? 'active' : ''}">📌 静态角标</button>
+            <button type="button" id="i-badgemode-toggle" class="color-capsule-pill ${spec.badgeToggle ? 'active' : ''}">⚡ 动态双态</button>
           </div>
 
           <!-- 静态角标区 -->
-          <div id="i-badgesec-static" class="badge-ctrl-row" style="${spec.badgeToggle ? 'display: none;' : ''}">
+          <div id="i-badgesec-static" class="badge-ctrl-row" style="${spec.badgeToggle || !spec.badge ? 'display: none;' : ''}">
             <div class="badge-presets" id="i-badgepresets">
               <button class="badge-pill ${!spec.badge ? 'active' : ''}" data-val="">无</button>
               <button class="badge-pill ${spec.badge === '✓' ? 'active' : ''}" data-val="✓">✓</button>
@@ -2746,19 +2749,41 @@ function renderInspector() {
     });
   }
 
-  // 动态双态角标模式切换
+  // 动态双态角标模式切换（三段胶囊：无角标 / 静态角标 / 动态双态）
+  const btnBadgeModeNone = $('i-badgemode-none');
   const btnBadgeModeStatic = $('i-badgemode-static');
   const btnBadgeModeToggle = $('i-badgemode-toggle');
-  if (btnBadgeModeStatic && btnBadgeModeToggle) {
-    btnBadgeModeStatic.onclick = async () => {
+
+  if (btnBadgeModeNone) {
+    btnBadgeModeNone.onclick = async () => {
+      spec.badge = '';
       spec.badgeToggle = false;
+      if (spec.badgeState1) spec.badgeState1.text = '';
+      if (spec.badgeState2) spec.badgeState2.text = '';
+      delete spec._activeState;
       await commit(true);
       renderInspector();
     };
+  }
+
+  if (btnBadgeModeStatic) {
+    btnBadgeModeStatic.onclick = async () => {
+      spec.badgeToggle = false;
+      if (!spec.badge) spec.badge = '●';
+      await commit(true);
+      renderInspector();
+    };
+  }
+
+  if (btnBadgeModeToggle) {
     btnBadgeModeToggle.onclick = async () => {
       spec.badgeToggle = true;
       if (!spec.badgeState1) spec.badgeState1 = { text: 'ON', bg: '#107c41', color: '#ffffff' };
       if (!spec.badgeState2) spec.badgeState2 = { text: 'OFF', bg: '#e53935', color: '#ffffff' };
+      if (!spec.badgeState1.text && !spec.badgeState2.text) {
+        spec.badgeState1.text = 'ON';
+        spec.badgeState2.text = 'OFF';
+      }
       if (spec._activeState === undefined) spec._activeState = 0;
       await commit(true);
       renderInspector();
@@ -4834,20 +4859,175 @@ function initKeyboardShortcuts() {
 function bindShell() {
   const panel = $('settingsPanel');
   const gear = $('settingsBtn');
+  const closeBtn = $('settingsCloseBtn');
+
+  const openSettings = (open) => {
+    panel.hidden = !open;
+    gear.classList.toggle('on', open);
+  };
+
   gear.onclick = (e) => {
     e.stopPropagation();
-    panel.hidden = !panel.hidden;
-    gear.classList.toggle('on', !panel.hidden);
+    openSettings(panel.hidden);
   };
-  document.addEventListener('click', (e) => {
-    if (panel.hidden) return;
-    if (panel.contains(e.target) || gear.contains(e.target)) return;
-    panel.hidden = true;
-    gear.classList.remove('on');
+
+  if (closeBtn) {
+    closeBtn.onclick = () => openSettings(false);
+  }
+
+  panel.addEventListener('click', (e) => {
+    if (e.target === panel) openSettings(false);
   });
+
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { panel.hidden = true; gear.classList.remove('on'); }
+    if (e.key === 'Escape' && !panel.hidden) {
+      openSettings(false);
+    }
   });
+
+  // Settings Nav Tabs
+  const navItems = document.querySelectorAll('.settings-nav-item');
+  const tabTitle = $('settingsTabTitle');
+  const titleMap = {
+    hardware: '📟 硬件与屏幕设置',
+    behavior: '⚡ 交互偏好设置',
+    appearance: '🎨 外观与主题设置',
+    data: '💾 备份与数据管理',
+    system: '🛠️ 系统与关于'
+  };
+
+  navItems.forEach((btn) => {
+    btn.onclick = () => {
+      const tab = btn.dataset.tab;
+      navItems.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      document.querySelectorAll('.settings-tab-pane').forEach((pane) => {
+        pane.hidden = (pane.id !== `pane-${tab}`);
+      });
+      if (tabTitle && titleMap[tab]) {
+        tabTitle.textContent = titleMap[tab];
+      }
+    };
+  });
+
+  // 交互偏好
+  const dropModeSelect = $('prefAppDropMode');
+  if (dropModeSelect) {
+    dropModeSelect.value = cfg.appDropMode || 'dual';
+    dropModeSelect.addEventListener('change', async (e) => {
+      cfg.appDropMode = e.target.value;
+      if (!DEMO) await saveConfig();
+      toast(`应用拖拽策略已切换为：${e.target.value === 'dual' ? '启动/退出双态' : '单一启动'}`);
+    });
+  }
+
+  const debounceInput = $('prefDebounce');
+  const debounceVal = $('prefDebounceVal');
+  if (debounceInput) {
+    debounceInput.value = cfg.keyDebounceMs || 100;
+    if (debounceVal) debounceVal.textContent = cfg.keyDebounceMs || 100;
+    debounceInput.addEventListener('input', async (e) => {
+      const v = +e.target.value;
+      if (debounceVal) debounceVal.textContent = v;
+      cfg.keyDebounceMs = v;
+      if (!DEMO) await saveConfig();
+    });
+  }
+
+  const closeToTrayBox = $('prefCloseToTray');
+  if (closeToTrayBox) {
+    closeToTrayBox.checked = cfg.closeToTray !== false;
+    closeToTrayBox.addEventListener('change', async (e) => {
+      cfg.closeToTray = e.target.checked;
+      if (!DEMO) await saveConfig();
+      toast(e.target.checked ? '已开启关闭时最小化到托盘' : '已关闭托盘，点击✕将直接退出应用');
+    });
+  }
+
+  // 备份与数据管理
+  const btnExport = $('btnExportConfig');
+  if (btnExport) {
+    btnExport.onclick = async () => {
+      if (DEMO || !window.api || !api.configExport) {
+        toast('当前为演示模式，不可导出配置');
+        return;
+      }
+      const res = await api.configExport();
+      if (res && res.ok) toast(`配置已成功备份到：${res.path}`);
+      else if (res && res.error) toast(`导出失败：${res.error}`);
+    };
+  }
+
+  const btnImport = $('btnImportConfig');
+  if (btnImport) {
+    btnImport.onclick = async () => {
+      if (DEMO || !window.api || !api.configImport) {
+        toast('当前为演示模式，不可导入配置');
+        return;
+      }
+      const res = await api.configImport();
+      if (res && res.ok) {
+        cfg = await api.configLoad();
+        selected = null;
+        applyTheme();
+        renderPageTabs();
+        buildGrid();
+        renderInspector();
+        renderLibrary();
+        renderLibPanel();
+        await repaintAll();
+        toast('配置备份恢复成功！');
+      } else if (res && res.error) {
+        toast(`导入失败：${res.error}`);
+      }
+    };
+  }
+
+  const btnOpenFolder = $('btnOpenConfigFolder');
+  if (btnOpenFolder) {
+    btnOpenFolder.onclick = async () => {
+      if (DEMO || !window.api || !api.configOpenFolder) {
+        toast('演示模式');
+        return;
+      }
+      await api.configOpenFolder();
+    };
+  }
+
+  const btnReset = $('btnResetConfig');
+  if (btnReset) {
+    btnReset.onclick = async () => {
+      if (DEMO || !window.api || !api.configReset) {
+        toast('演示模式');
+        return;
+      }
+      if (!confirm('确定要将控制台全部重置为出厂设置吗？当前所有自定义按键和页面将被清空！')) return;
+      const res = await api.configReset();
+      if (res && res.ok) {
+        cfg = await api.configLoad();
+        selected = null;
+        applyTheme();
+        renderPageTabs();
+        buildGrid();
+        renderInspector();
+        await repaintAll();
+        toast('已恢复出厂设置！');
+      }
+    };
+  }
+
+  const linkGithub = $('linkGithub');
+  if (linkGithub) {
+    linkGithub.onclick = (e) => {
+      e.preventDefault();
+      if (!DEMO && window.api && api.openExternal) {
+        api.openExternal('https://github.com/xpxp23/AKP153-DOCK');
+      } else {
+        window.open('https://github.com/xpxp23/AKP153-DOCK', '_blank');
+      }
+    };
+  }
 
   // 机身颜色（默认白色）。故意放在 bindShell 而不是 bindDevice，
   // 这样预览模式（无 preload）里也能切换、能截图。
@@ -5262,6 +5442,8 @@ function setStatus(s) {
     el.className = 'pill pill-warn';
     el.textContent = '连接中…';
   }
+  const devEl = $('settingsDevStatus');
+  if (devEl) devEl.textContent = el.textContent;
 }
 
 boot().catch((e) => toast('初始化失败：' + (e && e.message)));

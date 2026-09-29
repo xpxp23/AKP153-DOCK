@@ -40,6 +40,10 @@ const DEFAULTS = {
   // Remembered window geometry - the layout needs >=1000px or the inspector
   // gets squeezed into an unusable sliver.
   window: null,
+  // 交互偏好与系统行为
+  appDropMode: 'dual',       // 'dual': 自动启动/退出双态闭环 | 'single': 普通单动作
+  keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
+  closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
   // Page tree. Each page: {id, name, parent, buttons, strips}
   //   parent = null  -> top level page
   //   parent = <id>  -> sub page ("folder"); the device grows a back key

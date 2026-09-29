@@ -269,17 +269,19 @@ async function onKeyDown(row, col) {
   lastActivity = now;
 
   // Pressing a key while asleep should only light the panel back up, never execute actions.
-  // We also enforce a 100ms cooldown window to prevent rapid chatter/chatter double-triggering.
-  if (deviceAsleep || (now - lastWakeTime < 100)) {
+  // We also enforce a cooldown window to prevent rapid chatter/chatter double-triggering.
+  const cfgNow = config.load();
+  const cooldown = (cfgNow.keyDebounceMs !== undefined) ? cfgNow.keyDebounceMs : 100;
+  if (deviceAsleep || (now - lastWakeTime < cooldown)) {
     if (deviceAsleep) {
       deviceAsleep = false;
       lastWakeTime = now;
-      await safeRpc('wake', { brightness: config.load().brightness, force: true });
+      await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
       repaintSoon();
       broadcast('key:flash', { row, col });
       log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
     } else {
-      log(`key r${row}c${col} suppressed (within 100ms wake cooldown)`);
+      log(`key r${row}c${col} suppressed (within ${cooldown}ms wake cooldown)`);
     }
     return;
   }
@@ -858,8 +860,94 @@ ipcMain.handle('window:maximize', () => {
     return true;
   }
 });
-ipcMain.handle('window:close', () => { if (win) win.hide(); });
+ipcMain.handle('window:close', () => {
+  const cfg = config.load();
+  if (cfg.closeToTray === false) {
+    app.exit(0);
+  } else {
+    if (win) win.hide();
+  }
+});
 ipcMain.handle('window:isMaximized', () => (win ? win.isMaximized() : false));
+
+ipcMain.handle('app:openExternal', (e, url) => {
+  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    shell.openExternal(url);
+  }
+});
+
+// ------------------------------------------------------------ config backup & management
+
+ipcMain.handle('config:export', async () => {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const suggested = `akp153-backup-${ts}.json`;
+  const res = await dialog.showSaveDialog(win, {
+    title: '导出整机完整配置备份',
+    defaultPath: path.join(app.getPath('documents'), suggested),
+    filters: [{ name: 'JSON 备份文件', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+  try {
+    const raw = fs.readFileSync(config.FILE, 'utf8');
+    fs.writeFileSync(res.filePath, raw, 'utf8');
+    log('config backup exported ->', res.filePath);
+    return { ok: true, path: res.filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('config:import', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: '导入并恢复配置备份',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON 备份文件', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+  try {
+    const text = fs.readFileSync(res.filePaths[0], 'utf8');
+    const parsed = JSON.parse(text);
+    if (!parsed || (!parsed.pages && !parsed.version)) {
+      return { ok: false, error: '该文件不包含有效的 AKP153 控制台配置！' };
+    }
+    config.save(parsed);
+    log('config backup imported from', res.filePaths[0]);
+    broadcast('config:external', parsed);
+    repaintSoon();
+    return { ok: true, path: res.filePaths[0], data: parsed };
+  } catch (err) {
+    return { ok: false, error: '无法解析备份文件：' + err.message };
+  }
+});
+
+ipcMain.handle('config:openFolder', async () => {
+  try {
+    shell.showItemInFolder(config.FILE);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('config:reset', async () => {
+  try {
+    const def = JSON.parse(JSON.stringify(config.DEFAULTS));
+    def.pages = [{
+      id: 'p1',
+      name: '常用生产力',
+      parent: null,
+      buttons: {},
+      strips: JSON.parse(JSON.stringify(config.DEFAULT_STRIPS)),
+    }];
+    def.currentPage = 'p1';
+    config.save(def);
+    broadcast('config:external', def);
+    repaintSoon();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 // ------------------------------------------------------------ library files
 

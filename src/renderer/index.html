@@ -14,10 +14,7 @@
     <span id="status" class="pill pill-warn">连接中…</span>
   </div>
   <div class="actions">
-    <button id="wake" class="ghost">唤醒屏幕</button>
-    <button id="sleep" class="ghost">休眠屏幕</button>
-    <button id="reconnect" class="ghost">重连设备</button>
-    <button id="settingsBtn" class="ghost gear" title="设备设置">⚙</button>
+    <button id="settingsBtn" class="ghost gear-btn" title="设备与控制台设置">⚙️ 设置</button>
   </div>
   <div id="winControls" class="win-controls">
     <button id="winMin" class="win-btn" title="最小化">─</button>
@@ -26,56 +23,213 @@
   </div>
 </header>
 
-<!-- 设备设置：低频操作收进弹层，顶栏只留状态和日常动作 -->
-<div id="settingsPanel" class="popover" hidden>
-  <h3>设备设置</h3>
-  <label class="fld">亮度
-    <span class="inline"><input type="range" id="brightness" min="0" max="100" step="1" /> <b id="brightVal">80</b></span>
-  </label>
-  <label class="fld">自动休眠
-    <select id="idle">
-      <option value="0">从不</option>
-      <option value="1">1 分钟</option>
-      <option value="3">3 分钟</option>
-      <option value="5">5 分钟</option>
-      <option value="10">10 分钟</option>
-      <option value="30">30 分钟</option>
-    </select>
-  </label>
-  <label class="fld">休眠方式
-    <select id="sleepMode">
-      <option value="zeros-last">亮度归零后断电（全黑 ✓）</option>
-      <option value="nobright">不发亮度指令（全黑 ✓）</option>
-      <option value="vendor">标准（厂商顺序，微亮）</option>
-      <option value="light">只降亮度（微亮）</option>
-    </select>
-  </label>
-  <label class="fld">屏幕方向
-    <select id="rotate">
-      <option value="ccw">逆时针 90°</option>
-      <option value="cw">顺时针 90°</option>
-      <option value="none">不旋转</option>
-    </select>
-  </label>
-  <label class="fld">界面与机身外观
-    <select id="theme">
-      <option value="light">极光白（默认）</option>
-      <option value="dark">钛空黑（深色）</option>
-    </select>
-  </label>
-  <div class="switch-row">
-    <span class="switch-label">开机自动启动</span>
-    <label class="switch">
-      <input type="checkbox" id="login" />
-      <span class="switch-slider"></span>
-    </label>
-  </div>
-  <div id="conflictAlert" class="conflict-alert" hidden>
-    <div class="conflict-msg">⚠️ 检测到原厂 Stream Dock AJAZZ 正在开机自启，可能抢占硬件端口！</div>
-    <button id="btnDisableConflict" type="button" class="ghost tiny danger" style="margin-top:4px;">一键禁用原厂开机自启</button>
-  </div>
-  <div class="btnrow" style="margin-top:10px;">
-    <button id="repaint" class="ghost" style="width:100%;">全部重画设备屏幕</button>
+<!-- 全功能控制台设置中心模态弹窗 -->
+<div id="settingsPanel" class="modal-backdrop" hidden>
+  <div class="settings-modal-box">
+    <div class="settings-sidebar">
+      <div class="settings-sidebar-head">
+        <span class="settings-logo-icon">⚙️</span>
+        <h3>控制台设置</h3>
+      </div>
+      <nav class="settings-nav">
+        <button type="button" class="settings-nav-item active" data-tab="hardware">
+          <span class="nav-icon">📟</span>
+          <span class="nav-text">硬件与屏幕</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-tab="behavior">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-text">交互偏好</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-tab="appearance">
+          <span class="nav-icon">🎨</span>
+          <span class="nav-text">外观与主题</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-tab="data">
+          <span class="nav-icon">💾</span>
+          <span class="nav-text">备份与数据</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-tab="system">
+          <span class="nav-icon">🛠️</span>
+          <span class="nav-text">系统与关于</span>
+        </button>
+      </nav>
+      <div class="settings-sidebar-foot">
+        <span class="device-status-indicator" id="settingsDevStatus">AKP153 就绪</span>
+      </div>
+    </div>
+
+    <div class="settings-content-wrap">
+      <div class="settings-content-head">
+        <h4 id="settingsTabTitle">📟 硬件与屏幕设置</h4>
+        <button id="settingsCloseBtn" type="button" class="ghost tiny close-btn" title="关闭设置 (Esc)">✕ 关闭</button>
+      </div>
+
+      <div class="settings-body-scroll">
+        <!-- 1. 硬件与屏幕 -->
+        <div class="settings-tab-pane active" id="pane-hardware">
+          <div class="settings-card">
+            <h5 class="card-title">液晶背光与显示</h5>
+            <label class="fld">屏幕亮度
+              <span class="inline"><input type="range" id="brightness" min="0" max="100" step="1" /> <b id="brightVal">80</b>%</span>
+            </label>
+            <label class="fld">屏幕物理方向
+              <select id="rotate">
+                <option value="ccw">逆时针 90° (默认)</option>
+                <option value="cw">顺时针 90°</option>
+                <option value="none">不旋转</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">休眠与唤醒策略</h5>
+            <label class="fld">无操作自动休眠
+              <select id="idle">
+                <option value="0">从不自动休眠</option>
+                <option value="1">1 分钟</option>
+                <option value="3">3 分钟</option>
+                <option value="5">5 分钟 (推荐)</option>
+                <option value="10">10 分钟</option>
+                <option value="30">30 分钟</option>
+              </select>
+            </label>
+            <label class="fld">硬件休眠指令顺序
+              <select id="sleepMode">
+                <option value="zeros-last">亮度归零后断电（全黑纯黑，推荐 ✓）</option>
+                <option value="nobright">不发亮度指令直接休眠（全黑 ✓）</option>
+                <option value="vendor">标准（厂商顺序，微光）</option>
+                <option value="light">只降亮度（微光）</option>
+              </select>
+            </label>
+            <div class="card-hint muted">💡 休眠时按任意键即可唤醒并点亮屏幕；自动具备 100ms 防误触唤醒保护。</div>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">设备维护与调试工具箱</h5>
+            <div class="maint-btn-grid">
+              <button id="wake" type="button" class="ghost maint-btn"><span class="maint-icon">☀️</span> 唤醒屏幕</button>
+              <button id="sleep" type="button" class="ghost maint-btn"><span class="maint-icon">🌙</span> 休眠屏幕</button>
+              <button id="reconnect" type="button" class="ghost maint-btn"><span class="maint-icon">🔄</span> 重连设备</button>
+              <button id="repaint" type="button" class="ghost maint-btn"><span class="maint-icon">🎨</span> 全部重画屏幕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. 交互偏好 -->
+        <div class="settings-tab-pane" id="pane-behavior" hidden>
+          <div class="settings-card">
+            <h5 class="card-title">应用拖拽与默认动作</h5>
+            <div class="pref-row">
+              <div class="pref-info">
+                <span class="pref-name">拖入应用程序默认动作</span>
+                <span class="pref-desc">向格子拖入 .exe / .lnk 时是否自动创建启动与退出双态</span>
+              </div>
+              <select id="prefAppDropMode" class="pref-select">
+                <option value="dual">⚡ 启动/退出双态闭环 (默认)</option>
+                <option value="single">🟢 普通单一启动动作</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">物理按键输入保护</h5>
+            <div class="pref-row">
+              <div class="pref-info">
+                <span class="pref-name">按键连击防抖时间</span>
+                <span class="pref-desc">防止微动物理抖动导致的二次触发或异常重发</span>
+              </div>
+              <span class="inline"><input type="range" id="prefDebounce" min="50" max="300" step="10" value="100" /> <b id="prefDebounceVal">100</b>ms</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 外观与主题 -->
+        <div class="settings-tab-pane" id="pane-appearance" hidden>
+          <div class="settings-card">
+            <h5 class="card-title">机身与界面外观风格</h5>
+            <label class="fld">色彩主题
+              <select id="theme">
+                <option value="light">极光白（默认浅色）</option>
+                <option value="dark">钛空黑（深色金属质感）</option>
+              </select>
+            </label>
+            <div class="card-hint muted">💡 支持在极光白与深空钛之间一键切换，包含机身磨砂质感与界面自适应。</div>
+          </div>
+        </div>
+
+        <!-- 4. 备份与数据 -->
+        <div class="settings-tab-pane" id="pane-data" hidden>
+          <div class="settings-card">
+            <h5 class="card-title">整机配置备份与迁移</h5>
+            <p class="card-p">导出或导入所有页面、按键宏、快捷键构建、图标库以及按键库数据。</p>
+            <div class="btnrow" style="margin-top: 10px; gap: 8px;">
+              <button id="btnExportConfig" type="button" class="ghost" style="flex:1;"><span class="maint-icon">📤</span> 导出完整配置备份 (.json)</button>
+              <button id="btnImportConfig" type="button" class="ghost" style="flex:1;"><span class="maint-icon">📥</span> 导入并恢复配置备份…</button>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">本地存储位置</h5>
+            <p class="card-p">查看并直接定位 AKP153 控制台配置文件在磁盘中的物理路径。</p>
+            <div class="btnrow" style="margin-top: 10px;">
+              <button id="btnOpenConfigFolder" type="button" class="ghost" style="flex:1;">📂 在资源管理器中打开配置目录</button>
+            </div>
+          </div>
+
+          <div class="settings-card danger-card">
+            <h5 class="card-title text-danger">恢复出厂配置</h5>
+            <p class="card-p text-danger">将所有按键、页面与硬件设置重置为出厂初始状态（此操作不可撤销）。</p>
+            <div class="btnrow" style="margin-top: 10px;">
+              <button id="btnResetConfig" type="button" class="ghost danger" style="flex:1;">⚠️ 恢复出厂默认设置</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. 系统与关于 -->
+        <div class="settings-tab-pane" id="pane-system" hidden>
+          <div class="settings-card">
+            <h5 class="card-title">系统级开机与关闭行为</h5>
+            <div class="switch-row" style="margin-bottom: 8px;">
+              <span class="switch-label">Windows 开机自动启动</span>
+              <label class="switch">
+                <input type="checkbox" id="login" />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">点击窗口关闭按钮 (✕) 时最小化到托盘</span>
+              <label class="switch">
+                <input type="checkbox" id="prefCloseToTray" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div id="conflictAlert" class="conflict-alert" hidden style="margin-bottom: 12px;">
+            <div class="conflict-msg">⚠️ 检测到原厂 Stream Dock AJAZZ 正在开机自启，可能抢占硬件端口！</div>
+            <button id="btnDisableConflict" type="button" class="ghost tiny danger" style="margin-top:6px;">一键禁用原厂开机自启</button>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">关于 AKP153 控制台</h5>
+            <div class="about-grid">
+              <div class="about-item">
+                <span class="about-k">软件版本</span>
+                <span class="about-v">v0.2.0 (独立便携免安装版)</span>
+              </div>
+              <div class="about-item">
+                <span class="about-k">硬件型号</span>
+                <span class="about-v">AJAZZ AKP153 (15 键 LCD + 3 块副屏)</span>
+              </div>
+              <div class="about-item">
+                <span class="about-k">开源仓库</span>
+                <span class="about-v"><a href="#" id="linkGithub" class="link" style="color:var(--accent); text-decoration:none; cursor:pointer;">GitHub: xpxp23/AKP153-DOCK</a></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 

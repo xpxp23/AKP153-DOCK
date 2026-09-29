@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('api', {
   configLoad: () => ipcRenderer.invoke('config:load'),
   configSave: (cfg) => ipcRenderer.invoke('config:save', cfg),
   configGet: (k) => ipcRenderer.invoke('config:get', k),
+  configExport: () => ipcRenderer.invoke('config:export'),
+  configImport: () => ipcRenderer.invoke('config:import'),
+  configOpenFolder: () => ipcRenderer.invoke('config:openFolder'),
+  configReset: () => ipcRenderer.invoke('config:reset'),
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
   deviceDraw: (a) => ipcRenderer.invoke('device:draw', a),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
