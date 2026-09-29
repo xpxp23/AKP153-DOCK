@@ -819,34 +819,11 @@ function setStartupRegistry(enable) {
   }
 }
 
-function checkOfficialConflict() {
-  try {
-    const res = spawnSync('reg.exe', ['query', REG_RUN, '/v', 'Stream Dock AJAZZ'], { encoding: 'utf8', windowsHide: true });
-    const hasConflict = res.status === 0 && /Stream Dock AJAZZ/i.test(res.stdout || '');
-    return { hasConflict };
-  } catch (_) {
-    return { hasConflict: false };
-  }
-}
-
-function disableOfficialConflict() {
-  try {
-    spawnSync('reg.exe', ['delete', REG_RUN, '/v', 'Stream Dock AJAZZ', '/f'], { windowsHide: true });
-    log('Disabled official Stream Dock AJAZZ startup');
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-}
-
 ipcMain.handle('app:setLogin', (e, v) => {
   config.set('openAtLogin', !!v);
   setStartupRegistry(!!v);
   return true;
 });
-
-ipcMain.handle('app:checkConflict', () => checkOfficialConflict());
-ipcMain.handle('app:disableConflict', () => disableOfficialConflict());
 
 ipcMain.handle('window:hide', () => { if (win) win.hide(); });
 ipcMain.handle('window:minimize', () => { if (win) win.minimize(); });

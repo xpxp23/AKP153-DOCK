@@ -48,6 +48,22 @@ function spawnQuiet(file, args, opts) {
 }
 
 /**
+ * Spawn a GUI desktop application that should be visible to the user.
+ * Uses windowsHide: false and detached: true so it properly creates its own
+ * normal desktop window and runs detached from the main Electron process.
+ */
+function spawnApp(file, args, opts) {
+  const child = spawn(file, args || [], Object.assign({
+    stdio: 'ignore',
+    windowsHide: false,
+    detached: true,
+  }, opts || {}));
+  child.on('error', () => { /* ignored */ });
+  child.unref();
+  return child;
+}
+
+/**
  * Run a PowerShell snippet and resolve with its stdout.
  *
  * Uses -EncodedCommand (base64/UTF-16LE) on purpose: passing the script as a
@@ -139,6 +155,28 @@ for ($i = 0; $i -lt 8 -and -not $proc; $i++) {
   if (-not $proc) { Start-Sleep -Milliseconds 250 }
 }
 if (-not $proc) { Write-Output 'AKP_RESULT=nowindow'; exit 0 }
+
+$hwnd = [System.IntPtr]$proc.MainWindowHandle
+if ($hwnd -ne [System.IntPtr]::Zero) {
+  $win32 = @'
+using System;
+using System.Runtime.InteropServices;
+public class WinApiHelper {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+}
+'@
+  Add-Type -TypeDefinition $win32
+  if ([WinApiHelper]::IsIconic($hwnd)) {
+    [WinApiHelper]::ShowWindowAsync($hwnd, 9)
+  }
+  [WinApiHelper]::SetForegroundWindow($hwnd)
+}
+
 $ok = (New-Object -ComObject WScript.Shell).AppActivate([int]$proc.Id)
 if ($ok) { Write-Output 'AKP_RESULT=focused' } else { Write-Output 'AKP_RESULT=nowindow' }
 `);
@@ -399,13 +437,14 @@ async function run(spec, context) {
 
         const wantsArgs = !!(spec.args && String(spec.args).trim());
 
-        if (FOCUSABLE.has(ext) && !wantsArgs) {
+        if (FOCUSABLE.has(ext)) {
           const focused = await focusExisting(target);
           if (focused) return { ok: true, action: 'focused' };
         }
 
-        if (EXT_EXEC.has(ext) && wantsArgs) {
-          spawnQuiet(target, String(spec.args).split(/\s+/).filter(Boolean), {
+        if (EXT_EXEC.has(ext)) {
+          const args = wantsArgs ? String(spec.args).split(/\s+/).filter(Boolean) : [];
+          spawnApp(target, args, {
             cwd: spec.cwd || path.dirname(target),
           });
           return { ok: true, action: 'spawn' };

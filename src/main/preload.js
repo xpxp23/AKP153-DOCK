@@ -34,8 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   dialogPick: (opts) => ipcRenderer.invoke('dialog:pick', opts),
 
   setLogin: (v) => ipcRenderer.invoke('app:setLogin', v),
-  checkConflict: () => ipcRenderer.invoke('app:checkConflict'),
-  disableConflict: () => ipcRenderer.invoke('app:disableConflict'),
 
   windowHide: () => ipcRenderer.invoke('window:hide'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),

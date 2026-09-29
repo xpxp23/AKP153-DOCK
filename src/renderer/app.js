@@ -5350,29 +5350,6 @@ function initWindowControls() {
   }
 }
 
-async function initConflictCheck() {
-  if (DEMO || !window.api || !api.checkConflict) return;
-  try {
-    const res = await api.checkConflict();
-    const alertBox = $('conflictAlert');
-    const btnDisable = $('btnDisableConflict');
-    if (alertBox) {
-      alertBox.hidden = !res || !res.hasConflict;
-    }
-    if (btnDisable) {
-      btnDisable.onclick = async () => {
-        const disRes = await api.disableConflict();
-        if (disRes && disRes.ok) {
-          toast('已禁用原厂开机自启');
-          if (alertBox) alertBox.hidden = true;
-        } else {
-          toast('禁用失败：' + (disRes && disRes.error));
-        }
-      };
-    }
-  } catch (_) {}
-}
-
 async function boot() {
   if (DEMO) {
     cfg = demoConfig();
@@ -5386,7 +5363,6 @@ async function boot() {
   bindShell();
   initInspTabs();
   initWindowControls();
-  initConflictCheck();
   initContextMenu();
   initIconPicker();
   initCropper();

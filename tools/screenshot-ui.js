@@ -171,6 +171,13 @@ const SHOTS = [
       'document.getElementById("settingsBtn").click()',
     ],
   },
+  {
+    name: 'ui-20-settings-system', w: 1160, h: 800,
+    js: [
+      'document.getElementById("settingsBtn").click()',
+      'document.querySelector(".settings-nav-item[data-tab=\\"system\\"]").click()',
+    ],
+  },
 ];
 
 

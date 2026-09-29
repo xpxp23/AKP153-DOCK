@@ -492,6 +492,17 @@ app.whenReady().then(async () => {
   check('能切换到备份与数据管理 Tab',
     await js('document.getElementById("pane-data").hidden === false && !!document.getElementById("btnExportConfig")'));
 
+  await js('document.querySelector(".settings-nav-item[data-tab=\\"system\\"]").click()');
+  await sleep2(100);
+  check('原厂驱动冲突提示及按钮已完全移除',
+    await js('document.getElementById("conflictAlert") === null && document.getElementById("btnDisableConflict") === null'));
+  check('设置面板模块具备呼吸感垂直间距',
+    await js('getComputedStyle(document.getElementById("pane-system")).display === "flex" && getComputedStyle(document.getElementById("pane-system")).gap === "16px"'));
+
+  const preloadCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
+  check('Preload 安全接口已移除 conflict 相关通道',
+    !preloadCode.includes('checkConflict') && !preloadCode.includes('disableConflict'));
+
   await js('document.getElementById("settingsCloseBtn").click()');
   await sleep2(100);
   check('点击设置弹窗关闭按钮成功关闭', await js('document.getElementById("settingsPanel").hidden === true'));
