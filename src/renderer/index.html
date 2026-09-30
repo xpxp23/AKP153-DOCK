@@ -228,21 +228,35 @@
   </div>
 </div>
 
-<div class="pagebar">
-  <span class="plabel">页面</span>
-  <div id="pageTabs" class="ptabs"></div>
-  <div class="pactions">
-    <button id="pageGradientBtn" class="ghost" title="设置当前页面的整板无缝渐变">🎨 渐变</button>
-    <button id="pageAddTop" class="ghost">＋ 顶层页</button>
-    <button id="pageAddSub" class="ghost" title="在当前页下面建一个子页（文件夹），右下角会自动出现返回键">＋ 子页</button>
-    <button id="pageRename" class="ghost">改名</button>
-    <button id="pageDup" class="ghost">复制本页</button>
-    <button id="pageSave" class="ghost" title="把这一页的 15 个键 + 3 块屏整页存进按键库">本页入库</button>
-    <button id="pageDel" class="ghost danger">删除本页</button>
-  </div>
-</div>
-
 <main>
+  <!-- 左侧独立垂直页面导航栏 -->
+  <aside id="pageSidebar" class="page-sidebar">
+    <div class="page-sidebar-head">
+      <div class="ps-title-wrap">
+        <span class="ps-icon">📄</span>
+        <span class="ps-title">页面</span>
+      </div>
+      <div class="ps-head-actions">
+        <button id="pageGradientBtn" class="ghost tiny icon-btn" title="整板无缝流光渐变">🎨</button>
+        <button id="pageAddTop" class="ghost tiny icon-btn" title="新建顶层页面">＋</button>
+        <button id="pageAddSub" class="ghost tiny icon-btn" title="在当前页下方新建子页（文件夹）">📁</button>
+        <button id="pageSidebarToggle" class="ghost tiny icon-btn" title="折叠/展开页面侧栏">⇤</button>
+      </div>
+    </div>
+    <!-- 垂直页面列表容器 -->
+    <div id="pageTabs" class="page-tabs-vertical"></div>
+
+    <!-- 页面操作快捷底部栏 -->
+    <div class="page-sidebar-foot">
+      <div class="ps-foot-actions">
+        <button id="pageRename" class="ghost tiny ps-foot-btn" title="重命名当前页">改名</button>
+        <button id="pageDup" class="ghost tiny ps-foot-btn" title="复制当前页">复制</button>
+        <button id="pageSave" class="ghost tiny ps-foot-btn" title="整页入库">入库</button>
+        <button id="pageDel" class="ghost tiny ps-foot-btn danger" title="删除当前页">删除</button>
+      </div>
+    </div>
+  </aside>
+
   <section class="stage">
     <div class="device">
       <div class="device-bar">
@@ -253,7 +267,7 @@
     </div>
   </section>
 
-  <aside>
+  <aside class="insp-panel">
     <div class="insp-head">
       <h2 id="inspectorTitle">选中的按键</h2>
       <button id="inspHelp" class="help" title="怎么用">?</button>
@@ -288,6 +302,7 @@
     <div class="libpanel-head">
       <h3>按键库</h3>
       <input id="libSearch2" class="libsearch" placeholder="搜索名称 / 目标 / 标签" />
+      <button id="libBatchToggle" class="ghost">☑️ 批量管理</button>
       <button id="libClose" class="ghost">关闭</button>
     </div>
     <div id="libTags" class="libtags"></div>
@@ -297,6 +312,16 @@
       <button id="libExportAll" class="ghost">导出全部…</button>
       <button id="libExportTag" class="ghost">只导出当前标签…</button>
       <span class="muted" id="libHint">点条目放到选中的格子，或直接拖到格子上</span>
+    </div>
+    <!-- 批量操作浮条 -->
+    <div id="libBatchBar" class="lib-batch-bar" hidden>
+      <span class="batch-count-badge" id="libBatchCount">已选 0 项</span>
+      <button id="libBatchSelectAll" class="ghost tiny">全选</button>
+      <button id="libBatchDeselect" class="ghost tiny">清空选择</button>
+      <button id="libBatchTag" class="ghost tiny">🏷️ 批量设标签…</button>
+      <button id="libBatchExport" class="ghost tiny">📤 导出所选项…</button>
+      <button id="libBatchDelete" class="ghost tiny danger">🗑️ 批量删除</button>
+      <button id="libBatchExit" class="ghost tiny" style="margin-left:auto;">✕ 退出批量</button>
     </div>
   </div>
 </div>
@@ -320,6 +345,7 @@
     <div class="ip-head">
       <h3>精选矢量图标库</h3>
       <input id="ipSearch" class="ip-search" placeholder="搜索图标名称或标签…" />
+      <button id="ipBatchToggle" class="ghost">☑️ 批量管理</button>
       <button id="ipBatchImport" class="ghost" title="选择多个本地图片、图标或程序批量存入当前分类">📁 批量导入…</button>
       <button id="ipClose" class="ghost">关闭</button>
     </div>
@@ -328,7 +354,32 @@
     <div id="ipGrid" class="ip-grid"></div>
     <div class="ip-foot">
       <span class="muted" id="ipFootHint">点击图标套用到当前按键；右键自定义图标可重命名、改分类或删除</span>
+      <!-- 单色图标快捷调色盘 -->
+      <div id="ipTintWrap" class="ip-tint-wrap" title="选择颜色为单色矢量图标着色">
+        <span class="ip-tint-label">着色:</span>
+        <div class="ip-tint-dots">
+          <span class="ip-tint-dot active" data-color="#ffffff" style="background:#ffffff;" title="极光白"></span>
+          <span class="ip-tint-dot" data-color="#1e293b" style="background:#1e293b;" title="曜石黑"></span>
+          <span class="ip-tint-dot" data-color="#10b981" style="background:#10b981;" title="翡翠绿"></span>
+          <span class="ip-tint-dot" data-color="#0284c7" style="background:#0284c7;" title="科技蓝"></span>
+          <span class="ip-tint-dot" data-color="#ef4444" style="background:#ef4444;" title="烈焰红"></span>
+          <span class="ip-tint-dot" data-color="#a855f7" style="background:#a855f7;" title="霓虹紫"></span>
+          <span class="ip-tint-dot" data-color="#f59e0b" style="background:#f59e0b;" title="琥珀橙"></span>
+          <span class="ip-tint-dot" data-color="#eab308" style="background:#eab308;" title="金黄"></span>
+        </div>
+        <input type="color" id="ipCustomTintColor" class="ip-tint-picker" value="#ffffff" title="自定义任意着色" />
+      </div>
       <button id="ipSaveCurrent" class="ghost tiny" style="margin-left:auto;">⭐ 存入当前按键图标</button>
+    </div>
+    <!-- 图标库批量操作浮条 -->
+    <div id="ipBatchBar" class="lib-batch-bar" hidden>
+      <span class="batch-count-badge" id="ipBatchCount">已选 0 个图标</span>
+      <button id="ipBatchSelectAll" class="ghost tiny">全选</button>
+      <button id="ipBatchDeselect" class="ghost tiny">清空选择</button>
+      <button id="ipBatchCategory" class="ghost tiny">🏷️ 批量改分类…</button>
+      <button id="ipBatchExport" class="ghost tiny">📤 导出所选图标包…</button>
+      <button id="ipBatchDelete" class="ghost tiny danger">🗑️ 批量删除</button>
+      <button id="ipBatchExit" class="ghost tiny" style="margin-left:auto;">✕ 退出批量</button>
     </div>
   </div>
 </div>

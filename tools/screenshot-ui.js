@@ -178,6 +178,51 @@ const SHOTS = [
       'document.querySelector(".settings-nav-item[data-tab=\\"system\\"]").click()',
     ],
   },
+  {
+    name: 'ui-21-left-page-rail', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+    ],
+  },
+  {
+    name: 'ui-22-key-batch-bar', w: 1160, h: 800,
+    js: [
+      'document.getElementById("libExpand").click()',
+      'document.getElementById("libBatchToggle").click()',
+      'document.getElementById("libBatchSelectAll").click()',
+    ],
+  },
+  {
+    name: 'ui-23-color-icons-tint', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-openiconpicker").click()',
+      `[...document.querySelectorAll('#ipTags .ip-tag')].find(function(x){return /彩色/.test(x.textContent);}).click()`,
+      'document.querySelector(\'.ip-tint-dot[data-color="#10b981"]\').click()',
+    ],
+  },
+  {
+    name: 'ui-24-badge-swap-and-favicon', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabAction").click()',
+      '(function(){ var t = document.getElementById("i-type"); t.value = "url"; t.dispatchEvent(new Event("change")); })()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-badgemode-toggle").click()',
+    ],
+  },
+  {
+    name: 'ui-25-favicon-and-sync', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabAction").click()',
+      'document.getElementById("i-toggle-act-dual").click()',
+      '(function(){ var t = document.getElementById("i-type"); t.value = "url"; t.dispatchEvent(new Event("change")); })()',
+      'document.getElementById("i-swap-sync-badges").checked = true',
+      'document.querySelector(".insp-body").scrollTop = 120',
+    ],
+  },
 ];
 
 

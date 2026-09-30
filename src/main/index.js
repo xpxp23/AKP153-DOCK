@@ -853,6 +853,125 @@ ipcMain.handle('app:openExternal', (e, url) => {
   }
 });
 
+/**
+ * 抓取指定网址的高清网站 Favicon 并转换为 96x96 PNG Base64
+ * 三级容灾探测策略：
+ * 1. 抓取站点 HTML，正则匹配 <link rel="apple-touch-icon" ...> 或 <link rel="icon" ...>
+ * 2. 抓取站点根路径 /favicon.ico
+ * 3. 备用降级调用高可用镜像 (iowen / duckduckgo / icon.horse)
+ */
+async function fetchFaviconForUrl(inputUrl) {
+  let target = String(inputUrl || '').trim();
+  if (!target) return { ok: false, error: '网址不能为空' };
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(target)) {
+    target = 'https://' + target.replace(/^\/+/, '');
+  }
+
+  let host = '';
+  let origin = '';
+  try {
+    const parsed = new URL(target);
+    host = parsed.hostname;
+    origin = parsed.origin;
+  } catch (err) {
+    return { ok: false, error: '无效网址格式' };
+  }
+
+  const { net, nativeImage } = require('electron');
+
+  const fetchBuffer = (url, timeoutMs = 4000) => {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (val) => { if (!settled) { settled = true; resolve(val); } };
+      const timer = setTimeout(() => done(null), timeoutMs);
+      try {
+        const req = net.request({ url, method: 'GET', redirect: 'follow' });
+        req.on('response', (res) => {
+          if (res.statusCode < 200 || res.statusCode >= 400) return done(null);
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            clearTimeout(timer);
+            done(Buffer.concat(chunks));
+          });
+          res.on('error', () => done(null));
+        });
+        req.on('error', () => done(null));
+        req.end();
+      } catch (_) {
+        done(null);
+      }
+    });
+  };
+
+  const bufferToDataUrl = (buf) => {
+    if (!buf || buf.length < 8) return null;
+    try {
+      const img = nativeImage.createFromBuffer(buf);
+      if (img.isEmpty()) return null;
+      const resized = img.resize({ width: 96, height: 96, quality: 'best' });
+      return resized.toDataURL();
+    } catch (_) {
+      return null;
+    }
+  };
+
+  // 1. 第一级：抓取页面 HTML 寻找 <link rel="..."> 高清图标
+  try {
+    const htmlBuf = await fetchBuffer(target, 3500);
+    if (htmlBuf) {
+      const html = htmlBuf.toString('utf8', 0, Math.min(htmlBuf.length, 65536));
+      let iconHref = '';
+      const mTouch = html.match(/<link[^>]+rel=["'][^"']*apple-touch-icon[^"']*["'][^>]+href=["']([^"']+)["']/i) ||
+                     html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*apple-touch-icon[^"']*["']/i);
+      if (mTouch && mTouch[1]) {
+        iconHref = mTouch[1];
+      } else {
+        const mIcon = html.match(/<link[^>]+rel=["'][^"']*(?:shortcut )?icon[^"']*["'][^>]+href=["']([^"']+)["']/i) ||
+                      html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:shortcut )?icon[^"']*["']/i);
+        if (mIcon && mIcon[1]) iconHref = mIcon[1];
+      }
+
+      if (iconHref) {
+        let absIconUrl = '';
+        if (/^https?:\/\//i.test(iconHref)) absIconUrl = iconHref;
+        else if (iconHref.startsWith('//')) absIconUrl = 'https:' + iconHref;
+        else if (iconHref.startsWith('/')) absIconUrl = origin + iconHref;
+        else absIconUrl = origin + '/' + iconHref;
+
+        const imgBuf = await fetchBuffer(absIconUrl, 3500);
+        const dataUrl = bufferToDataUrl(imgBuf);
+        if (dataUrl) return { ok: true, dataUrl, source: 'html' };
+      }
+    }
+  } catch (_) {}
+
+  // 2. 第二级：站点根目录 /favicon.ico
+  try {
+    const rootIco = await fetchBuffer(`${origin}/favicon.ico`, 3000);
+    const dataUrl = bufferToDataUrl(rootIco);
+    if (dataUrl) return { ok: true, dataUrl, source: 'root' };
+  } catch (_) {}
+
+  // 3. 第三级：高可用镜像解析源
+  const mirrors = [
+    `https://api.iowen.cn/favicon/${host}.png`,
+    `https://icons.duckduckgo.com/ip3/${host}.ico`,
+    `https://icon.horse/icon/${host}`,
+  ];
+  for (const mirrorUrl of mirrors) {
+    try {
+      const mirrorBuf = await fetchBuffer(mirrorUrl, 3000);
+      const dataUrl = bufferToDataUrl(mirrorBuf);
+      if (dataUrl) return { ok: true, dataUrl, source: 'mirror' };
+    } catch (_) {}
+  }
+
+  return { ok: false, error: '未能探测到该网站图标' };
+}
+
+ipcMain.handle('app:fetchFavicon', async (e, url) => fetchFaviconForUrl(url));
+
 // ------------------------------------------------------------ config backup & management
 
 ipcMain.handle('config:export', async () => {

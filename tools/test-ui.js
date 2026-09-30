@@ -661,6 +661,113 @@ app.whenReady().then(async () => {
   const preloadRaw = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
   check('Preload 严格白名单包含 key:toggleState 物理翻转广播通道', preloadRaw.includes("'key:toggleState'"));
 
+  // ------------------------------------------------------------- 6大核心演进自动化测试 --
+  // 1. 动态双态角标一键互换
+  await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
+  await sleep2(200);
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(150);
+  check('外观面板有动态角标一键互换按钮', await js('!!document.getElementById("i-swap-badges")'));
+  
+  const b1Before = await js('document.getElementById("i-toggle-s1-text").value');
+  const b2Before = await js('document.getElementById("i-toggle-s2-text").value');
+  await js('document.getElementById("i-swap-badges").click()');
+  await sleep2(200);
+  const b1After = await js('document.getElementById("i-toggle-s1-text").value');
+  const b2After = await js('document.getElementById("i-toggle-s2-text").value');
+  check('点击一键互换角标成功对调形态 1 与形态 2 的文字',
+    b1After === b2Before && b2After === b1Before,
+    `${b1Before}->${b1After}, ${b2Before}->${b2After}`);
+
+  // 切回动作面板，测试带同步对调角标的动作互换
+  await js('document.getElementById("tabAction").click()');
+  await sleep2(150);
+  await js('document.getElementById("i-toggle-act-dual").click()');
+  await sleep2(150);
+  check('动作面板包含「同时对调角标」选项框', await js('!!document.getElementById("i-swap-sync-badges")'));
+  await js('document.getElementById("i-swap-sync-badges").checked = true');
+  await js('document.getElementById("i-swap-actions").click()');
+  await sleep2(200);
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(150);
+  const b1Synced = await js('document.getElementById("i-toggle-s1-text").value');
+  check('动作联动勾选时点击互换动作同步互换了角标', b1Synced === b1Before, `${b1Synced} vs ${b1Before}`);
+
+  // 2. 网址 Favicon 获取
+  await js('document.getElementById("tabAction").click()');
+  await sleep2(150);
+  await js('document.getElementById("i-toggle-act-single").click()');
+  await sleep2(150);
+  await js('(function(){ var s = document.getElementById("i-type"); s.value = "url"; s.dispatchEvent(new Event("change")); })()');
+  await sleep2(200);
+  check('网址类型输入框旁出现「抓取网站图标」按钮', await js('!!document.getElementById("i-fetch-favicon")'));
+  check('Preload 安全接口包含 fetchFavicon 方法', preloadRaw.includes("fetchFavicon:"));
+
+  // 3. 左侧独立垂直页面导航栏
+  check('页面侧栏为独立垂直 aside 容器', await js('!!document.querySelector(".page-sidebar #pageTabs.page-tabs-vertical")'));
+  check('垂直页签包含图标、名称与键位统计', await js(`(function(){
+    var tab = document.querySelector("#pageTabs .ptab");
+    return !!tab.querySelector(".ptab-icon") && !!tab.querySelector(".ptab-name") && !!tab.querySelector(".ptab-count");
+  })()`));
+  check('页面侧栏包含折叠展开切换按钮', await js('!!document.getElementById("pageSidebarToggle")'));
+  await js('document.getElementById("pageSidebarToggle").click()');
+  await sleep2(200);
+  check('点击折叠按钮侧栏获得 collapsed 类名', await js('document.getElementById("pageSidebar").classList.contains("collapsed")'));
+  await js('document.getElementById("pageSidebarToggle").click()');
+  await sleep2(150);
+  check('再次点击展开侧栏', await js('!document.getElementById("pageSidebar").classList.contains("collapsed")'));
+
+  // 4. 按键库批量管理
+  await js('document.getElementById("libExpand").click()');
+  await sleep2(250);
+  check('按键库大面板具备「批量管理」切换按钮', await js('!!document.getElementById("libBatchToggle")'));
+  await js('document.getElementById("libBatchToggle").click()');
+  await sleep2(150);
+  check('开启批量管理后显示批量浮动操作栏', await js('!document.getElementById("libBatchBar").hidden'));
+  check('卡片具备批量选择勾选框', await js('document.querySelectorAll("#libGrid .batch-checkbox").length > 0'));
+  await js('document.getElementById("libBatchSelectAll").click()');
+  await sleep2(150);
+  const libSelectedCount = await js('document.querySelectorAll("#libGrid .libcard.selected").length');
+  check('点击全选成功勾选所有条目', libSelectedCount > 0, `selected=${libSelectedCount}`);
+  check('批量计数徽章正确更新', /已选 \d+ 项/.test(await js('document.getElementById("libBatchCount").textContent')));
+  await js('document.getElementById("libBatchDeselect").click()');
+  await sleep2(150);
+  check('清空选择后无条目处于选中态', await js('document.querySelectorAll("#libGrid .libcard.selected").length === 0'));
+  await js('document.getElementById("libBatchExit").click()');
+  await sleep2(150);
+  check('退出批量管理后批量浮动栏收起', await js('document.getElementById("libBatchBar").hidden'));
+  await js('document.getElementById("libClose").click()');
+  await sleep2(150);
+
+  // 5. 矢量图标库彩色图标 + 调色盘
+  await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
+  await sleep2(150);
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(150);
+  await js('document.getElementById("i-openiconpicker").click()');
+  await sleep2(250);
+  const iconCats = await js('Array.from(document.querySelectorAll("#ipTags .ip-tag")).map(b => b.textContent)');
+  check('矢量图标库分类包含彩色图标与品牌应用', iconCats.some(c => /彩色/.test(c)) && iconCats.some(c => /品牌/.test(c)), JSON.stringify(iconCats));
+  check('矢量图标库底部具备调色盘色点与自定义拾色器',
+    await js('document.querySelectorAll(".ip-tint-dot").length >= 8 && !!document.getElementById("ipCustomTintColor")'));
+  await js('document.querySelector(\'.ip-tint-dot[data-color="#10b981"]\').click()');
+  await sleep2(100);
+  check('点击绿色色点成功激活着色',
+    await js('document.querySelector(\'.ip-tint-dot[data-color="#10b981"]\').classList.contains("active") && document.getElementById("ipCustomTintColor").value === "#10b981"'));
+
+  // 6. 矢量图标库批量管理
+  check('图标库具备「批量管理」切换按钮', await js('!!document.getElementById("ipBatchToggle")'));
+  await js('document.getElementById("ipBatchToggle").click()');
+  await sleep2(150);
+  check('点击图标库批量管理自动切换并展示批量浮动条', await js('!document.getElementById("ipBatchBar").hidden'));
+  check('图标库批量浮动条具备改分类、导出与删除等操作项',
+    await js('!!document.getElementById("ipBatchCategory") && !!document.getElementById("ipBatchExport") && !!document.getElementById("ipBatchDelete")'));
+  await js('document.getElementById("ipBatchExit").click()');
+  await sleep2(100);
+  check('退出图标库批量后浮动条收起', await js('document.getElementById("ipBatchBar").hidden'));
+  await js('document.getElementById("ipClose").click()');
+  await sleep2(150);
+
 
   put('--- UI smoke test ---');
   let failed = 0;

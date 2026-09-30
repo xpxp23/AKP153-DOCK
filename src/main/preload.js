@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   dialogPick: (opts) => ipcRenderer.invoke('dialog:pick', opts),
 
   setLogin: (v) => ipcRenderer.invoke('app:setLogin', v),
+  fetchFavicon: (url) => ipcRenderer.invoke('app:fetchFavicon', url),
 
   windowHide: () => ipcRenderer.invoke('window:hide'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),

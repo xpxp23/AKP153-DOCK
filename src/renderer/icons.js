@@ -250,11 +250,202 @@ const BUILTIN_ICONS = [
     category: 'symbols',
     name: '帮助/疑问',
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>'
+  },
+
+  // ---------------------------------------------------- 🌈 通用多彩微拟物与常用符号
+  {
+    category: 'colorful',
+    name: '显示器/桌面',
+    svg: '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" fill="#2563eb"/><rect x="4" y="5" width="16" height="10" rx="1" fill="#38bdf8"/><path d="M8 21h8m-4-4v4" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '笔记本电脑',
+    svg: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="11" rx="1.5" fill="#3b82f6"/><rect x="6" y="6" width="12" height="7" rx="0.5" fill="#bae6fd"/><path d="M2 18h20a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" fill="#64748b"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '经典文件夹',
+    svg: '<svg viewBox="0 0 24 24"><path d="M2 6a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6z" fill="#f59e0b"/><path d="M2 9h20v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9z" fill="#fbbf24"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '满电电池',
+    svg: '<svg viewBox="0 0 24 24"><rect x="2" y="6" width="17" height="12" rx="2" fill="#10b981"/><path d="M21 10v4" stroke="#10b981" stroke-width="2" stroke-linecap="round"/><polygon points="10 8 7 13 11 13 9 16 14 11 10 11 10 8" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '灵感灯泡',
+    svg: '<svg viewBox="0 0 24 24"><path d="M9 18h6m-5 3h4m-7-9a6 6 0 1 1 10 0c-1 1-1.5 2-1.5 3.5h-7C8.5 14 8 13 7 12z" fill="#facc15" stroke="#eab308" stroke-width="1.5"/><line x1="12" y1="2" x2="12" y2="4" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '通知铃铛',
+    svg: '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" fill="#f59e0b"/><path d="M13.73 21a2 2 0 0 1-3.46 0" fill="#d97706"/><circle cx="18" cy="5" r="3.5" fill="#ef4444"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '安全盾牌',
+    svg: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="#0284c7"/><polyline points="8 11.5 11 14.5 16 9" stroke="#ffffff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '极速火箭',
+    svg: '<svg viewBox="0 0 24 24"><path d="M12 2c4 2 7 6 7 12l-4 3-3-3-3 3-4-3c0-6 3-10 7-12z" fill="#ef4444"/><circle cx="12" cy="9" r="2.5" fill="#ffffff"/><polygon points="12 17 9 22 15 22 12 17" fill="#f97316"/><polygon points="12 18 10 21 14 21 12 18" fill="#facc15"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '涨势折线',
+    svg: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="#1e293b"/><polyline points="4 16 9 11 13 15 20 7" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="16 7 20 7 20 11" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '游戏手柄',
+    svg: '<svg viewBox="0 0 24 24"><path d="M6 7h12a5 5 0 0 1 4.9 6.2l-1.5 5.8A2 2 0 0 1 19.4 20h-2.1a2 2 0 0 1-1.8-1.1l-1.5-3a2 2 0 0 0-3.6 0l-1.5 3A2 2 0 0 1 7.1 20H5a2 2 0 0 1-1.9-1.5L1.5 13.2A5 5 0 0 1 6 7z" fill="#334155"/><circle cx="17.5" cy="11.5" r="1" fill="#ef4444"/><circle cx="15.5" cy="13.5" r="1" fill="#3b82f6"/><circle cx="17.5" cy="15.5" r="1" fill="#eab308"/><circle cx="19.5" cy="13.5" r="1" fill="#22c55e"/><path d="M6 11v6m-3-3h6" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '专业麦克风',
+    svg: '<svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="12" rx="4" fill="#dc2626"/><rect x="8" y="5" width="8" height="6" fill="#ef4444"/><path d="M5 10v2a7 7 0 0 0 14 0v-2" stroke="#64748b" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M12 19v4m-4 0h8" stroke="#64748b" stroke-width="2" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '彩环单反',
+    svg: '<svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" fill="#1e293b"/><circle cx="12" cy="13" r="5" fill="#0284c7"/><circle cx="12" cy="13" r="3" fill="#a855f7"/><circle cx="12" cy="13" r="1.5" fill="#f43f5e"/><circle cx="18" cy="9" r="1" fill="#e2e8f0"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '渐变耳机',
+    svg: '<svg viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H3v-7zm15 0h3v7h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z" fill="#06b6d4"/><path d="M3 14v-3a9 9 0 0 1 18 0v3" fill="none" stroke="#8b5cf6" stroke-width="3" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '播放绿色球',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#10b981"/><polygon points="9.5 8 16.5 12 9.5 16 9.5 8" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '暂停橙色球',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#f97316"/><rect x="8.5" y="7.5" width="2.5" height="9" rx="0.5" fill="#ffffff"/><rect x="13" y="7.5" width="2.5" height="9" rx="0.5" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '停止红色球',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#ef4444"/><rect x="8" y="8" width="8" height="8" rx="1" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '蓝色音量',
+    svg: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="#3b82f6"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9.5 9.5 0 0 1 0 14" fill="none" stroke="#06b6d4" stroke-width="2.5" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '红色静音',
+    svg: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="#64748b"/><line x1="23" y1="9" x2="17" y2="15" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/><line x1="17" y1="9" x2="23" y2="15" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '闪电极速',
+    svg: '<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#eab308"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '热咖啡杯',
+    svg: '<svg viewBox="0 0 24 24"><path d="M18 8h1a3 3 0 0 1 0 6h-1M2 8h16v8a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" fill="#78350f" stroke="#b45309" stroke-width="1.5"/><path d="M6 2v3m4-3v3m4-3v3" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '黄色便签',
+    svg: '<svg viewBox="0 0 24 24"><polygon points="3 3 16 3 21 8 21 21 3 21 3 3" fill="#facc15"/><polygon points="16 3 16 8 21 8 16 3" fill="#eab308"/><line x1="7" y1="12" x2="17" y2="12" stroke="#854d0e" stroke-width="2" stroke-linecap="round"/><line x1="7" y1="16" x2="14" y2="16" stroke="#854d0e" stroke-width="2" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '柱状图表',
+    svg: '<svg viewBox="0 0 24 24"><rect x="3" y="12" width="4" height="9" rx="1" fill="#3b82f6"/><rect x="10" y="7" width="4" height="14" rx="1" fill="#10b981"/><rect x="17" y="3" width="4" height="18" rx="1" fill="#f59e0b"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '金色钥匙',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5" fill="#f59e0b"/><circle cx="7.5" cy="15.5" r="2" fill="#ffffff"/><path d="M11 12l10-10m-3 0v4m-3-1v3" stroke="#d97706" stroke-width="2.5" stroke-linecap="round"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '安全挂锁',
+    svg: '<svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="12" rx="2" fill="#0284c7"/><path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/><circle cx="12" cy="15" r="1.5" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '艺术调色板',
+    svg: '<svg viewBox="0 0 24 24"><path d="M12 2C6.5 2 2 6.5 2 12c0 4.5 3 6.5 5 6.5 1 0 1.5-.5 2-1s1-1 2-1h2c4 0 7-3 7-7 0-4.5-3.5-7.5-8-7.5z" fill="#d97706"/><circle cx="7.5" cy="8.5" r="1.5" fill="#ef4444"/><circle cx="12" cy="6.5" r="1.5" fill="#facc15"/><circle cx="16.5" cy="8.5" r="1.5" fill="#3b82f6"/><circle cx="8" cy="13.5" r="1.5" fill="#22c55e"/></svg>'
+  },
+  {
+    category: 'colorful',
+    name: '环球互联',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#0284c7"/><path d="M3.6 9h16.8M3.6 15h16.8" stroke="#38bdf8" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4.5" ry="9" fill="none" stroke="#ffffff" stroke-width="1.5"/></svg>'
+  },
+
+  // ---------------------------------------------------- 🎨 热门品牌与应用
+  {
+    category: 'brands',
+    name: '微信 (WeChat)',
+    svg: '<svg viewBox="0 0 24 24"><path d="M9.5 3.5C5.4 3.5 2 6.3 2 9.8c0 2 1.1 3.7 2.8 4.8l-.7 2.2 2.6-1.3c.9.3 1.8.4 2.8.4 4.1 0 7.5-2.8 7.5-6.3 0-3.5-3.4-6.1-7.5-6.1z" fill="#07c160"/><path d="M15.5 9.5c-3.3 0-6 2.3-6 5.2 0 1.6.8 3.1 2.2 4.1l-.6 1.7 2.1-1c.7.2 1.5.3 2.3.3 3.3 0 6-2.3 6-5.2 0-3-2.7-5.1-6-5.1z" fill="#22c55e"/><circle cx="7" cy="8" r="1" fill="#ffffff"/><circle cx="12" cy="8" r="1" fill="#ffffff"/><circle cx="13.5" cy="13.5" r="0.8" fill="#ffffff"/><circle cx="17.5" cy="13.5" r="0.8" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'QQ',
+    svg: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="7" ry="8" fill="#1e293b"/><path d="M7 14c-2 2-3 5-1 6s4-1 4-2" fill="#f59e0b"/><path d="M17 14c2 2 3 5 1 6s-4-1-4-2" fill="#f59e0b"/><ellipse cx="12" cy="13.5" rx="5" ry="5.5" fill="#ffffff"/><circle cx="9.5" cy="9" r="1.5" fill="#ffffff"/><circle cx="9.8" cy="9.2" r="0.8" fill="#000000"/><circle cx="14.5" cy="9" r="1.5" fill="#ffffff"/><circle cx="14.2" cy="9.2" r="0.8" fill="#000000"/><path d="M10 11.5c1 .8 3 .8 4 0l-2 1.5-2-1.5z" fill="#f59e0b"/><path d="M6.5 11.5c2 1 9 1 11 0 0 1.5-2 3-5.5 3s-5.5-1.5-5.5-3z" fill="#ef4444"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Steam',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#171a21"/><path d="M19 9a4 4 0 0 0-4-4c-1.8 0-3.3 1.2-3.8 2.8L7.8 9.5a3 3 0 0 0-2.8-.5l-3 1.2A10 10 0 0 0 12 22a10 10 0 0 0 7.8-3.7l-4.2-1.8a4 4 0 0 0-.6-7.5zm-4 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z" fill="#66c0f4"/><circle cx="6.5" cy="14" r="1.5" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Google Chrome',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#ffffff"/><path d="M12 2a10 10 0 0 1 8.7 5h-8.7l-4.3 7.5L12 2z" fill="#ea4335"/><path d="M20.7 7A10 10 0 0 1 15.5 21l4.3-7.5H11l-3.3-6.5h13z" fill="#fbbc05"/><path d="M12 22a10 10 0 0 1-8.7-15l4.3 7.5 4.4 7.5z" fill="#34a853"/><circle cx="12" cy="12" r="4.2" fill="#ffffff"/><circle cx="12" cy="12" r="3.2" fill="#1a73e8"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Bilibili',
+    svg: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3" fill="#00aeec"/><path d="M7 2l3 3m7-3l-3 3" stroke="#00aeec" stroke-width="2.5" stroke-linecap="round"/><circle cx="8.5" cy="12" r="1.5" fill="#ffffff"/><circle cx="15.5" cy="12" r="1.5" fill="#ffffff"/><path d="M10 15.5c1 .8 3 .8 4 0" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: '网易云音乐',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#dc2626"/><circle cx="12" cy="12" r="6.5" fill="none" stroke="#ffffff" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="#ffffff"/><circle cx="12" cy="12" r="1.2" fill="#dc2626"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'VS Code',
+    svg: '<svg viewBox="0 0 24 24"><path d="M17.5 2.5l4 2v15l-4 2-10-8.5 10-10.5z" fill="#007acc"/><path d="M17.5 6.5l-9 5.5 9 5.5V6.5z" fill="#1f9cf0"/><path d="M3.5 8l4.5 4-4.5 4-1-1 3-3-3-3 1-1z" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'GitHub',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#181717"/><path d="M12 5.5a6.5 6.5 0 0 0-2.1 12.7c.3.1.5-.1.5-.3v-1.2c-1.8.4-2.2-.9-2.2-.9-.3-.8-.7-1-.7-1-.6-.4 0-.4 0-.4.7.1 1 .7 1 .7.6 1 1.5.7 1.9.5 0-.4.2-.7.4-.9-1.5-.2-3-.7-3-3.2 0-.7.3-1.3.7-1.7 0-.2-.3-.8.1-1.7 0 0 .5-.2 1.8.7.5-.1 1.1-.2 1.6-.2s1.1.1 1.6.2c1.2-.9 1.8-.7 1.8-.7.4.9.1 1.5.1 1.7.4.5.7 1 .7 1.7 0 2.5-1.5 3-3 3.2.2.2.4.6.4 1.2v1.8c0 .2.1.4.5.3A6.5 6.5 0 0 0 12 5.5z" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Photoshop',
+    svg: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3.5" fill="#001e36"/><text x="6" y="15" fill="#31a8ff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Ps</text></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Edge',
+    svg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#0078d7"/><path d="M12 4a8 8 0 0 1 7.8 6.2c-.8-.5-1.8-.8-2.8-.8-3.3 0-6 2.7-6 6 0 1.2.4 2.3 1 3.2A8 8 0 1 1 12 4z" fill="#00c853"/><circle cx="14" cy="15" r="3" fill="#ffffff"/></svg>'
+  },
+  {
+    category: 'brands',
+    name: 'Discord',
+    svg: '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="4" fill="#5865f2"/><path d="M16.5 7.5s-.8-.5-1.8-.6l-.1.2c1 .3 1.5.7 1.5.7-1-.5-2-.8-3.1-.8s-2.1.3-3.1.8c0 0 .5-.4 1.5-.7l-.1-.2c-1 .1-1.8.6-1.8.6-1.5 2.2-2 5.3-2 5.3 1 .8 2.2.8 2.2.8l.5-.6c-.8-.2-1.1-.7-1.1-.7s.1.1.2.1c1.2.7 2.7 1 4.2 1s3-.3 4.2-1c.1 0 .2-.1.2-.1s-.3.5-1.1.7l.5.6s1.2 0 2.2-.8c0 0-.5-3.1-2-5.3zM9.5 12c-.6 0-1-.5-1-1.2s.4-1.2 1-1.2 1 .5 1 1.2-.4 1.2-1 1.2zm5 0c-.6 0-1-.5-1-1.2s.4-1.2 1-1.2 1 .5 1 1.2-.4 1.2-1 1.2z" fill="#ffffff"/></svg>'
   }
 ];
 
 const ICON_CATEGORIES = [
   { id: 'all', name: '全部' },
+  { id: 'colorful', name: '🌈 彩色通用' },
+  { id: 'brands', name: '🎨 品牌应用' },
   { id: 'custom', name: '🌟 我的收藏' },
   { id: 'media', name: '多媒体' },
   { id: 'system', name: '系统' },
