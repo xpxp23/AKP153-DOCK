@@ -47,8 +47,12 @@ app.whenReady().then(async () => {
     throw err;
   });
 
+
   const checks = [];
-  const check = (name, cond, extra) => checks.push([name, !!cond, extra]);
+  const check = (name, cond, extra) => {
+    put(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  (' + extra + ')' : ''}`);
+    checks.push([name, !!cond, extra]);
+  };
 
   check('grid rendered', await js('document.querySelectorAll("#grid .cell").length') === 18,
     'cells=' + await js('document.querySelectorAll("#grid .cell").length'));
@@ -221,19 +225,17 @@ app.whenReady().then(async () => {
   check('选完模式后是合法的「上一页」键', /上一页/.test(paths), paths.slice(0, 80));
 
 
-  // --------------------------------------- 按键库：整页快照 + 拖格子入库 --
-  check('库里能区分整页快照', await js('!!document.querySelector("#library .libitem.ispage")')
-    || await js('(function(){document.getElementById("libExpand").click(); return true;})()')
-    && await js('!!document.querySelector("#libGrid .libcard.ispage")'),
-    'ispage=' + await js('document.querySelectorAll("#library .libitem.ispage, #libGrid .libcard.ispage").length'));
-  check('整页快照有迷你预览', await js('!!document.querySelector(".minigrid")'));
-  check('页面栏有「本页入库」', await js('!!document.getElementById("pageSave")'));
-
-  const libBefore = Number(await js('cfg.library.length'));
+  // --------------------------------------- 页面快照独立系统 + 按键库拖格子入库 --
+  check('页面栏有「页面快照」入口', await js('!!document.getElementById("pageSave")'));
   await js('document.getElementById("pageSave").click()');
-  await sleep2(350);
-  check('点「本页入库」会多出一条整页快照', Number(await js('cfg.library.length')) === libBefore + 1,
-    `${libBefore} -> ${await js('cfg.library.length')}`);
+  await sleep2(200);
+  check('点击打开专属页面快照管理中心弹窗', await js('!document.getElementById("pageSnapshotModal").hidden'));
+  check('页面快照具备迷你预览', await js('!!document.querySelector(".minigrid")'));
+  check('快照数据从按键库解耦独立存在', await js('Array.isArray(cfg.pageSnapshots) && cfg.pageSnapshots.length > 0'));
+  check('按键库仅存放单一按键条目 (无整页条目)', await js('cfg.library.every(e => !e.kind || e.kind !== "page")'));
+  await js('document.getElementById("psmClose").click()');
+  await sleep2(150);
+  check('关闭页面快照弹窗成功', await js('document.getElementById("pageSnapshotModal").hidden'));
 
   // 把格子拖进按键库（折叠时拖到「按键库」标题栏也要能收）
   const libBefore2 = Number(await js('cfg.library.length'));
@@ -765,6 +767,168 @@ app.whenReady().then(async () => {
   await js('document.getElementById("ipBatchExit").click()');
   await sleep2(100);
   check('退出图标库批量后浮动条收起', await js('document.getElementById("ipBatchBar").hidden'));
+  await js('document.getElementById("ipClose").click()');
+  await sleep2(150);
+
+  // 7. 新六大交互与Bug修复测试验证
+  // (1) 按键右上角删除按钮 z-index 保证高于角标 overlay
+  check('按键删除按钮 z-index 高于角标 overlay',
+    await js('(function(){ var c = document.querySelector(".cell .clear"); return c && parseInt(getComputedStyle(c).zIndex) >= 10; })()'));
+
+  // (2) 页面管理栏宽度扩展与 2x2 底部按钮
+  check('页面栏基准宽度升级为宽体 220px',
+    await js('getComputedStyle(document.getElementById("pageSidebar")).width === "220px"'));
+  check('页面栏底部按钮为 2 列网格 (2x2 布局)',
+    await js('getComputedStyle(document.querySelector(".ps-foot-actions")).gridTemplateColumns.split(" ").length === 2'));
+
+  // (3) 双态动作互换条配备 Mini Switch 联动胶囊
+  await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
+  await sleep2(100);
+  await js('document.getElementById("tabAction").click()');
+  await sleep2(100);
+  await js('document.getElementById("i-toggle-act-dual").click()');
+  await sleep2(100);
+  check('双态动作互换条包含 Mini Switch 联动开关胶囊',
+    await js('!!document.getElementById("i-swap-sync-wrap") && !!document.getElementById("i-swap-sync-track")'));
+  await js('document.getElementById("i-swap-sync-wrap").click()');
+  await sleep2(100);
+  check('点击联动开关成功切换激活状态',
+    await js('document.getElementById("i-swap-sync-track").classList.contains("on")'));
+
+  // (4) 外观面板角标互换按钮为双向箭头胶囊
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(100);
+  check('外观面板双态区域包含「⇅ 互换两态角标」按钮',
+    await js('document.getElementById("i-swap-badges") && document.getElementById("i-swap-badges").textContent.includes("互换")'));
+
+  // (5) 底栏按键库具备 32px 大气全览胶囊按钮 (白色高质感)
+  check('底栏按键库具备 32px 大气全览胶囊按钮',
+    await js('document.getElementById("libExpand").classList.contains("lib-expand-btn")'));
+  check('底栏展开全览按钮为白色素雅背景卡片风格',
+    await js('(function(){ var b = document.getElementById("libExpand"); var bg = getComputedStyle(b).backgroundColor; return bg === "rgb(255, 255, 255)" || bg.includes("255, 255, 255"); })()'));
+
+  // (6) 按键库卡片点击弹出全功能按键编辑器 (#libKeyModal)
+  await js('document.getElementById("libExpand").click()');
+  await sleep2(200);
+  check('按键库批量管理开关已沉底至底部操作栏',
+    await js('!!document.querySelector(".libpanel-foot #libBatchToggle")'));
+  check('按键库批量管理按钮为中性次级按钮 (去饱和视觉降噪)',
+    await js('(function(){ var b = document.getElementById("libBatchToggle"); var bg = getComputedStyle(b).backgroundColor; return bg === "rgba(0, 0, 0, 0)" || bg === "transparent"; })()'));
+  await js('document.querySelector("#libGrid .libcard").click()');
+  await sleep2(200);
+  check('点击按键卡片弹出全功能按键编辑器 Key Studio Modal',
+    await js('!document.getElementById("libKeyModal").hidden'));
+  check('Key Studio Modal 具备三 Tab 架构 (动作/外观/双态)',
+    await js('!!document.getElementById("lkmTabAction") && !!document.getElementById("lkmTabStyle") && !!document.getElementById("lkmTabDual")'));
+
+  // 测试 Tab 切换
+  await js('document.getElementById("lkmTabStyle").click()');
+  await sleep2(100);
+  check('点击外观 Tab 成功激活且样式区域展示',
+    await js('document.getElementById("lkmTabStyle").classList.contains("active") && !document.getElementById("lkmPaneStyle").hidden'));
+  check('外观 Tab 包含字号、图标缩放与底色拾色器',
+    await js('!!document.getElementById("lkmFontSize") && !!document.getElementById("lkmIconScale") && !!document.getElementById("lkmColorInput")'));
+
+  await js('document.getElementById("lkmTabDual").click()');
+  await sleep2(100);
+  check('点击双态 Tab 成功激活且双态区域展示',
+    await js('document.getElementById("lkmTabDual").classList.contains("active") && !document.getElementById("lkmPaneDual").hidden'));
+  check('双态 Tab 包含三段角标模式与互换动作胶囊',
+    await js('!!document.getElementById("lkmBadgeModeNone") && !!document.getElementById("lkmBadgeModeStatic") && !!document.getElementById("lkmBadgeModeDual") && !!document.getElementById("lkmSwapDualActionBtn")'));
+
+  await js('document.getElementById("lkmTabAction").click()');
+  await sleep2(100);
+  check('切回动作 Tab 包含动作选择与参数及测试运行',
+    await js('!!document.getElementById("lkmActType") && !!document.getElementById("lkmTestBtn")'));
+
+  check('详情弹窗包含放置到选中格子、保存修改、从库删除功能',
+    await js('!!document.getElementById("lkmApplyToSlot") && !!document.getElementById("lkmSave") && !!document.getElementById("lkmDelete")'));
+  await js('document.getElementById("lkmClose").click()');
+  await sleep2(150);
+  check('关闭详情弹窗成功',
+    await js('document.getElementById("libKeyModal").hidden'));
+  await js('document.getElementById("libClose").click()');
+  await sleep2(150);
+
+  // (7) 图标库批量管理开关已沉底至底部操作栏且降噪
+  await js('document.getElementById("i-openiconpicker").click()');
+  await sleep2(200);
+  check('图标库批量管理开关已沉底至底部操作栏',
+    await js('!!document.querySelector(".ip-foot #ipBatchToggle")'));
+  check('图标库批量管理按钮为中性次级样式 (去饱和微质感)',
+    await js('(function(){ var b = document.getElementById("ipBatchToggle"); var bg = getComputedStyle(b).backgroundColor; return bg === "rgba(0, 0, 0, 0)" || bg === "transparent"; })()'));
+  await js('document.getElementById("ipClose").click()');
+  await sleep2(150);
+
+  // (8) 页面管理栏顶部全新双层设计与画布流光徽章
+  check('页面管理栏具备 ps-title-row 标题栏与收起胶囊',
+    await js('!!document.querySelector(".ps-title-row") && !!document.getElementById("pageSidebarToggle")'));
+  check('页面管理栏具备通栏大尺寸 [＋ 新建页面] 与伴生 [📁 子页]',
+    await js('!!document.getElementById("pageAddTop") && !!document.getElementById("pageAddSub") && document.getElementById("pageAddTop").classList.contains("ps-new-page-btn")'));
+  check('画布顶栏具备 [🌈 整板流光] 徽章按钮',
+    await js('!!document.querySelector(".device-bar #pageGradientBtn")'));
+
+  // (9) 页面快照独立管理系统验证
+  await js('document.getElementById("pageSave").click()');
+  await sleep2(200);
+  check('点击快照按钮成功打开独立页面快照中心',
+    await js('!document.getElementById("pageSnapshotModal").hidden'));
+  check('快照中心具备保存当前页快照、导入与全部导出按钮',
+    await js('!!document.getElementById("psmSaveCurrent") && !!document.getElementById("psmImport") && !!document.getElementById("psmExportAll")'));
+  check('快照中心具备快照卡片流容器与空状态提示',
+    await js('!!document.getElementById("psmGrid")'));
+
+  // 验证快照提示输入框置顶 (z-index >= 9999) 且未被快照管理中心遮挡
+  await js('document.getElementById("psmSaveCurrent").click()');
+  await sleep2(200);
+  check('保存快照提示输入弹窗置顶 (z-index>=9000) 未被快照中心遮挡',
+    await js('(function(){ var m = document.querySelector(".modal"); if (!m) return false; var z = parseInt(getComputedStyle(m).zIndex, 10); return z >= 9000; })()'));
+  await js('document.getElementById("_askCancel").click()');
+  await sleep2(150);
+
+  await js('document.getElementById("psmClose").click()');
+  await sleep2(150);
+  check('关闭页面快照中心成功',
+    await js('document.getElementById("pageSnapshotModal").hidden'));
+
+  // (10) Key Studio 角标模式胶囊风格验证
+  await js('document.getElementById("libExpand").click()');
+  await sleep2(200);
+  await js('document.querySelector("#libGrid .libcard").click()');
+  await sleep2(200);
+  await js('document.getElementById("lkmTabDual").click()');
+  await sleep2(150);
+  check('Key Studio 角标提示模式采用胶囊风格 (color-capsule-pill)',
+    await js('document.getElementById("lkmBadgeModeNone").classList.contains("color-capsule-pill")'));
+  await js('document.getElementById("lkmClose").click()');
+  await sleep2(150);
+  await js('document.getElementById("libClose").click()');
+  await sleep2(150);
+
+  // (11) 矢量图标库批量管理内置图标与单底栏切换验证
+  await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
+  await sleep2(100);
+  await js('document.getElementById("tabStyle").click()');
+  await sleep2(100);
+  await js('document.getElementById("i-openiconpicker").click()');
+  await sleep2(200);
+  // 点击「全部」分类标签展示内置图标
+  await js('document.querySelectorAll("#ipTags .ip-tag")[0].click()');
+  await sleep2(150);
+  await js('document.getElementById("ipBatchToggle").click()');
+  await sleep2(200);
+  check('图标库开启批量后正常底栏隐藏且批量底栏展示',
+    await js('document.getElementById("ipNormalFoot").hidden && !document.getElementById("ipBatchBar").hidden'));
+  check('内置图标在批量模式下具备复选框',
+    await js('document.querySelectorAll("#ipGrid .ip-item.batch-mode .batch-checkbox").length > 0'));
+  await js('document.getElementById("ipBatchSelectAll").click()');
+  await sleep2(150);
+  check('全选本页成功勾选图标',
+    await js('document.querySelectorAll("#ipGrid .ip-item.selected").length > 0'));
+  await js('document.getElementById("ipBatchExit").click()');
+  await sleep2(150);
+  check('退出批量后正常底栏恢复且批量底栏隐藏',
+    await js('!document.getElementById("ipNormalFoot").hidden && document.getElementById("ipBatchBar").hidden'));
   await js('document.getElementById("ipClose").click()');
   await sleep2(150);
 

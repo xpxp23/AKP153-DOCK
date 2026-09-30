@@ -2173,6 +2173,8 @@ function wireMacroEditor(box, spec) {
   });
 }
 
+let lastSwapSyncBadges = false;
+
 function renderInspector() {
   stopCurrentHkRecorder(null);
   const box = $('inspector');
@@ -2414,19 +2416,22 @@ function renderInspector() {
               ` : ''}
             </div>
 
-            <!-- 互换动作条 -->
-            <div class="dual-action-swap-bar">
-              <div class="swap-line"></div>
-              <button type="button" id="i-swap-actions" class="swap-action-btn" title="互换形态 1 与形态 2 的执行动作">
-                <span class="swap-icon">🔁</span> 互换形态 1 与形态 2 动作
-              </button>
-              <div class="swap-line"></div>
-            </div>
-            <div class="swap-action-hint" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-              <span>纯动作互换</span>
-              <label class="swap-sync-badge-label" title="勾选后点击互换动作时，形态 1 与形态 2 的角标文字及颜色也会同步互换">
-                <input type="checkbox" id="i-swap-sync-badges" /> 同时对调角标
-              </label>
+            <!-- 互换动作与联动控制胶囊 -->
+            <div class="dual-action-swap-card">
+              <div class="dual-swap-main-row">
+                <button type="button" id="i-swap-actions" class="swap-action-btn" title="互换形态 1 与形态 2 的执行动作">
+                  <span class="swap-icon">🔁</span> 互换形态 1 与形态 2 动作
+                </button>
+              </div>
+              <div class="dual-swap-sub-row">
+                <label class="swap-mini-switch-wrap" id="i-swap-sync-wrap" title="开启后，点击互换动作时形态 1 与形态 2 的角标文字与色彩也将一并互换">
+                  <span class="swap-switch-text">同时联动对调角标与色彩</span>
+                  <div class="mini-switch-track ${lastSwapSyncBadges ? 'on' : ''}" id="i-swap-sync-track">
+                    <div class="mini-switch-thumb"></div>
+                  </div>
+                  <input type="checkbox" id="i-swap-sync-badges" style="display:none;" ${lastSwapSyncBadges ? 'checked' : ''} />
+                </label>
+              </div>
             </div>
 
             <!-- 形态 2 卡片 -->
@@ -2554,8 +2559,8 @@ function renderInspector() {
               </div>
             </div>
             <div class="badge-toggle-actions">
-              <button type="button" class="ghost tiny badge-swap-btn" id="i-swap-badges" title="一键互换形态 1 与形态 2 的角标文字及色彩">
-                🔁 互换角标
+              <button type="button" class="badge-swap-btn" id="i-swap-badges" title="一键互换形态 1 与形态 2 的角标文字及色彩">
+                ⇅ 互换两态角标
               </button>
               <button type="button" class="ghost tiny badge-try-btn" id="i-toggle-try-btn">
                 🔄 试切状态预览（当前：${(curBadge && curBadge.text) || (curBadgeState === 0 ? ((spec.badgeState1 && spec.badgeState1.text) || 'ON') : ((spec.badgeState2 && spec.badgeState2.text) || 'OFF'))}）
@@ -2991,6 +2996,20 @@ function renderInspector() {
       refreshGrid();
       renderInspector();
       toast('已互换形态 1 与形态 2 的执行动作' + (syncBadges ? '（角标已同步互换）' : ''));
+    };
+  }
+
+  const syncWrap = $('i-swap-sync-wrap');
+  if (syncWrap) {
+    syncWrap.onclick = (e) => {
+      e.preventDefault();
+      const chk = $('i-swap-sync-badges');
+      const track = $('i-swap-sync-track');
+      if (chk) {
+        chk.checked = !chk.checked;
+        lastSwapSyncBadges = chk.checked;
+        if (track) track.classList.toggle('on', chk.checked);
+      }
     };
   }
 
@@ -3799,8 +3818,10 @@ function toggleLibSelect(id) {
 
 function updateLibBatchBar() {
   const bar = $('libBatchBar');
+  const normalFoot = $('libNormalFoot');
   const countEl = $('libBatchCount');
   if (bar) bar.hidden = !libBatchMode;
+  if (normalFoot) normalFoot.hidden = !!libBatchMode;
   if (countEl) countEl.textContent = `已选 ${libSelectedIds.size} 项`;
   const toggleBtn = $('libBatchToggle');
   if (toggleBtn) {
@@ -3848,6 +3869,566 @@ async function libraryBatchDelete() {
   toast(`已批量删除 ${count} 个按键条目`);
 }
 
+let currentLibModalEntry = null;
+let currentLibModalSpec = null;
+let lkmActiveTab = 'action';
+let lkmPreviewState = 1;
+let iconPickerTarget = null; // null | 'libModal'
+
+function setLkmTab(tab) {
+  lkmActiveTab = tab;
+  const tabs = {
+    action: { btn: $('lkmTabAction'), pane: $('lkmPaneAction') },
+    style: { btn: $('lkmTabStyle'), pane: $('lkmPaneStyle') },
+    dual: { btn: $('lkmTabDual'), pane: $('lkmPaneDual') }
+  };
+  for (const [k, v] of Object.entries(tabs)) {
+    if (v.btn) v.btn.classList.toggle('active', k === tab);
+    if (v.pane) v.pane.hidden = (k !== tab);
+  }
+}
+
+function updateLkmSwatch(previewState) {
+  if (previewState != null) lkmPreviewState = previewState;
+  const wrap = $('lkmSwatchWrap');
+  if (!wrap || !currentLibModalSpec) return;
+  wrap.innerHTML = '';
+
+  const sw = document.createElement('div');
+  sw.style.width = '100%';
+  sw.style.height = '100%';
+  sw.style.display = 'flex';
+  sw.style.flexDirection = 'column';
+  sw.style.alignItems = 'center';
+  sw.style.justifyContent = 'center';
+  sw.style.position = 'relative';
+  sw.style.background = currentLibModalSpec.color || '#37474f';
+  sw.style.color = contrast(currentLibModalSpec.color);
+
+  const isState2 = (lkmPreviewState === 2);
+  const showIcon = currentLibModalSpec.icon;
+  const showLabel = currentLibModalSpec.label;
+
+  if (showIcon) {
+    const img = document.createElement('img');
+    img.src = showIcon;
+    const scale = (currentLibModalSpec.iconScale || 80) / 100;
+    img.style.maxWidth = `${Math.round(75 * scale)}%`;
+    img.style.maxHeight = `${Math.round(75 * scale)}%`;
+    img.style.objectFit = 'contain';
+    sw.appendChild(img);
+  }
+  if (showLabel) {
+    const lbl = document.createElement('span');
+    lbl.textContent = showLabel;
+    lbl.style.fontSize = `${Math.max(9, Math.min(15, currentLibModalSpec.fontSize || 12))}px`;
+    lbl.style.fontWeight = '600';
+    lbl.style.whiteSpace = 'nowrap';
+    lbl.style.overflow = 'hidden';
+    lbl.style.textOverflow = 'ellipsis';
+    lbl.style.maxWidth = '90%';
+    lbl.style.textAlign = 'center';
+    lbl.style.marginTop = showIcon ? '2px' : '0';
+    sw.appendChild(lbl);
+  } else if (!showIcon) {
+    const glyph = document.createElement('span');
+    glyph.className = 'glyph';
+    glyph.textContent = glyphFor(currentLibModalSpec.type);
+    sw.appendChild(glyph);
+  }
+
+  // 角标覆盖展示
+  if (currentLibModalSpec.badgeToggle) {
+    const b = isState2 ? (currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' })
+                        : (currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' });
+    if (b && b.text) {
+      const badgeEl = document.createElement('span');
+      badgeEl.className = 'badge-overlay badge-toggle';
+      badgeEl.style.position = 'absolute';
+      badgeEl.style.top = '3px';
+      badgeEl.style.right = '3px';
+      badgeEl.style.background = b.bg || '#107c41';
+      badgeEl.textContent = b.text;
+      sw.appendChild(badgeEl);
+    }
+  } else if (currentLibModalSpec.badge) {
+    const badgeEl = document.createElement('span');
+    badgeEl.className = 'badge-overlay';
+    badgeEl.style.position = 'absolute';
+    badgeEl.style.top = '3px';
+    badgeEl.style.right = '3px';
+    badgeEl.style.background = currentLibModalSpec.badgeBg || '#e53935';
+    badgeEl.textContent = currentLibModalSpec.badge;
+    sw.appendChild(badgeEl);
+  }
+
+  wrap.appendChild(sw);
+
+  // 同步更新双态面板中的角标效果
+  const badgeWrap = $('lkmBadgePreviewWrap');
+  if (badgeWrap) {
+    badgeWrap.innerHTML = '';
+    if (currentLibModalSpec.badgeToggle) {
+      const b1 = currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' };
+      const b2 = currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+      badgeWrap.innerHTML = `<span class="badge-overlay badge-toggle" style="position:static; display:inline-block; margin-right:6px; background:${b1.bg};">${escapeHtml(b1.text)}</span>`
+        + `<span style="font-size:11px; color:var(--muted); margin-right:6px;">⇄</span>`
+        + `<span class="badge-overlay badge-toggle" style="position:static; display:inline-block; background:${b2.bg};">${escapeHtml(b2.text)}</span>`;
+    } else if (currentLibModalSpec.badge) {
+      badgeWrap.innerHTML = `<span class="badge-overlay" style="position:static; display:inline-block; background:${currentLibModalSpec.badgeBg || '#e53935'};">${escapeHtml(currentLibModalSpec.badge)}</span>`;
+    } else {
+      badgeWrap.innerHTML = `<span style="font-size:11px; color:var(--muted);">(无角标)</span>`;
+    }
+  }
+}
+
+function updateLkmActionUI() {
+  if (!currentLibModalSpec) return;
+  const type = currentLibModalSpec.type || 'app';
+  if ($('lkmActType')) $('lkmActType').value = type;
+  if ($('lkmTypeBadge')) $('lkmTypeBadge').textContent = TYPE_SHORT[type] || type || '未配置';
+
+  const tInput = $('lkmTargetInput');
+  if (tInput) tInput.value = (type === 'hotkey' ? (currentLibModalSpec.hotkey || currentLibModalSpec.target || '') : (currentLibModalSpec.target || ''));
+  const aInput = $('lkmArgsInput');
+  if (aInput) aInput.value = currentLibModalSpec.args || '';
+
+  const pickBtn = $('lkmPickAppBtn');
+  if (pickBtn) pickBtn.hidden = (type !== 'app');
+  const favBtn = $('lkmFaviconBtn');
+  if (favBtn) favBtn.hidden = (type !== 'url');
+  const hkBuilder = $('lkmHotkeyBuilder');
+  if (hkBuilder) hkBuilder.hidden = (type !== 'hotkey');
+  const argsWrap = $('lkmArgsWrap');
+  if (argsWrap) argsWrap.hidden = !['app', 'command', 'ps1'].includes(type);
+
+  const tLabel = $('lkmTargetLabel');
+  if (tLabel) {
+    if (type === 'app') tLabel.textContent = '应用程序或文件路径 (.exe / .lnk / .bat)';
+    else if (type === 'url') tLabel.textContent = '网页网址 URL (http:// 或 https://)';
+    else if (type === 'hotkey') tLabel.textContent = '系统热键组合 (例如 Ctrl+Shift+Esc)';
+    else if (type === 'command') tLabel.textContent = '控制台终端命令行';
+    else if (type === 'ps1') tLabel.textContent = 'PowerShell 脚本文件';
+    else if (type === 'page') tLabel.textContent = '页面操作模式';
+    else tLabel.textContent = '执行目标';
+  }
+
+  const desc = $('lkmActionDesc');
+  const detail = $('lkmActionDetail');
+  if (desc && detail) {
+    if (type === 'app') {
+      desc.textContent = '运行本地应用程序或文件';
+      detail.textContent = currentLibModalSpec.target ? `${currentLibModalSpec.target}${currentLibModalSpec.args ? ' ' + currentLibModalSpec.args : ''}` : '(未设置目标路径)';
+    } else if (type === 'url') {
+      desc.textContent = '在浏览器中打开网址';
+      detail.textContent = currentLibModalSpec.target || '(未设置网址)';
+    } else if (type === 'hotkey') {
+      desc.textContent = '模拟系统快捷键组合';
+      detail.textContent = currentLibModalSpec.hotkey || currentLibModalSpec.target || '(未配置快捷键)';
+    } else if (type === 'command') {
+      desc.textContent = '执行控制台终端命令行';
+      detail.textContent = currentLibModalSpec.target || '(未设置命令)';
+    } else if (type === 'multi' || type === 'macro') {
+      const count = (currentLibModalSpec.actions || []).length;
+      desc.textContent = `复合动作宏 (${count} 步执行)`;
+      detail.textContent = (currentLibModalSpec.actions || []).map((a, i) => `${i + 1}. [${TYPE_SHORT[a.type] || a.type}] ${a.target || a.hotkey || ''}`).join('  ▶  ') || '(宏动作序列为空)';
+    } else if (type === 'page') {
+      desc.textContent = '页面切换跳转';
+      detail.textContent = pageActionLabel(currentLibModalSpec);
+    } else {
+      desc.textContent = '按键执行动作';
+      detail.textContent = currentLibModalSpec.target || '(未设置目标)';
+    }
+  }
+
+  const d1Text = $('lkmDualAct1Text');
+  if (d1Text) d1Text.textContent = `[${TYPE_SHORT[type] || type}] ${currentLibModalSpec.target || currentLibModalSpec.hotkey || '(未设置)'}`;
+}
+
+function updateLkmStyleUI() {
+  if (!currentLibModalSpec) return;
+  if ($('lkmLabelInput')) $('lkmLabelInput').value = currentLibModalSpec.label || '';
+  if ($('lkmFontSize')) {
+    $('lkmFontSize').value = currentLibModalSpec.fontSize || 12;
+    if ($('lkmFontSizeVal')) $('lkmFontSizeVal').textContent = (currentLibModalSpec.fontSize || 12) + 'px';
+  }
+  if ($('lkmIconScale')) {
+    $('lkmIconScale').value = currentLibModalSpec.iconScale || 80;
+    if ($('lkmIconScaleVal')) $('lkmIconScaleVal').textContent = (currentLibModalSpec.iconScale || 80) + '%';
+  }
+  if ($('lkmColorInput')) {
+    $('lkmColorInput').value = currentLibModalSpec.color || '#37474f';
+    if ($('lkmColorVal')) $('lkmColorVal').textContent = currentLibModalSpec.color || '#37474f';
+  }
+}
+
+function updateLkmDualUI() {
+  if (!currentLibModalSpec) return;
+  const toggleAction = !!currentLibModalSpec.toggleAction;
+  if ($('lkmToggleAction')) $('lkmToggleAction').checked = toggleAction;
+  if ($('lkmDualActionWrap')) $('lkmDualActionWrap').hidden = !toggleAction;
+  if ($('lkmDualAct2Type')) $('lkmDualAct2Type').value = currentLibModalSpec.act2Type || 'command';
+  if ($('lkmDualAct2Target')) $('lkmDualAct2Target').value = currentLibModalSpec.act2Target || '';
+
+  const isDualBadge = !!currentLibModalSpec.badgeToggle;
+  const isStaticBadge = !isDualBadge && !!currentLibModalSpec.badge;
+  const isNoBadge = !isDualBadge && !isStaticBadge;
+
+  const bNone = $('lkmBadgeModeNone');
+  const bStatic = $('lkmBadgeModeStatic');
+  const bDual = $('lkmBadgeModeDual');
+  if (bNone) bNone.classList.toggle('active', isNoBadge);
+  if (bStatic) bStatic.classList.toggle('active', isStaticBadge);
+  if (bDual) bDual.classList.toggle('active', isDualBadge);
+
+  if ($('lkmBadgeStaticWrap')) $('lkmBadgeStaticWrap').hidden = !isStaticBadge;
+  if ($('lkmBadgeDualWrap')) $('lkmBadgeDualWrap').hidden = !isDualBadge;
+
+  if (isStaticBadge) {
+    if ($('lkmBadgeStaticText')) $('lkmBadgeStaticText').value = currentLibModalSpec.badge || '';
+    if ($('lkmBadgeStaticColor')) $('lkmBadgeStaticColor').value = currentLibModalSpec.badgeBg || '#e53935';
+  } else if (isDualBadge) {
+    const b1 = currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' };
+    const b2 = currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+    if ($('lkmBadge1Text')) $('lkmBadge1Text').value = b1.text || '';
+    if ($('lkmBadge1Color')) $('lkmBadge1Color').value = b1.bg || '#107c41';
+    if ($('lkmBadge2Text')) $('lkmBadge2Text').value = b2.text || '';
+    if ($('lkmBadge2Color')) $('lkmBadge2Color').value = b2.bg || '#e53935';
+  }
+}
+
+function openLibKeyModal(entry) {
+  if (!entry) return;
+  currentLibModalEntry = entry;
+  currentLibModalSpec = clone(entry.spec || {});
+  lkmPreviewState = 1;
+  const modal = $('libKeyModal');
+  if (!modal) return;
+
+  $('lkmTitle').textContent = `按键编辑器 · ${entry.name || '未命名'}`;
+  $('lkmNameInput').value = entry.name || '';
+  $('lkmTagsInput').value = (entry.tags || []).join(' ');
+
+  setLkmTab('action');
+  updateLkmActionUI();
+  updateLkmStyleUI();
+  updateLkmDualUI();
+  updateLkmSwatch(1);
+
+  const slotTag = $('lkmCurrentSlotTag');
+  const applyBtn = $('lkmApplyToSlot');
+  if (selected && selected.col < 5) {
+    slotTag.textContent = `r${selected.row}c${selected.col}`;
+    applyBtn.disabled = false;
+    applyBtn.style.opacity = '1';
+  } else {
+    slotTag.textContent = '未选格子';
+    applyBtn.disabled = true;
+    applyBtn.style.opacity = '0.6';
+  }
+
+  modal.hidden = false;
+}
+
+function closeLibKeyModal() {
+  const modal = $('libKeyModal');
+  if (modal) modal.hidden = true;
+  currentLibModalEntry = null;
+  currentLibModalSpec = null;
+  iconPickerTarget = null;
+}
+
+function openIconPickerForLib() {
+  iconPickerTarget = 'libModal';
+  const modal = $('iconPickerModal');
+  if (!modal) return;
+  modal.hidden = false;
+  $('ipSearch').value = '';
+  renderIconPicker();
+  $('ipSearch').focus();
+}
+
+async function pickAppForLib() {
+  if (DEMO) {
+    if (currentLibModalSpec) {
+      currentLibModalSpec.target = 'C:\\Program Files\\Example\\App.exe';
+      if (!currentLibModalSpec.label || currentLibModalSpec.label === '新按键') {
+        currentLibModalSpec.label = 'App';
+      }
+      updateLkmActionUI();
+      updateLkmSwatch();
+      toast('已选择示例应用路径（预览模式）');
+    }
+    return;
+  }
+  const p = await api.dialogPick({ properties: ['openFile'] });
+  if (!p) return;
+  const cls = await api.actionClassify(p);
+  const icon = await api.iconExtract(p);
+  if (currentLibModalSpec) {
+    currentLibModalSpec.target = cls.abs || p;
+    if (!currentLibModalSpec.label || currentLibModalSpec.label === '新按键') {
+      currentLibModalSpec.label = cls.label || '';
+    }
+    if (icon) {
+      currentLibModalSpec.icon = icon;
+    }
+    updateLkmActionUI();
+    updateLkmSwatch();
+    toast(`已选择：${cls.label || p}`);
+  }
+}
+
+async function pickLocalIconForLib() {
+  if (DEMO) {
+    if (currentLibModalSpec) {
+      currentLibModalSpec.icon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="%23f59e0b"/></svg>';
+      updateLkmSwatch();
+      toast('已选择示例图标（预览模式）');
+    }
+    return;
+  }
+  const r = await api.dialogPick({
+    multiple: false,
+    properties: ['openFile'],
+    filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg', 'ico'] }]
+  });
+  if (!r || !r.paths || !r.paths.length) return;
+  const filePath = r.paths[0];
+  const imgRes = await api.readImage(filePath);
+  if (imgRes && imgRes.dataUrl && currentLibModalSpec) {
+    currentLibModalSpec.icon = imgRes.dataUrl;
+    updateLkmSwatch();
+    toast('已导入本地图片');
+  }
+}
+
+async function fetchFaviconForLib() {
+  if (!currentLibModalSpec) return;
+  const url = (currentLibModalSpec.target || '').trim();
+  if (!url) { toast('请先输入网站网址'); return; }
+  if (DEMO) {
+    toast('正在抓取网站图标…');
+    setTimeout(() => {
+      currentLibModalSpec.icon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="%230284c7"/></svg>';
+      updateLkmSwatch();
+      toast('成功获取网站图标（示例）');
+    }, 300);
+    return;
+  }
+  toast('正在抓取网站高清图标…');
+  try {
+    const res = await api.fetchFavicon(url);
+    if (res && res.ok && res.iconData) {
+      currentLibModalSpec.icon = res.iconData;
+      updateLkmSwatch();
+      toast('已成功抓取网站图标！');
+    } else {
+      toast('未能抓取到网站图标：' + ((res && res.error) || '未知'));
+    }
+  } catch (err) {
+    toast('抓取失败：' + (err && err.message));
+  }
+}
+
+// ------------------------------------------------------------------ 页面快照专属管理中心
+const snapshotEntries = () => (cfg && cfg.pageSnapshots) || [];
+
+function openPageSnapshotModal() {
+  const modal = $('pageSnapshotModal');
+  if (!modal) return;
+  renderPageSnapshots();
+  modal.hidden = false;
+}
+
+function closePageSnapshotModal() {
+  const modal = $('pageSnapshotModal');
+  if (modal) modal.hidden = true;
+}
+
+function renderPageSnapshots() {
+  const grid = $('psmGrid');
+  const badge = $('psmCountBadge');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const list = snapshotEntries();
+  if (badge) badge.textContent = `${list.length} 个快照`;
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="psm-empty">暂无保存的页面快照。<br>点击右上角「📥 将当前页存为快照」，即可把当前 15 键 + 3 块副屏保存为独立模板！</div>`;
+    return;
+  }
+
+  for (const snap of list) {
+    const card = document.createElement('div');
+    card.className = 'psm-card';
+
+    const top = document.createElement('div');
+    top.className = 'psm-card-top';
+
+    const miniWrap = document.createElement('div');
+    miniWrap.className = 'psm-minigrid-wrap';
+    miniWrap.appendChild(libMiniGrid(snap.page || {}));
+    top.appendChild(miniWrap);
+
+    const info = document.createElement('div');
+    info.className = 'psm-card-info';
+    info.appendChild(el('div', 'psm-card-title', snap.name || '未命名快照'));
+    const timeStr = snap.savedAt ? new Date(snap.savedAt).toLocaleString('zh-CN', { hour12: false }) : '';
+    info.appendChild(el('div', 'psm-card-time', timeStr || '未知时间'));
+    const btnCount = Object.keys((snap.page || {}).buttons || {}).length;
+    const stripCount = Object.keys((snap.page || {}).strips || {}).length;
+    info.appendChild(el('div', 'psm-card-stats', `${btnCount} 个按键 · ${stripCount} 块副屏`));
+    top.appendChild(info);
+    card.appendChild(top);
+
+    const actions = document.createElement('div');
+    actions.className = 'psm-card-actions';
+
+    const btnNew = document.createElement('button');
+    btnNew.className = 'ghost tiny';
+    btnNew.textContent = '＋ 恢复新页';
+    btnNew.onclick = () => applyPageSnapshot(snap, 'new');
+    actions.appendChild(btnNew);
+
+    const btnOverwrite = document.createElement('button');
+    btnOverwrite.className = 'ghost tiny';
+    btnOverwrite.textContent = '⚡ 覆盖当前页';
+    btnOverwrite.onclick = () => applyPageSnapshot(snap, 'overwrite');
+    actions.appendChild(btnOverwrite);
+
+    const btnRename = document.createElement('button');
+    btnRename.className = 'ghost tiny';
+    btnRename.textContent = '✏️ 改名';
+    btnRename.onclick = () => renamePageSnapshot(snap);
+    actions.appendChild(btnRename);
+
+    const btnDel = document.createElement('button');
+    btnDel.className = 'ghost tiny danger';
+    btnDel.textContent = '🗑️ 删除';
+    btnDel.style.marginLeft = 'auto';
+    btnDel.onclick = () => deletePageSnapshot(snap.id);
+    actions.appendChild(btnDel);
+
+    card.appendChild(actions);
+    grid.appendChild(card);
+  }
+}
+
+async function saveCurrentPageAsSnapshot() {
+  const p = curPage();
+  if (!p || (!Object.keys(p.buttons || {}).length && !Object.keys(p.strips || {}).length)) {
+    toast('当前页面是空的，无需保存快照');
+    return;
+  }
+  const defaultName = `${p.name} 快照`;
+  const name = await askText('页面快照名称', defaultName, '输入快照名称');
+  if (name == null || !name.trim()) return;
+
+  cfg.pageSnapshots = cfg.pageSnapshots || [];
+  cfg.pageSnapshots.unshift({
+    id: 'PS_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: name.trim().slice(0, 30),
+    tags: [],
+    savedAt: new Date().toISOString(),
+    page: { buttons: clone(p.buttons || {}), strips: clone(p.strips || {}) }
+  });
+
+  await libSave();
+  renderPageSnapshots();
+  toast(`已将「${name.trim()}」保存为页面快照`);
+}
+
+async function applyPageSnapshot(snap, mode) {
+  const pageData = snap.page || { buttons: {}, strips: {} };
+  let how = mode;
+  if (!how) {
+    const ok = await askConfirm('应用页面快照', `将快照「${snap.name}」覆盖到当前页「${curPage().name}」？确定=覆盖当前页，取消=新建为独立页面`);
+    how = ok ? 'overwrite' : 'new';
+  }
+  if (how === 'overwrite') {
+    const p = curPage();
+    p.buttons = clone(pageData.buttons || {});
+    p.strips = clone(pageData.strips || {});
+    selected = null;
+    await persistAll();
+    closePageSnapshotModal();
+    toast(`已用快照「${snap.name}」覆盖当前页面`);
+    return;
+  }
+  const name = await askText('以此快照创建新页面', snap.name);
+  if (name == null || !name.trim()) return;
+  const id = newPageId();
+  cfg.pages.push({
+    id,
+    name: name.trim(),
+    parent: null,
+    buttons: clone(pageData.buttons || {}),
+    strips: clone(pageData.strips || {})
+  });
+  cfg.currentPage = id;
+  selected = null;
+  await persistAll();
+  closePageSnapshotModal();
+  toast(`已成功用快照创建新页面「${name.trim()}」`);
+}
+
+async function renamePageSnapshot(snap) {
+  const name = await askText('重命名页面快照', snap.name);
+  if (name == null || !name.trim()) return;
+  snap.name = name.trim().slice(0, 30);
+  await libSave();
+  renderPageSnapshots();
+  toast('已更新快照名称');
+}
+
+async function deletePageSnapshot(id) {
+  const snap = snapshotEntries().find(x => x.id === id);
+  if (!snap) return;
+  if (!(await askConfirm('删除页面快照', `确定要删除快照「${snap.name}」吗？已创建的页面不受影响。`))) return;
+  cfg.pageSnapshots = snapshotEntries().filter(x => x.id !== id);
+  await libSave();
+  renderPageSnapshots();
+  toast(`已删除快照「${snap.name}」`);
+}
+
+async function exportAllPageSnapshots() {
+  if (DEMO) { toast('预览模式下不能导出'); return; }
+  const list = snapshotEntries();
+  if (!list.length) { toast('暂无快照可导出'); return; }
+  const json = JSON.stringify({ type: 'akp153-page-snapshots', version: 1, exportedAt: new Date().toISOString(), snapshots: list }, null, 2);
+  const r = await api.libraryExport({ json, name: `akp153-page-snapshots-${list.length}.json` });
+  if (r && r.ok) toast(`已导出 ${list.length} 个页面快照到 ${r.path}`);
+  else if (r && !r.canceled) toast('导出失败：' + (r.error || '未知错误'));
+}
+
+async function importPageSnapshots() {
+  if (DEMO) { toast('预览模式下不能导入'); return; }
+  const r = await api.libraryImport();
+  if (!r || r.canceled) return;
+  if (!r.ok) { toast(r.error); return; }
+  const data = r.data;
+  const list = Array.isArray(data) ? data : (data && (data.snapshots || data.entries));
+  if (!Array.isArray(list)) { toast('文件格式不正确，缺少快照列表'); return; }
+  cfg.pageSnapshots = cfg.pageSnapshots || [];
+  let added = 0;
+  for (const s of list) {
+    if (!s || (!s.page && !s.buttons)) continue;
+    const pageObj = s.page || { buttons: s.buttons || {}, strips: s.strips || {} };
+    cfg.pageSnapshots.push({
+      id: 'PS_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: String(s.name || '导入快照').slice(0, 30),
+      tags: normTags(s.tags),
+      savedAt: s.savedAt || new Date().toISOString(),
+      page: pageObj
+    });
+    added++;
+  }
+  await libSave();
+  renderPageSnapshots();
+  toast(`成功导入了 ${added} 个页面快照`);
+}
+
 /** Big card used in the expanded panel. */
 function libCardEl(entry) {
   const page = isPageEntry(entry);
@@ -3855,6 +4436,7 @@ function libCardEl(entry) {
   const c = document.createElement('div');
   c.className = 'libcard' + (page ? ' ispage' : '') + (libBatchMode ? ' batch-mode' : '') + (isSelected ? ' selected' : '');
   c.draggable = !page && !libBatchMode;
+  c.title = page ? '整页快照' : '点击打开设置详情，或直接拖拽到按键格子';
 
   if (libBatchMode) {
     const chk = document.createElement('input');
@@ -3871,7 +4453,7 @@ function libCardEl(entry) {
       toggleLibSelect(entry.id);
     };
   } else {
-    c.onclick = () => (page ? libraryApplyPage(entry) : libraryApply(entry));
+    c.onclick = () => (page ? libraryApplyPage(entry) : openLibKeyModal(entry));
   }
 
   c.appendChild(libSwatch(entry, 'sw'));
@@ -3886,7 +4468,7 @@ function libCardEl(entry) {
   sub.title = page ? '整页快照' : (entry.spec.type === 'multi' ? `复合宏 (${(entry.spec.actions || []).length} 动作)` : (entry.spec.target || ''));
   c.appendChild(sub);
 
-  if (!libBatchMode) {
+  if (!libBatchMode && page) {
     const ops = document.createElement('div');
     ops.className = 'ops';
     const mk = (text, cls, fn) => {
@@ -3896,15 +4478,8 @@ function libCardEl(entry) {
       b.onclick = (e) => { e.stopPropagation(); fn(); };
       return b;
     };
-    if (page) {
-      ops.appendChild(mk('建成新页', 'wide', () => libraryApplyPage(entry, 'new')));
-      ops.appendChild(mk('覆盖当前页', 'wide', () => libraryApplyPage(entry, 'overwrite')));
-    } else {
-      ops.appendChild(mk('放到格子', null, () => libraryApply(entry)));
-      ops.appendChild(mk('用当前格覆盖', null, () => libraryUpdate(entry)));
-    }
-    ops.appendChild(mk('改名', null, () => libraryRename(entry)));
-    ops.appendChild(mk('标签', null, () => libraryEditTags(entry)));
+    ops.appendChild(mk('建成新页', 'wide', () => libraryApplyPage(entry, 'new')));
+    ops.appendChild(mk('覆盖当前页', 'wide', () => libraryApplyPage(entry, 'overwrite')));
     ops.appendChild(mk('删除', 'dz wide', () => libraryRemove(entry.id)));
     c.appendChild(ops);
   }
@@ -4491,8 +5066,10 @@ function toggleIpSelect(id) {
 
 function updateIpBatchBar() {
   const bar = $('ipBatchBar');
+  const normalFoot = $('ipNormalFoot');
   const countEl = $('ipBatchCount');
   if (bar) bar.hidden = !ipBatchMode;
+  if (normalFoot) normalFoot.hidden = !!ipBatchMode;
   if (countEl) countEl.textContent = `已选 ${ipSelectedIds.size} 个图标`;
   const toggleBtn = $('ipBatchToggle');
   if (toggleBtn) {
@@ -4502,26 +5079,64 @@ function updateIpBatchBar() {
 }
 
 async function iconBatchCategory() {
-  if (!ipSelectedIds.size) { toast('请先勾选要修改分类的自定义图标'); return; }
-  const newCat = await askText('批量修改图标分类', '常用', '输入新分类名称（例如：办公、设计、工具）');
+  if (!ipSelectedIds.size) { toast('请先勾选要归类/收藏的图标'); return; }
+  const newCat = await askText('批量归类/收藏图标', '常用', '输入分类名称（例如：办公、设计、常用）');
   if (!newCat || !newCat.trim()) return;
   const cat = newCat.trim();
   const count = ipSelectedIds.size;
-  for (const ic of ((cfg && cfg.customIcons) || [])) {
-    if (ipSelectedIds.has(ic.id)) {
-      ic.category = cat;
+  cfg.customIcons = cfg.customIcons || [];
+  let customUpdated = 0;
+  let builtinAdded = 0;
+  for (const id of Array.from(ipSelectedIds)) {
+    if (id.startsWith('bi:')) {
+      const bi = (typeof BUILTIN_ICONS !== 'undefined') && BUILTIN_ICONS.find(b => ('bi:' + (b.category || 'all') + ':' + b.name) === id);
+      if (bi) {
+        const dataUrl = svgToDataUrl(bi.svg, ipTintColor);
+        cfg.customIcons.push({
+          id: 'ci_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + Math.floor(Math.random() * 1000),
+          name: bi.name,
+          category: cat,
+          tags: [bi.category || '内置', cat],
+          icon: dataUrl,
+          createdAt: new Date().toISOString()
+        });
+        builtinAdded++;
+      }
+    } else {
+      const ic = cfg.customIcons.find(x => x.id === id);
+      if (ic) {
+        ic.category = cat;
+        customUpdated++;
+      }
     }
   }
   await saveConfig();
   renderIconPicker();
-  toast(`已将 ${count} 个图标归入分类「${cat}」`);
+  toast(`已将 ${count} 个图标归类至「${cat}」${builtinAdded ? `（其中 ${builtinAdded} 个已存入我的收藏）` : ''}`);
 }
 
 async function iconBatchExport() {
   if (DEMO) { toast('预览模式下不能导出'); return; }
-  if (!ipSelectedIds.size) { toast('请先勾选要导出的自定义图标'); return; }
-  const list = ((cfg && cfg.customIcons) || []).filter(ic => ipSelectedIds.has(ic.id));
-  const name = `akp153-custom-icons-${list.length}.json`;
+  if (!ipSelectedIds.size) { toast('请先勾选要导出的图标'); return; }
+  const list = [];
+  for (const id of ipSelectedIds) {
+    if (id.startsWith('bi:')) {
+      const bi = (typeof BUILTIN_ICONS !== 'undefined') && BUILTIN_ICONS.find(b => ('bi:' + (b.category || 'all') + ':' + b.name) === id);
+      if (bi) {
+        list.push({
+          id,
+          name: bi.name,
+          category: bi.category || '内置',
+          svg: bi.svg,
+          icon: svgToDataUrl(bi.svg, ipTintColor)
+        });
+      }
+    } else {
+      const ic = (cfg && cfg.customIcons || []).find(x => x.id === id);
+      if (ic) list.push(ic);
+    }
+  }
+  const name = `akp153-icons-${list.length}.json`;
   const json = JSON.stringify({ type: 'akp153-custom-icons', version: 1, exportedAt: new Date().toISOString(), icons: list }, null, 2);
   const r = await api.libraryExport({ json, name });
   if (r && r.ok) toast(`已导出 ${list.length} 个图标到 ${r.path}`);
@@ -4529,14 +5144,23 @@ async function iconBatchExport() {
 }
 
 async function iconBatchDelete() {
-  if (!ipSelectedIds.size) { toast('请先勾选要删除的自定义图标'); return; }
+  if (!ipSelectedIds.size) { toast('请先勾选要删除/隐藏的图标'); return; }
   const count = ipSelectedIds.size;
-  if (!(await askConfirm('批量删除图标', `确定要删除选中的 ${count} 个自定义图标吗？`))) return;
+  if (!(await askConfirm('批量删除/隐藏图标', `确定要从图标库中移除选中的 ${count} 个图标吗？（自定义图标将被删除，内置图标将被隐藏）`))) return;
+  cfg.hiddenBuiltinIcons = cfg.hiddenBuiltinIcons || [];
+  for (const id of Array.from(ipSelectedIds)) {
+    if (id.startsWith('bi:')) {
+      if (!cfg.hiddenBuiltinIcons.includes(id)) {
+        cfg.hiddenBuiltinIcons.push(id);
+      }
+    }
+  }
   cfg.customIcons = ((cfg && cfg.customIcons) || []).filter(ic => !ipSelectedIds.has(ic.id));
   ipSelectedIds.clear();
   await saveConfig();
   renderIconPicker();
-  toast(`已批量删除 ${count} 个自定义图标`);
+  updateIpBatchBar();
+  toast(`已批量处理 ${count} 个图标`);
 }
 
 function renderIconPicker() {
@@ -4555,6 +5179,23 @@ function renderIconPicker() {
       renderIconPicker();
     };
     tagsBox.appendChild(btn);
+  }
+
+  if ((cfg && cfg.hiddenBuiltinIcons || []).length > 0) {
+    const unhideBtn = document.createElement('button');
+    unhideBtn.className = 'ip-tag';
+    unhideBtn.style.color = '#ef4444';
+    unhideBtn.style.borderColor = '#fca5a5';
+    unhideBtn.textContent = `↺ 恢复已隐藏 (${cfg.hiddenBuiltinIcons.length})`;
+    unhideBtn.title = '点击恢复所有被批量隐藏的内置图标';
+    unhideBtn.onclick = async () => {
+      const count = cfg.hiddenBuiltinIcons.length;
+      cfg.hiddenBuiltinIcons = [];
+      await saveConfig();
+      renderIconPicker();
+      toast(`已恢复 ${count} 个被隐藏的内置图标`);
+    };
+    tagsBox.appendChild(unhideBtn);
   }
 
   const customList = (cfg && cfg.customIcons) || [];
@@ -4657,6 +5298,14 @@ function renderIconPicker() {
           toast(`已删除「${cIcon.name}」`);
         };
         item.onclick = async () => {
+          if (iconPickerTarget === 'libModal' && currentLibModalSpec) {
+            currentLibModalSpec.icon = cIcon.icon;
+            updateLkmSwatch();
+            closeIconPicker();
+            toast(`已为按键套用图标：${cIcon.name}`);
+            iconPickerTarget = null;
+            return;
+          }
           if (!selected || selected.col === 5) return;
           const spec = pageButtons()[selected.row + ',' + selected.col];
           if (spec) {
@@ -4704,6 +5353,14 @@ function renderIconPicker() {
           openIpContextMenu(e.clientX, e.clientY, cIcon);
         };
         item.onclick = async () => {
+          if (iconPickerTarget === 'libModal' && currentLibModalSpec) {
+            currentLibModalSpec.icon = cIcon.icon;
+            updateLkmSwatch();
+            closeIconPicker();
+            toast(`已为按键套用图标：${cIcon.name}`);
+            iconPickerTarget = null;
+            return;
+          }
           if (!selected || selected.col === 5) return;
           const spec = pageButtons()[selected.row + ',' + selected.col];
           if (spec) {
@@ -4725,6 +5382,8 @@ function renderIconPicker() {
   }
 
   const list = BUILTIN_ICONS.filter((item) => {
+    const iconId = 'bi:' + (item.category || 'all') + ':' + item.name;
+    if ((cfg.hiddenBuiltinIcons || []).includes(iconId) || (cfg.hiddenBuiltinIcons || []).includes(item.name)) return false;
     if (currentIconCategory !== 'all' && item.category !== currentIconCategory) return false;
     if (q && !item.name.toLowerCase().includes(q)) return false;
     return true;
@@ -4736,24 +5395,42 @@ function renderIconPicker() {
   }
 
   for (const icon of list) {
+    const iconId = 'bi:' + (icon.category || 'all') + ':' + icon.name;
+    const isSelected = ipSelectedIds.has(iconId);
     const item = document.createElement('div');
-    item.className = 'ip-item';
+    item.className = 'ip-item' + (ipBatchMode ? ' batch-mode' : '') + (isSelected ? ' selected' : '');
     item.title = icon.name;
     item.innerHTML = `
+      ${ipBatchMode ? `<input type="checkbox" class="batch-checkbox" ${isSelected ? 'checked' : ''} />` : ''}
       <div class="ip-icon-preview">${icon.svg}</div>
       <span class="ip-icon-name">${icon.name}</span>
     `;
-    item.onclick = async () => {
-      if (!selected || selected.col === 5) return;
-      const spec = pageButtons()[selected.row + ',' + selected.col];
-      if (spec) {
-        spec.icon = svgToDataUrl(icon.svg, ipTintColor);
-        await commit(true);
-        renderInspector();
-        toast(`已应用图标：${icon.name}`);
-        closeIconPicker();
-      }
-    };
+    if (ipBatchMode) {
+      const chk = item.querySelector('.batch-checkbox');
+      if (chk) chk.onclick = (e) => { e.stopPropagation(); toggleIpSelect(iconId); };
+      item.onclick = (e) => { e.stopPropagation(); toggleIpSelect(iconId); };
+    } else {
+      item.onclick = async () => {
+        const dataUrl = svgToDataUrl(icon.svg, ipTintColor);
+        if (iconPickerTarget === 'libModal' && currentLibModalSpec) {
+          currentLibModalSpec.icon = dataUrl;
+          updateLkmSwatch();
+          closeIconPicker();
+          toast(`已为按键应用图标：${icon.name}`);
+          iconPickerTarget = null;
+          return;
+        }
+        if (!selected || selected.col === 5) return;
+        const spec = pageButtons()[selected.row + ',' + selected.col];
+        if (spec) {
+          spec.icon = dataUrl;
+          await commit(true);
+          renderInspector();
+          toast(`已应用图标：${icon.name}`);
+          closeIconPicker();
+        }
+      };
+    }
     gridBox.appendChild(item);
   }
 }
@@ -4881,7 +5558,6 @@ function initIconPicker() {
     btnIpBatchToggle.onclick = () => {
       ipBatchMode = !ipBatchMode;
       if (!ipBatchMode) ipSelectedIds.clear();
-      if (ipBatchMode && currentIconCategory !== 'custom') currentIconCategory = 'custom';
       updateIpBatchBar();
       renderIconPicker();
     };
@@ -4889,7 +5565,27 @@ function initIconPicker() {
   const btnIpSelectAll = $('ipBatchSelectAll');
   if (btnIpSelectAll) {
     btnIpSelectAll.onclick = () => {
-      for (const ic of ((cfg && cfg.customIcons) || [])) ipSelectedIds.add(ic.id);
+      const q = ($('ipSearch').value || '').trim().toLowerCase();
+      // 选中当前可见的自定义图标
+      if (currentIconCategory === 'custom' || currentIconCategory === 'all') {
+        for (const ic of ((cfg && cfg.customIcons) || [])) {
+          if (!q || ic.name.toLowerCase().includes(q) || (ic.category && ic.category.toLowerCase().includes(q))) {
+            if (currentIconCategory !== 'custom' || currentCustomSubCategory === '全部' || (ic.category || '常用') === currentCustomSubCategory) {
+              ipSelectedIds.add(ic.id);
+            }
+          }
+        }
+      }
+      // 选中当前可见的内置图标
+      if (currentIconCategory !== 'custom' && typeof BUILTIN_ICONS !== 'undefined') {
+        for (const icon of BUILTIN_ICONS) {
+          if (currentIconCategory !== 'all' && icon.category !== currentIconCategory) continue;
+          if (q && !icon.name.toLowerCase().includes(q)) continue;
+          const iconId = 'bi:' + (icon.category || 'all') + ':' + icon.name;
+          if ((cfg.hiddenBuiltinIcons || []).includes(iconId) || (cfg.hiddenBuiltinIcons || []).includes(icon.name)) continue;
+          ipSelectedIds.add(iconId);
+        }
+      }
       updateIpBatchBar();
       renderIconPicker();
     };
@@ -5472,11 +6168,303 @@ function bindShell() {
     };
   }
 
+  const lkm = $('libKeyModal');
+  if (lkm) {
+    $('lkmClose').onclick = closeLibKeyModal;
+    lkm.addEventListener('click', (e) => { if (e.target === lkm) closeLibKeyModal(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !lkm.hidden) closeLibKeyModal();
+    });
+
+    // 三 Tab 切换
+    $('lkmTabAction').onclick = () => setLkmTab('action');
+    $('lkmTabStyle').onclick = () => setLkmTab('style');
+    $('lkmTabDual').onclick = () => setLkmTab('dual');
+
+    // Tab 1: 动作与快捷事件
+    $('lkmActType').onchange = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.type = e.target.value;
+      updateLkmActionUI();
+      updateLkmSwatch();
+    };
+    $('lkmTargetInput').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      if (currentLibModalSpec.type === 'hotkey') currentLibModalSpec.hotkey = e.target.value;
+      else currentLibModalSpec.target = e.target.value;
+      updateLkmActionUI();
+      updateLkmSwatch();
+    };
+    $('lkmArgsInput').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.args = e.target.value;
+      updateLkmActionUI();
+    };
+    $('lkmPickAppBtn').onclick = pickAppForLib;
+    $('lkmFaviconBtn').onclick = fetchFaviconForLib;
+
+    for (const pill of document.querySelectorAll('.lkm-mod-pill')) {
+      pill.onclick = () => {
+        const mod = pill.dataset.mod;
+        if (!mod || !currentLibModalSpec) return;
+        const cur = (currentLibModalSpec.hotkey || '').split('+').filter(Boolean);
+        let next;
+        if (cur.includes(mod)) next = cur.filter(x => x !== mod);
+        else next = [...cur.filter(x => ['Ctrl', 'Alt', 'Shift', 'Win'].includes(x)), mod, ...cur.filter(x => !['Ctrl', 'Alt', 'Shift', 'Win'].includes(x))];
+        currentLibModalSpec.hotkey = next.join('+');
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    }
+    for (const btn of document.querySelectorAll('.lkm-hk-key')) {
+      btn.onclick = () => {
+        const key = btn.dataset.key;
+        if (!key || !currentLibModalSpec) return;
+        const cur = (currentLibModalSpec.hotkey || '').split('+').filter(x => ['Ctrl', 'Alt', 'Shift', 'Win'].includes(x));
+        cur.push(key);
+        currentLibModalSpec.hotkey = cur.join('+');
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    }
+    if ($('lkmHkClear')) {
+      $('lkmHkClear').onclick = () => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.hotkey = '';
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    }
+
+    // Tab 2: 外观与样式事件
+    $('lkmOpenIconPicker').onclick = openIconPickerForLib;
+    $('lkmPickLocalIcon').onclick = pickLocalIconForLib;
+    $('lkmClearIcon').onclick = () => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.icon = '';
+      updateLkmSwatch();
+      toast('已清除按键图标');
+    };
+    $('lkmLabelInput').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.label = e.target.value;
+      updateLkmSwatch();
+    };
+    $('lkmFontSize').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.fontSize = +e.target.value;
+      $('lkmFontSizeVal').textContent = e.target.value + 'px';
+      updateLkmSwatch();
+    };
+    $('lkmIconScale').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.iconScale = +e.target.value;
+      $('lkmIconScaleVal').textContent = e.target.value + '%';
+      updateLkmSwatch();
+    };
+    $('lkmColorInput').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.color = e.target.value;
+      $('lkmColorVal').textContent = e.target.value;
+      updateLkmSwatch();
+    };
+    for (const chip of document.querySelectorAll('.lkm-cchip')) {
+      chip.onclick = () => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.color = chip.dataset.c;
+        $('lkmColorInput').value = chip.dataset.c;
+        $('lkmColorVal').textContent = chip.dataset.c;
+        updateLkmSwatch();
+      };
+    }
+
+    // Tab 3: 动态双态与角标事件
+    $('lkmToggleAction').onchange = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.toggleAction = e.target.checked;
+      if (currentLibModalSpec.toggleAction && !currentLibModalSpec.act2Target) {
+        currentLibModalSpec.act2Type = 'command';
+        currentLibModalSpec.act2Target = '';
+      }
+      updateLkmDualUI();
+    };
+    $('lkmDualAct2Type').onchange = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.act2Type = e.target.value;
+    };
+    $('lkmDualAct2Target').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.act2Target = e.target.value.trim();
+    };
+    $('lkmSwapDualActionBtn').onclick = () => {
+      if (!currentLibModalSpec) return;
+      const t1 = currentLibModalSpec.type, tgt1 = currentLibModalSpec.target, a1 = currentLibModalSpec.args;
+      currentLibModalSpec.type = currentLibModalSpec.act2Type || 'command';
+      currentLibModalSpec.target = currentLibModalSpec.act2Target || '';
+      currentLibModalSpec.args = currentLibModalSpec.act2Args || '';
+      currentLibModalSpec.act2Type = t1;
+      currentLibModalSpec.act2Target = tgt1;
+      currentLibModalSpec.act2Args = a1;
+
+      const syncChk = $('lkmSwapSyncCheck');
+      if (syncChk && syncChk.checked && currentLibModalSpec.badgeToggle) {
+        const b1 = clone(currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' });
+        const b2 = clone(currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' });
+        currentLibModalSpec.badgeState1 = b2;
+        currentLibModalSpec.badgeState2 = b1;
+      }
+      updateLkmActionUI();
+      updateLkmDualUI();
+      updateLkmSwatch();
+      toast('已互换形态 1 与形态 2 执行动作');
+    };
+
+    $('lkmBadgeModeNone').onclick = () => {
+      if (!currentLibModalSpec) return;
+      delete currentLibModalSpec.badge;
+      delete currentLibModalSpec.badgeToggle;
+      delete currentLibModalSpec.badgeState1;
+      delete currentLibModalSpec.badgeState2;
+      updateLkmDualUI();
+      updateLkmSwatch();
+    };
+    $('lkmBadgeModeStatic').onclick = () => {
+      if (!currentLibModalSpec) return;
+      delete currentLibModalSpec.badgeToggle;
+      delete currentLibModalSpec.badgeState1;
+      delete currentLibModalSpec.badgeState2;
+      currentLibModalSpec.badge = currentLibModalSpec.badge || 'VIP';
+      currentLibModalSpec.badgeBg = currentLibModalSpec.badgeBg || '#e53935';
+      updateLkmDualUI();
+      updateLkmSwatch();
+    };
+    $('lkmBadgeModeDual').onclick = () => {
+      if (!currentLibModalSpec) return;
+      delete currentLibModalSpec.badge;
+      currentLibModalSpec.badgeToggle = true;
+      currentLibModalSpec.badgeState1 = currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' };
+      currentLibModalSpec.badgeState2 = currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+      updateLkmDualUI();
+      updateLkmSwatch();
+    };
+    $('lkmBadgeStaticText').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badge = e.target.value.trim();
+      updateLkmSwatch();
+    };
+    $('lkmBadgeStaticColor').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badgeBg = e.target.value;
+      updateLkmSwatch();
+    };
+    $('lkmBadge1Text').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badgeState1 = currentLibModalSpec.badgeState1 || {};
+      currentLibModalSpec.badgeState1.text = e.target.value.trim();
+      updateLkmSwatch();
+    };
+    $('lkmBadge1Color').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badgeState1 = currentLibModalSpec.badgeState1 || {};
+      currentLibModalSpec.badgeState1.bg = e.target.value;
+      updateLkmSwatch();
+    };
+    $('lkmBadge2Text').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badgeState2 = currentLibModalSpec.badgeState2 || {};
+      currentLibModalSpec.badgeState2.text = e.target.value.trim();
+      updateLkmSwatch();
+    };
+    $('lkmBadge2Color').oninput = (e) => {
+      if (!currentLibModalSpec) return;
+      currentLibModalSpec.badgeState2 = currentLibModalSpec.badgeState2 || {};
+      currentLibModalSpec.badgeState2.bg = e.target.value;
+      updateLkmSwatch();
+    };
+    $('lkmSwapDualBadgeBtn').onclick = () => {
+      if (!currentLibModalSpec) return;
+      const b1 = clone(currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' });
+      const b2 = clone(currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' });
+      currentLibModalSpec.badgeState1 = b2;
+      currentLibModalSpec.badgeState2 = b1;
+      updateLkmDualUI();
+      updateLkmSwatch();
+      toast('已互换两态角标');
+    };
+    $('lkmPreviewToggleBtn').onclick = () => {
+      lkmPreviewState = (lkmPreviewState === 1 ? 2 : 1);
+      updateLkmSwatch(lkmPreviewState);
+      toast(lkmPreviewState === 1 ? '正在预览形态 1' : '正在预览形态 2');
+    };
+
+    // 底栏操作
+    $('lkmApplyToSlot').onclick = async () => {
+      if (!currentLibModalEntry || !currentLibModalSpec) return;
+      if (!selected || selected.col === 5) {
+        toast('请先在主控面板点选一个按键格子');
+        return;
+      }
+      pageButtons()[selected.row + ',' + selected.col] = clone(currentLibModalSpec);
+      await commit(true);
+      renderInspector();
+      closeLibKeyModal();
+      toast(`已把「${currentLibModalEntry.name}」放置到 r${selected.row}c${selected.col}`);
+    };
+    $('lkmSave').onclick = async () => {
+      if (!currentLibModalEntry || !currentLibModalSpec) return;
+      const newName = $('lkmNameInput').value.trim();
+      if (!newName) {
+        toast('按键名称不能为空');
+        return;
+      }
+      currentLibModalEntry.name = newName.slice(0, 24);
+      currentLibModalEntry.tags = normTags($('lkmTagsInput').value);
+      currentLibModalEntry.spec = clone(currentLibModalSpec);
+      currentLibModalEntry.savedAt = new Date().toISOString();
+      await libSave();
+      renderLibPanel();
+      renderLibrary();
+      closeLibKeyModal();
+      toast(`已保存修改：「${currentLibModalEntry.name}」`);
+    };
+    $('lkmDelete').onclick = async () => {
+      if (!currentLibModalEntry) return;
+      const id = currentLibModalEntry.id;
+      const name = currentLibModalEntry.name;
+      if (!(await askConfirm('从按键库删除', `「${name}」将从按键库中永久移除，已放置在面板上的不受影响。`))) return;
+      cfg.library = libEntries().filter((x) => x.id !== id);
+      await libSave();
+      closeLibKeyModal();
+      renderLibPanel();
+      renderLibrary();
+      toast(`已从库中删除：「${name}」`);
+    };
+    $('lkmTestBtn').onclick = () => {
+      if (!currentLibModalSpec) return;
+      runAction(currentLibModalSpec);
+      toast(`已发送执行测试：「${$('lkmNameInput').value || '按键'}」`);
+    };
+  }
+
+  // 专属页面快照管理中心弹窗事件
+  const psm = $('pageSnapshotModal');
+  if (psm) {
+    $('psmClose').onclick = closePageSnapshotModal;
+    psm.addEventListener('click', (e) => { if (e.target === psm) closePageSnapshotModal(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !psm.hidden) closePageSnapshotModal();
+    });
+    $('psmSaveCurrent').onclick = saveCurrentPageAsSnapshot;
+    $('psmImport').onclick = importPageSnapshots;
+    $('psmExportAll').onclick = exportAllPageSnapshots;
+  }
+
   $('pageAddTop').onclick = pageAddTop;
   $('pageAddSub').onclick = pageAddChild;
   $('pageRename').onclick = pageRename;
   $('pageDup').onclick = pageDuplicate;
-  $('pageSave').onclick = libraryAddPage;
+  const pageSaveBtn = $('pageSave') || $('pageSnapshotBtn');
+  if (pageSaveBtn) pageSaveBtn.onclick = openPageSnapshotModal;
   $('pageDel').onclick = pageDelete;
 
   const sideToggle = $('pageSidebarToggle');
@@ -5485,8 +6473,8 @@ function bindShell() {
       const sb = $('pageSidebar');
       if (sb) {
         const isCollapsed = sb.classList.toggle('collapsed');
-        sideToggle.textContent = isCollapsed ? '⇥' : '⇤';
-        sideToggle.title = isCollapsed ? '展开页面侧栏' : '折叠页面侧栏';
+        sideToggle.textContent = isCollapsed ? '⇥' : '⇤ 收起';
+        sideToggle.title = isCollapsed ? '展开页面侧栏' : '收起页面侧栏';
       }
     };
   }
@@ -5609,13 +6597,12 @@ function demoConfig() {
         strips: { '2': { type: 'page', label: '', color: '#263238' } },
       },
     ],
-    library: [
-      { id: 'L1', name: 'VS Code', tags: ['开发', '常用'], spec: { type: 'app', label: 'VS Code', target: 'C:\\Code.exe', color: '#1565c0' } },
-      { id: 'L2', name: '关屏', tags: ['系统'], spec: { type: 'ps1', label: '关屏', target: 'System-Action.ps1', color: '#1a237e' } },
-      { id: 'L3', name: '区域截图', tags: ['常用'], spec: { type: 'command', label: '区域截图', target: 'ms-screenclip:', color: '#00838f' } },
-      { id: 'L4', name: '下一页', tags: ['导航'], spec: { type: 'page', mode: 'next', label: '下一页', color: '#455a64' } },
+    pageSnapshots: [
       {
-        id: 'L5', name: '主页面（整页）', kind: 'page', tags: ['整页'],
+        id: 'PS_1',
+        name: '主页面（整页快照）',
+        tags: ['整页', '常用'],
+        savedAt: new Date().toISOString(),
         page: {
           buttons: {
             '0,0': { type: 'app', label: 'VS Code', target: 'C:\\Code.exe', color: '#1565c0' },
@@ -5624,6 +6611,12 @@ function demoConfig() {
           strips: { '0': { type: 'clock', label: '', color: '#263238' } },
         },
       },
+    ],
+    library: [
+      { id: 'L1', name: 'VS Code', tags: ['开发', '常用'], spec: { type: 'app', label: 'VS Code', target: 'C:\\Code.exe', color: '#1565c0' } },
+      { id: 'L2', name: '关屏', tags: ['系统'], spec: { type: 'ps1', label: '关屏', target: 'System-Action.ps1', color: '#1a237e' } },
+      { id: 'L3', name: '区域截图', tags: ['常用'], spec: { type: 'command', label: '区域截图', target: 'ms-screenclip:', color: '#00838f' } },
+      { id: 'L4', name: '下一页', tags: ['导航'], spec: { type: 'page', mode: 'next', label: '下一页', color: '#455a64' } },
     ],
   };
 }
@@ -5784,6 +6777,25 @@ async function boot() {
     cfg = await api.configLoad();
     if (!cfg.library) cfg.library = [];
     bindDevice();
+  }
+
+  if (!cfg.pageSnapshots) cfg.pageSnapshots = [];
+  // 架构解耦自动迁移：将历史残留在 cfg.library 中的整页条目 (kind === 'page') 自动迁移至专属 cfg.pageSnapshots
+  const legacyPages = (cfg.library || []).filter(isPageEntry);
+  if (legacyPages.length > 0) {
+    for (const lp of legacyPages) {
+      cfg.pageSnapshots.push({
+        id: lp.id && lp.id.startsWith('PS_') ? lp.id : ('PS_' + (lp.id || '').replace(/^L/, '')),
+        name: lp.name || '迁移整页快照',
+        tags: lp.tags || [],
+        savedAt: lp.savedAt || new Date().toISOString(),
+        page: lp.page || { buttons: {}, strips: {} }
+      });
+    }
+    cfg.library = (cfg.library || []).filter(e => !isPageEntry(e));
+    if (!DEMO && window.api && api.configSave) {
+      await api.configSave(cfg).catch(() => {});
+    }
   }
 
   buildGrid();

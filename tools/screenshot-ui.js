@@ -223,6 +223,67 @@ const SHOTS = [
       'document.querySelector(".insp-body").scrollTop = 120',
     ],
   },
+  {
+    name: 'ui-26-page-rail-2x2', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+    ],
+  },
+  {
+    name: 'ui-27-dual-swap-mini-switch', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabAction").click()',
+      'document.getElementById("i-toggle-act-dual").click()',
+      'document.getElementById("i-swap-sync-wrap").click()',
+    ],
+  },
+  {
+    name: 'ui-28-lib-modal-and-bottom-batch', w: 1160, h: 800,
+    js: [
+      'document.getElementById("libExpand").click()',
+      'document.querySelector("#libGrid .libcard:not(.ispage)").click()',
+    ],
+  },
+  {
+    name: 'ui-29-icon-bottom-batch', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-openiconpicker").click()',
+    ],
+  },
+  {
+    name: 'ui-30-page-sidebar-redesign', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+    ],
+  },
+  {
+    name: 'ui-31-keystudio-modal', w: 1160, h: 800,
+    js: [
+      'document.getElementById("libExpand").click()',
+      'document.querySelector("#libGrid .libcard").click()',
+      'document.getElementById("lkmTabDual").click()',
+    ],
+  },
+  {
+    name: 'ui-32-page-snapshot-modal', w: 1160, h: 800,
+    js: [
+      'document.getElementById("pageSave").click()',
+      'document.getElementById("psmSaveCurrent").click()',
+    ],
+  },
+  {
+    name: 'ui-33-icon-batch-builtin', w: 1160, h: 800,
+    js: [
+      'document.querySelectorAll("#grid .cell.filled")[0].click()',
+      'document.getElementById("tabStyle").click()',
+      'document.getElementById("i-openiconpicker").click()',
+      'document.querySelectorAll("#ipTags .ip-tag")[0].click()',
+      'document.getElementById("ipBatchToggle").click()',
+    ],
+  },
 ];
 
 

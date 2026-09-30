@@ -232,27 +232,34 @@
   <!-- 左侧独立垂直页面导航栏 -->
   <aside id="pageSidebar" class="page-sidebar">
     <div class="page-sidebar-head">
-      <div class="ps-title-wrap">
-        <span class="ps-icon">📄</span>
-        <span class="ps-title">页面</span>
+      <!-- 第一层：标题栏与收起胶囊 -->
+      <div class="ps-title-row">
+        <div class="ps-title-wrap">
+          <span class="ps-icon">📑</span>
+          <span class="ps-title">页面管理</span>
+        </div>
+        <button id="pageSidebarToggle" class="ps-collapse-btn" title="收起页面侧栏">⇤ 收起</button>
       </div>
-      <div class="ps-head-actions">
-        <button id="pageGradientBtn" class="ghost tiny icon-btn" title="整板无缝流光渐变">🎨</button>
-        <button id="pageAddTop" class="ghost tiny icon-btn" title="新建顶层页面">＋</button>
-        <button id="pageAddSub" class="ghost tiny icon-btn" title="在当前页下方新建子页（文件夹）">📁</button>
-        <button id="pageSidebarToggle" class="ghost tiny icon-btn" title="折叠/展开页面侧栏">⇤</button>
+      <!-- 第二层：大尺寸新建页面与子页操作 -->
+      <div class="ps-action-row">
+        <button id="pageAddTop" class="ps-new-page-btn" title="新建顶层主页面">
+          <span class="btn-icon">＋</span> 新建页面
+        </button>
+        <button id="pageAddSub" class="ps-new-sub-btn" title="在当前页下方新建子页（文件夹）">
+          📁 子页
+        </button>
       </div>
     </div>
     <!-- 垂直页面列表容器 -->
     <div id="pageTabs" class="page-tabs-vertical"></div>
 
-    <!-- 页面操作快捷底部栏 -->
+    <!-- 页面操作快捷底部栏 (2x2 网格) -->
     <div class="page-sidebar-foot">
       <div class="ps-foot-actions">
-        <button id="pageRename" class="ghost tiny ps-foot-btn" title="重命名当前页">改名</button>
-        <button id="pageDup" class="ghost tiny ps-foot-btn" title="复制当前页">复制</button>
-        <button id="pageSave" class="ghost tiny ps-foot-btn" title="整页入库">入库</button>
-        <button id="pageDel" class="ghost tiny ps-foot-btn danger" title="删除当前页">删除</button>
+        <button id="pageRename" class="ghost tiny ps-foot-btn" title="重命名当前页">✏️ 改名</button>
+        <button id="pageDup" class="ghost tiny ps-foot-btn" title="复制当前页">📑 复制</button>
+        <button id="pageSave" class="ghost tiny ps-foot-btn" title="打开页面快照中心（备份与恢复整页）">📂 快照</button>
+        <button id="pageDel" class="ghost tiny ps-foot-btn danger" title="删除当前页">🗑️ 删除</button>
       </div>
     </div>
   </aside>
@@ -260,8 +267,11 @@
   <section class="stage">
     <div class="device">
       <div class="device-bar">
-        <span class="logo">AJAZZ</span>
-        <span class="model">AKP-153</span>
+        <div class="device-brand-info">
+          <span class="logo">AJAZZ</span>
+          <span class="model">AKP-153</span>
+        </div>
+        <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变（一键铺满 15 键背景）">🌈 整板流光</button>
       </div>
       <div id="grid" class="grid"></div>
     </div>
@@ -287,12 +297,14 @@
 <div id="drawer" class="drawer">
   <div class="drawer-head">
     <button id="drawerToggle" class="dhead">
-      <span>按键库</span>
+      <span>🗃️ 按键资产库</span>
       <b id="libraryCount">0</b>
       <span class="chev">▴</span>
     </button>
-    <input id="libSearch" class="libsearch" placeholder="搜索库…" />
-    <button id="libExpand" class="ghost tiny">展开</button>
+    <input id="libSearch" class="libsearch" placeholder="搜索库条目…" />
+    <button id="libExpand" class="lib-expand-btn" title="展开按键库全览面板，支持分类筛选与批量管理">
+      <span>↗</span> 展开按键库全览面板
+    </button>
   </div>
   <div id="library" class="library"></div>
 </div>
@@ -302,16 +314,16 @@
     <div class="libpanel-head">
       <h3>按键库</h3>
       <input id="libSearch2" class="libsearch" placeholder="搜索名称 / 目标 / 标签" />
-      <button id="libBatchToggle" class="ghost">☑️ 批量管理</button>
       <button id="libClose" class="ghost">关闭</button>
     </div>
     <div id="libTags" class="libtags"></div>
     <div id="libGrid" class="libgrid"></div>
-    <div class="libpanel-foot">
+    <div class="libpanel-foot" id="libNormalFoot">
+      <button id="libBatchToggle" class="ghost lib-foot-batch-btn">☑️ 批量管理</button>
       <button id="libImport" class="ghost">导入…</button>
       <button id="libExportAll" class="ghost">导出全部…</button>
       <button id="libExportTag" class="ghost">只导出当前标签…</button>
-      <span class="muted" id="libHint">点条目放到选中的格子，或直接拖到格子上</span>
+      <span class="muted" id="libHint">点条目打开设置中心，或直接拖拽到格子上</span>
     </div>
     <!-- 批量操作浮条 -->
     <div id="libBatchBar" class="lib-batch-bar" hidden>
@@ -322,6 +334,273 @@
       <button id="libBatchExport" class="ghost tiny">📤 导出所选项…</button>
       <button id="libBatchDelete" class="ghost tiny danger">🗑️ 批量删除</button>
       <button id="libBatchExit" class="ghost tiny" style="margin-left:auto;">✕ 退出批量</button>
+    </div>
+  </div>
+</div>
+
+<!-- 按键库单个条目全功能按键编辑器 (Key Studio Modal) -->
+<div id="libKeyModal" class="modal-backdrop" hidden>
+  <div class="lib-key-modal-box">
+    <div class="lkm-head">
+      <div class="lkm-title-row">
+        <span class="lkm-title-icon">🎛️</span>
+        <h3 id="lkmTitle">按键编辑器</h3>
+      </div>
+      <button id="lkmClose" class="ghost tiny">✕</button>
+    </div>
+    <div class="lkm-body">
+      <!-- 预览与基础信息 -->
+      <div class="lkm-preview-section">
+        <div id="lkmSwatchWrap" class="lkm-swatch-wrap" title="按键实时外观预览"></div>
+        <div class="lkm-info-fields">
+          <div class="lkm-field">
+            <label>按键名称</label>
+            <input id="lkmNameInput" class="lkm-input" placeholder="输入按键在库中的名称" />
+          </div>
+          <div class="lkm-field">
+            <label>分类 / 标签（空格分隔）</label>
+            <input id="lkmTagsInput" class="lkm-input" placeholder="例如：开发 常用 视频" />
+          </div>
+        </div>
+      </div>
+
+      <!-- 选项卡导航条 -->
+      <div class="lkm-tabs" id="lkmTabs">
+        <button type="button" id="lkmTabAction" class="lkm-tab active">⚡ 动作与快捷</button>
+        <button type="button" id="lkmTabStyle" class="lkm-tab">🎨 外观与样式</button>
+        <button type="button" id="lkmTabDual" class="lkm-tab">🔄 动态双态与角标</button>
+      </div>
+
+      <!-- Tab 1: 动作与快捷 -->
+      <div id="lkmPaneAction" class="lkm-tab-pane">
+        <div class="lkm-card">
+          <div class="lkm-form-row">
+            <label class="lkm-label">动作类型</label>
+            <select id="lkmActType" class="lkm-select">
+              <option value="app">运行本地应用程序或文件</option>
+              <option value="url">在浏览器中打开网址</option>
+              <option value="hotkey">模拟系统快捷键组合</option>
+              <option value="command">执行控制台命令行 (cmd)</option>
+              <option value="ps1">执行 PowerShell 脚本</option>
+              <option value="page">页面跳转切换</option>
+              <option value="multi">复合宏动作序列</option>
+            </select>
+          </div>
+          <!-- 动作详细参数表单 -->
+          <div id="lkmTargetWrap" class="lkm-form-row">
+            <label class="lkm-label" id="lkmTargetLabel">目标路径 / 网址 / 快捷键</label>
+            <div class="lkm-input-btn-group">
+              <input id="lkmTargetInput" class="lkm-input" placeholder="选择或输入执行目标" />
+              <button type="button" id="lkmPickAppBtn" class="ghost tiny" title="选择本地可执行程序">浏览…</button>
+              <button type="button" id="lkmFaviconBtn" class="ghost tiny" title="从网址抓取高清网站图标" hidden>抓图标</button>
+            </div>
+          </div>
+          <div id="lkmArgsWrap" class="lkm-form-row">
+            <label class="lkm-label">启动参数 / 命令行参数 (可选)</label>
+            <input id="lkmArgsInput" class="lkm-input" placeholder="例如：--incognito 或 -v" />
+          </div>
+          <!-- 快捷键点选构建器 -->
+          <div id="lkmHotkeyBuilder" class="lkm-hotkey-builder" hidden>
+            <div class="lkm-hk-mod-row">
+              <button type="button" class="lkm-mod-pill" data-mod="Ctrl">Ctrl</button>
+              <button type="button" class="lkm-mod-pill" data-mod="Alt">Alt</button>
+              <button type="button" class="lkm-mod-pill" data-mod="Shift">Shift</button>
+              <button type="button" class="lkm-mod-pill" data-mod="Win">Win</button>
+              <button type="button" id="lkmHkClear" class="ghost tiny" style="margin-left:auto;">清空</button>
+            </div>
+            <div class="lkm-hk-key-grid">
+              <button type="button" class="lkm-hk-key" data-key="Enter">Enter</button>
+              <button type="button" class="lkm-hk-key" data-key="Space">Space</button>
+              <button type="button" class="lkm-hk-key" data-key="Tab">Tab</button>
+              <button type="button" class="lkm-hk-key" data-key="Esc">Esc</button>
+              <button type="button" class="lkm-hk-key" data-key="F1">F1</button>
+              <button type="button" class="lkm-hk-key" data-key="F2">F2</button>
+              <button type="button" class="lkm-hk-key" data-key="F5">F5</button>
+              <button type="button" class="lkm-hk-key" data-key="F11">F11</button>
+              <button type="button" class="lkm-hk-key" data-key="F12">F12</button>
+              <button type="button" class="lkm-hk-key" data-key="MediaPlayPause">播放/暂停</button>
+              <button type="button" class="lkm-hk-key" data-key="AudioVolumeUp">音量+</button>
+              <button type="button" class="lkm-hk-key" data-key="AudioVolumeDown">音量-</button>
+            </div>
+          </div>
+          <!-- 动作说明与测试 -->
+          <div class="lkm-action-head" style="margin-top:6px;">
+            <span class="lkm-action-type-badge" id="lkmTypeBadge">应用</span>
+            <span class="lkm-action-desc" id="lkmActionDesc">绑定的执行动作</span>
+            <button id="lkmTestBtn" type="button" class="ghost tiny lkm-test-btn" title="直接在系统测试运行该动作">▶️ 测试运行</button>
+          </div>
+          <div class="lkm-action-detail" id="lkmActionDetail"></div>
+        </div>
+      </div>
+
+      <!-- Tab 2: 外观与样式 -->
+      <div id="lkmPaneStyle" class="lkm-tab-pane" hidden>
+        <div class="lkm-card">
+          <div class="lkm-form-row">
+            <label class="lkm-label">图标配置</label>
+            <div class="btnrow" style="gap:6px;">
+              <button type="button" id="lkmOpenIconPicker" class="ghost tiny">🎨 挑选矢量图标</button>
+              <button type="button" id="lkmPickLocalIcon" class="ghost tiny">🖼️ 本地图片…</button>
+              <button type="button" id="lkmClearIcon" class="ghost tiny danger">🗑️ 清除图标</button>
+            </div>
+          </div>
+          <div class="lkm-form-row">
+            <label class="lkm-label">按键文本标签</label>
+            <input id="lkmLabelInput" class="lkm-input" placeholder="显示在按键上的文本（可多行）" />
+          </div>
+          <div class="lkm-form-row">
+            <div style="display:flex; justify-content:space-between;">
+              <label class="lkm-label">文字字号</label>
+              <span id="lkmFontSizeVal" style="font-size:11px; color:var(--muted);">12px</span>
+            </div>
+            <input type="range" id="lkmFontSize" min="10" max="24" step="1" value="12" />
+          </div>
+          <div class="lkm-form-row">
+            <div style="display:flex; justify-content:space-between;">
+              <label class="lkm-label">图标缩放</label>
+              <span id="lkmIconScaleVal" style="font-size:11px; color:var(--muted);">80%</span>
+            </div>
+            <input type="range" id="lkmIconScale" min="30" max="100" step="5" value="80" />
+          </div>
+          <div class="lkm-form-row">
+            <label class="lkm-label">按键独立底色</label>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="color" id="lkmColorInput" value="#37474f" style="width:36px; height:28px; border:none; border-radius:4px; cursor:pointer;" />
+              <span id="lkmColorVal" style="font-size:11px; color:var(--muted);">#37474f</span>
+              <div class="lkm-color-palette" style="display:flex; gap:4px; margin-left:auto;">
+                <span class="lkm-cchip" data-c="#1565c0" style="background:#1565c0;"></span>
+                <span class="lkm-cchip" data-c="#2e7d32" style="background:#2e7d32;"></span>
+                <span class="lkm-cchip" data-c="#c62828" style="background:#c62828;"></span>
+                <span class="lkm-cchip" data-c="#6a1b9a" style="background:#6a1b9a;"></span>
+                <span class="lkm-cchip" data-c="#ef6c00" style="background:#ef6c00;"></span>
+                <span class="lkm-cchip" data-c="#37474f" style="background:#37474f;"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: 动态双态与角标 -->
+      <div id="lkmPaneDual" class="lkm-tab-pane" hidden>
+        <!-- 双态独立动作 -->
+        <div class="lkm-card">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <label class="lkm-label" style="margin:0; font-weight:600;">动态双态独立动作</label>
+            <label class="switch">
+              <input type="checkbox" id="lkmToggleAction" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <div id="lkmDualActionWrap" hidden>
+            <div class="lkm-dual-cards">
+              <div class="lkm-subcard">
+                <span class="lkm-subcard-title">形态 1 执行动作</span>
+                <span id="lkmDualAct1Text" class="lkm-subcard-text">跟随当前主动作</span>
+              </div>
+              <div class="lkm-subcard">
+                <span class="lkm-subcard-title">形态 2 执行动作</span>
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                  <select id="lkmDualAct2Type" class="lkm-select" style="width:100px;">
+                    <option value="command">命令行</option>
+                    <option value="app">应用程序</option>
+                    <option value="hotkey">快捷键</option>
+                    <option value="url">网址</option>
+                  </select>
+                  <input id="lkmDualAct2Target" class="lkm-input" style="flex:1;" placeholder="形态 2 目标" />
+                </div>
+              </div>
+            </div>
+            <!-- 互换动作条 -->
+            <div class="lkm-swap-row" style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+              <button type="button" id="lkmSwapDualActionBtn" class="ghost tiny" style="flex:1;">🔁 互换形态 1 与形态 2 动作</button>
+              <label class="swap-mini-switch-wrap" id="lkmSwapSyncWrap" title="互换动作时同时对调角标">
+                <input type="checkbox" id="lkmSwapSyncCheck" checked />
+                <span class="swap-mini-switch"></span>
+                <span class="swap-mini-switch-label">联动对调角标</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 角标设置卡片 -->
+        <div class="lkm-card" style="margin-top:8px;">
+          <label class="lkm-label" style="font-weight:600;">角标提示模式</label>
+          <div class="color-capsule-group" style="margin-bottom:8px;">
+            <button type="button" class="color-capsule-pill active" id="lkmBadgeModeNone">🚫 无角标</button>
+            <button type="button" class="color-capsule-pill" id="lkmBadgeModeStatic">📌 静态角标</button>
+            <button type="button" class="color-capsule-pill" id="lkmBadgeModeDual">⚡ 动态双态</button>
+          </div>
+
+          <!-- 静态角标 -->
+          <div id="lkmBadgeStaticWrap" hidden>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <input id="lkmBadgeStaticText" class="lkm-input" placeholder="角标文字（如 NEW / 1 / VIP）" />
+              <input type="color" id="lkmBadgeStaticColor" value="#e53935" style="width:36px; height:28px; border:none; border-radius:4px; cursor:pointer;" />
+            </div>
+          </div>
+
+          <!-- 动态双态角标 -->
+          <div id="lkmBadgeDualWrap" hidden>
+            <div class="lkm-dual-cards">
+              <div class="lkm-subcard">
+                <span class="lkm-subcard-title">形态 1 角标</span>
+                <div style="display:flex; gap:6px; margin-top:4px; align-items:center;">
+                  <input id="lkmBadge1Text" class="lkm-input" placeholder="文字 (ON)" />
+                  <input type="color" id="lkmBadge1Color" value="#107c41" style="width:32px; height:26px; border:none; border-radius:4px; cursor:pointer;" />
+                </div>
+              </div>
+              <div class="lkm-subcard">
+                <span class="lkm-subcard-title">形态 2 角标</span>
+                <div style="display:flex; gap:6px; margin-top:4px; align-items:center;">
+                  <input id="lkmBadge2Text" class="lkm-input" placeholder="文字 (OFF)" />
+                  <input type="color" id="lkmBadge2Color" value="#e53935" style="width:32px; height:26px; border:none; border-radius:4px; cursor:pointer;" />
+                </div>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:8px;">
+              <button type="button" id="lkmSwapDualBadgeBtn" class="ghost tiny" style="flex:1;">⇅ 互换两态角标</button>
+              <button type="button" id="lkmPreviewToggleBtn" class="ghost tiny">🔄 试切双态预览</button>
+            </div>
+          </div>
+
+          <!-- 角标预览 -->
+          <div class="lkm-badge-info" id="lkmBadgeInfo" style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+            <span style="font-size:12px; color:var(--muted);">实时效果:</span>
+            <div id="lkmBadgePreviewWrap"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lkm-foot">
+      <button id="lkmApplyToSlot" class="lkm-btn-primary">
+        ⚡ 放置到当前选中格子 (<span id="lkmCurrentSlotTag">r0c0</span>)
+      </button>
+      <button id="lkmSave" class="ghost">💾 保存到按键库</button>
+      <button id="lkmDelete" class="ghost danger">🗑️ 从库中删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 专属页面快照管理中心模态弹窗 -->
+<div id="pageSnapshotModal" class="modal-backdrop" hidden>
+  <div class="page-snapshot-box">
+    <div class="psm-head">
+      <div class="psm-title-wrap">
+        <span class="psm-title-icon">📂</span>
+        <h3>页面快照管理中心</h3>
+        <span class="psm-badge" id="psmCountBadge">0 个快照</span>
+      </div>
+      <div class="psm-head-actions">
+        <button id="psmSaveCurrent" class="primary tiny" title="将当前正在编辑的整页（15键+3副屏）存为独立快照">📥 将当前页存为快照</button>
+        <button id="psmImport" class="ghost tiny" title="从外部 JSON 文件导入整页快照包">📁 导入快照包…</button>
+        <button id="psmExportAll" class="ghost tiny" title="将所有整页快照导出为 JSON 备份文件">📤 导出全部…</button>
+        <button id="psmClose" class="ghost tiny" title="关闭窗口">✕</button>
+      </div>
+    </div>
+    <div class="psm-body">
+      <div id="psmGrid" class="psm-grid">
+        <!-- 快照卡片流 -->
+      </div>
     </div>
   </div>
 </div>
@@ -345,15 +624,14 @@
     <div class="ip-head">
       <h3>精选矢量图标库</h3>
       <input id="ipSearch" class="ip-search" placeholder="搜索图标名称或标签…" />
-      <button id="ipBatchToggle" class="ghost">☑️ 批量管理</button>
       <button id="ipBatchImport" class="ghost" title="选择多个本地图片、图标或程序批量存入当前分类">📁 批量导入…</button>
       <button id="ipClose" class="ghost">关闭</button>
     </div>
     <div id="ipTags" class="ip-tags"></div>
     <div id="ipSubTags" class="ip-subtags" hidden></div>
     <div id="ipGrid" class="ip-grid"></div>
-    <div class="ip-foot">
-      <span class="muted" id="ipFootHint">点击图标套用到当前按键；右键自定义图标可重命名、改分类或删除</span>
+    <div class="ip-foot" id="ipNormalFoot">
+      <button id="ipBatchToggle" class="ghost tiny ip-foot-batch-btn" title="批量管理图标（支持全部分类及内置图标）">☑️ 批量管理</button>
       <!-- 单色图标快捷调色盘 -->
       <div id="ipTintWrap" class="ip-tint-wrap" title="选择颜色为单色矢量图标着色">
         <span class="ip-tint-label">着色:</span>
@@ -369,16 +647,17 @@
         </div>
         <input type="color" id="ipCustomTintColor" class="ip-tint-picker" value="#ffffff" title="自定义任意着色" />
       </div>
-      <button id="ipSaveCurrent" class="ghost tiny" style="margin-left:auto;">⭐ 存入当前按键图标</button>
+      <span class="muted" id="ipFootHint" style="font-size:11px; margin-left:auto; white-space:nowrap;">点击图标直接应用</span>
+      <button id="ipSaveCurrent" class="ghost tiny" style="margin-left:6px; flex:none;">⭐ 存入当前按键图标</button>
     </div>
-    <!-- 图标库批量操作浮条 -->
-    <div id="ipBatchBar" class="lib-batch-bar" hidden>
+    <!-- 图标库批量操作底栏 (替换普通底栏) -->
+    <div id="ipBatchBar" class="ip-batch-bar" hidden>
       <span class="batch-count-badge" id="ipBatchCount">已选 0 个图标</span>
-      <button id="ipBatchSelectAll" class="ghost tiny">全选</button>
+      <button id="ipBatchSelectAll" class="ghost tiny">全选本页</button>
       <button id="ipBatchDeselect" class="ghost tiny">清空选择</button>
-      <button id="ipBatchCategory" class="ghost tiny">🏷️ 批量改分类…</button>
+      <button id="ipBatchCategory" class="ghost tiny">🏷️ 批量归类/收藏…</button>
       <button id="ipBatchExport" class="ghost tiny">📤 导出所选图标包…</button>
-      <button id="ipBatchDelete" class="ghost tiny danger">🗑️ 批量删除</button>
+      <button id="ipBatchDelete" class="ghost tiny danger">🗑️ 批量删除/隐藏</button>
       <button id="ipBatchExit" class="ghost tiny" style="margin-left:auto;">✕ 退出批量</button>
     </div>
   </div>
