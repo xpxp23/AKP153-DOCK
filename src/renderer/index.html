@@ -210,7 +210,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.4.0 (独立便携免安装版)</span>
+                <span class="about-v">v0.5.1 (独立便携免安装版)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -253,14 +253,11 @@
     <!-- 垂直页面列表容器 -->
     <div id="pageTabs" class="page-tabs-vertical"></div>
 
-    <!-- 页面操作快捷底部栏 (2x2 网格) -->
+    <!-- 页面操作快捷底部栏（快照中心大按钮） -->
     <div class="page-sidebar-foot">
-      <div class="ps-foot-actions">
-        <button id="pageRename" class="ghost tiny ps-foot-btn" title="重命名当前页">✏️ 改名</button>
-        <button id="pageDup" class="ghost tiny ps-foot-btn" title="复制当前页">📑 复制</button>
-        <button id="pageSave" class="ghost tiny ps-foot-btn" title="打开页面快照中心（备份与恢复整页）">📂 快照</button>
-        <button id="pageDel" class="ghost tiny ps-foot-btn danger" title="删除当前页">🗑️ 删除</button>
-      </div>
+      <button id="pageSave" class="ps-big-snapshot-btn" title="打开页面快照中心（整页备份、导入与恢复）">
+        <span class="btn-icon">📂</span> 页面快照中心
+      </button>
     </div>
   </aside>
 
@@ -616,6 +613,15 @@
   <button id="cmSaveLib" class="cm-item"><span class="cm-icon">⭐</span> 存入按键库</button>
   <div class="cm-divider"></div>
   <button id="cmClear" class="cm-item danger"><span class="cm-icon">🗑️</span> 清空格子 <kbd>Del</kbd></button>
+</div>
+
+<!-- 页面侧栏右键上下文菜单 -->
+<div id="pageContextMenu" class="context-menu" hidden>
+  <button id="pcmRename" class="cm-item"><span class="cm-icon">✏️</span> 重命名该页</button>
+  <button id="pcmDup" class="cm-item"><span class="cm-icon">📑</span> 复制此页面</button>
+  <button id="pcmSnapshot" class="cm-item"><span class="cm-icon">📂</span> 页面快照管理</button>
+  <div class="cm-divider"></div>
+  <button id="pcmDel" class="cm-item danger"><span class="cm-icon">🗑️</span> 删除此页面</button>
 </div>
 
 <!-- 内置图标库选择弹窗 -->

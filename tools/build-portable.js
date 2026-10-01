@@ -103,22 +103,40 @@ function run() {
   }
 
   // 4. 复制生产运行时必需的 node_modules
-  log('注入运行时原生模块依赖 (jpeg-js, node-hid)...');
+  log('注入运行时原生模块与生产依赖 (jpeg-js, jsqr, node-hid, pkg-prebuilds, node-addon-api)...');
   const appNodeModules = path.join(appDir, 'node_modules');
   fs.mkdirSync(appNodeModules, { recursive: true });
 
-  copyDirSync(path.join(ROOT, 'node_modules', 'jpeg-js'), path.join(appNodeModules, 'jpeg-js'));
-  copyDirSync(path.join(ROOT, 'node_modules', 'node-hid'), path.join(appNodeModules, 'node-hid'), (filePath) => {
-    // 裁剪掉 darwin / linux 等跨平台二进制以大幅缩减体积，仅保留 win32-x64 和 win32-ia32
-    if (filePath.includes('prebuilds') && (
-      filePath.includes('darwin') ||
-      filePath.includes('linux') ||
-      filePath.includes('arm')
-    )) {
-      return false;
+  const PROD_MODULES = ['jpeg-js', 'jsqr', 'node-hid', 'pkg-prebuilds', 'node-addon-api'];
+  for (const mod of PROD_MODULES) {
+    const srcMod = path.join(ROOT, 'node_modules', mod);
+    const dstMod = path.join(appNodeModules, mod);
+    if (!fs.existsSync(srcMod)) {
+      throw new Error(`缺少生产运行时依赖: ${mod}，请先执行 npm install`);
     }
-    return true;
-  });
+    log(`  - 复制模块: ${mod}`);
+    copyDirSync(srcMod, dstMod, (filePath) => {
+      // 裁剪掉 darwin / linux 等跨平台二进制以大幅缩减体积，仅保留 win32-x64 和 win32-ia32
+      if (filePath.includes('prebuilds') && (
+        filePath.includes('darwin') ||
+        filePath.includes('linux') ||
+        filePath.includes('arm')
+      )) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // 验证关键运行模块完整性，避免异机启动时抛 Cannot find module 'pkg-prebuilds/bindings'
+  const checkBindings = path.join(appNodeModules, 'pkg-prebuilds', 'bindings.js');
+  const checkNodeHid = path.join(appNodeModules, 'node-hid', 'nodehid.js');
+  const checkJsqr = path.join(appNodeModules, 'jsqr', 'dist', 'jsQR.js');
+  const checkJpeg = path.join(appNodeModules, 'jpeg-js', 'index.js');
+  if (!fs.existsSync(checkBindings) || !fs.existsSync(checkNodeHid) || !fs.existsSync(checkJsqr) || !fs.existsSync(checkJpeg)) {
+    throw new Error('便携版关键依赖完整性校验失败，请检查 node_modules 构建！');
+  }
+  log('关键依赖完整性校验通过 (pkg-prebuilds, node-hid, jsqr, jpeg-js)');
 
   // 5. 注入 Agent Skill 与 CLI 工具
   log('注入 Agent Skill 与 CLI 工具...');
@@ -147,7 +165,7 @@ start "" "AKP153 控制台.exe"
   fs.writeFileSync(path.join(STAGE, '启动 AKP153 控制台.bat'), batContent, 'utf8');
 
   const readmeContent = `========================================================================
-  黑爵 AJAZZ AKP153 液晶控制台 - 绿色免安装便携版 (v0.1.0)
+  黑爵 AJAZZ AKP153 液晶控制台 - 绿色免安装便携版 (v${PKG.version})
 ========================================================================
 
 【如何运行】

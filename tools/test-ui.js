@@ -162,7 +162,7 @@ app.whenReady().then(async () => {
     'tabs=' + await js('document.querySelectorAll("#pageTabs .ptab").length'));
   check('页签高亮当前页', await js('!!document.querySelector("#pageTabs .ptab.on")'));
   check('有新建/删除页按钮',
-    await js('!!document.getElementById("pageAddTop") && !!document.getElementById("pageAddSub") && !!document.getElementById("pageDel")'));
+    await js('!!document.getElementById("pageAddTop") && !!document.getElementById("pageAddSub") && (!!document.getElementById("pageDel") || !!document.getElementById("pcmDel"))'));
   check('显示屏能显示页码',
     /页/.test(String(await js('document.querySelectorAll("#grid .cell.display .cap")[2].textContent'))),
     String(await js('document.querySelectorAll("#grid .cell.display .cap")[2].textContent')));
@@ -778,8 +778,8 @@ app.whenReady().then(async () => {
   // (2) 页面管理栏宽度扩展与 2x2 底部按钮
   check('页面栏基准宽度升级为宽体 220px',
     await js('getComputedStyle(document.getElementById("pageSidebar")).width === "220px"'));
-  check('页面栏底部按钮为 2 列网格 (2x2 布局)',
-    await js('getComputedStyle(document.querySelector(".ps-foot-actions")).gridTemplateColumns.split(" ").length === 2'));
+  check('页面栏底部配备「页面快照中心」大按钮',
+    await js('!!document.querySelector(".ps-big-snapshot-btn")'));
 
   // (3) 双态动作互换条配备 Mini Switch 联动胶囊
   await js('document.querySelectorAll("#grid .cell.filled")[0].click()');

@@ -178,6 +178,8 @@ class Device {
 
       if (this.asleep) {
         process.stderr.write(`[input] key press while asleep at r${pos.row}c${pos.col} -> wake only\n`);
+        this.asleep = false;
+        this.lastPress.delete(key);
         this.wake(this.brightness, true).catch(() => {});
         emit({ event: 'wake', by: 'key', row: pos.row, col: pos.col });
         return;

@@ -2268,8 +2268,6 @@ function renderInspector() {
     <details class="sec" data-sec="action" ${secOpen.action ? 'open' : ''}>
       <summary>按键动作配置</summary>
       <div class="body">
-        <div class="row"><label>显示名称（支持自动换行或回车折行）</label><textarea id="i-label">${escapeHtml(spec.label || '')}</textarea></div>
-
         <div class="row">
           <label>动作模式</label>
           <div class="color-capsule-group">
@@ -2416,7 +2414,7 @@ function renderInspector() {
               ` : ''}
             </div>
 
-            <!-- 互换动作与联动控制胶囊 -->
+            <!-- 互换动作胶囊 -->
             <div class="dual-action-swap-card">
               <div class="dual-swap-main-row">
                 <button type="button" id="i-swap-actions" class="swap-action-btn" title="互换形态 1 与形态 2 的执行动作">
@@ -2424,12 +2422,10 @@ function renderInspector() {
                 </button>
               </div>
               <div class="dual-swap-sub-row">
-                <label class="swap-mini-switch-wrap" id="i-swap-sync-wrap" title="开启后，点击互换动作时形态 1 与形态 2 的角标文字与色彩也将一并互换">
-                  <span class="swap-switch-text">同时联动对调角标与色彩</span>
-                  <div class="mini-switch-track ${lastSwapSyncBadges ? 'on' : ''}" id="i-swap-sync-track">
-                    <div class="mini-switch-thumb"></div>
-                  </div>
-                  <input type="checkbox" id="i-swap-sync-badges" style="display:none;" ${lastSwapSyncBadges ? 'checked' : ''} />
+                <label class="swap-mini-switch-wrap" id="i-swap-sync-wrap" title="互换动作时，是否同步互换角标形态 1 与形态 2 的文字与色彩">
+                  <input type="checkbox" id="i-swap-sync-badges" hidden />
+                  <span class="mini-switch-track" id="i-swap-sync-track"><span class="mini-switch-thumb"></span></span>
+                  <span class="swap-switch-text">同时对调角标</span>
                 </label>
               </div>
             </div>
@@ -2486,6 +2482,10 @@ function renderInspector() {
     <details class="sec" data-sec="look" ${secOpen.look ? 'open' : ''}>
       <summary>外观、图标与角标</summary>
       <div class="body">
+        <div class="row" style="margin-bottom: 12px;">
+          <label>显示名称（支持自动换行或回车折行）</label>
+          <textarea id="i-label">${escapeHtml(spec.label || '')}</textarea>
+        </div>
         <div class="icon-ctrl-box">
           <div class="icon-preview-wrap">
             ${spec.icon
@@ -2946,6 +2946,13 @@ function renderInspector() {
 
   // 一键互换形态 1 与形态 2 动作
   const btnSwap = $('i-swap-actions');
+  const syncSwapCheck = $('i-swap-sync-badges');
+  const syncSwapTrack = $('i-swap-sync-track');
+  if (syncSwapCheck && syncSwapTrack) {
+    syncSwapCheck.onchange = () => {
+      syncSwapTrack.classList.toggle('on', syncSwapCheck.checked);
+    };
+  }
   if (btnSwap) {
     btnSwap.onclick = async () => {
       const s1 = {
@@ -2976,8 +2983,7 @@ function renderInspector() {
         hotkey: s1.hotkey
       };
 
-      const syncBadges = $('i-swap-sync-badges') && $('i-swap-sync-badges').checked;
-      if (syncBadges) {
+      if (syncSwapCheck && syncSwapCheck.checked) {
         const b1 = spec.badgeState1 || { text: 'ON', bg: '#107c41', color: '#ffffff' };
         const b2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935', color: '#ffffff' };
         spec.badgeState1 = {
@@ -2995,21 +3001,7 @@ function renderInspector() {
       await commit(true);
       refreshGrid();
       renderInspector();
-      toast('已互换形态 1 与形态 2 的执行动作' + (syncBadges ? '（角标已同步互换）' : ''));
-    };
-  }
-
-  const syncWrap = $('i-swap-sync-wrap');
-  if (syncWrap) {
-    syncWrap.onclick = (e) => {
-      e.preventDefault();
-      const chk = $('i-swap-sync-badges');
-      const track = $('i-swap-sync-track');
-      if (chk) {
-        chk.checked = !chk.checked;
-        lastSwapSyncBadges = chk.checked;
-        if (track) track.classList.toggle('on', chk.checked);
-      }
+      toast('已互换形态 1 与形态 2 的执行动作' + (syncSwapCheck && syncSwapCheck.checked ? '（并同步对调角标）' : ''));
     };
   }
 
@@ -4765,12 +4757,154 @@ function renderPageTabs() {
     t.appendChild(nameSpan);
     t.appendChild(countSpan);
 
-    t.title = (depth ? `子页「${page.name}」（返回键已自动生成）` : `顶层页「${page.name}」`) + ` · 已配置 ${count}/15 键`;
+    t.title = (depth ? `子页「${page.name}」（返回键已自动生成）` : `顶层页「${page.name}」`) + ` · 已配置 ${count}/15 键 (支持拖拽排序，右键管理)`;
     t.onclick = () => goToPage(page.id);
+
+    // 右键上下文菜单
+    t.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showPageContextMenu(e.clientX, e.clientY, page.id);
+    };
+
+    // 拖拽排序（同层级兄弟节点调换顺序）
+    t.draggable = true;
+    t.addEventListener('dragstart', (e) => {
+      dragPageId = page.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', 'page:' + page.id);
+      t.classList.add('page-dragging');
+    });
+    t.addEventListener('dragend', () => {
+      dragPageId = null;
+      document.querySelectorAll('.ptab').forEach(el => {
+        el.classList.remove('page-dragging', 'drag-over-top', 'drag-over-bottom');
+      });
+    });
+    t.addEventListener('dragover', (e) => {
+      if (!dragPageId || dragPageId === page.id) return;
+      const srcPage = pageById(dragPageId);
+      if (!srcPage || srcPage.parent !== page.parent) return; // 仅同级拖拽重排
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = t.getBoundingClientRect();
+      const isTop = (e.clientY - rect.top) < (rect.height / 2);
+      t.classList.toggle('drag-over-top', isTop);
+      t.classList.toggle('drag-over-bottom', !isTop);
+    });
+    t.addEventListener('dragleave', () => {
+      t.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+    t.addEventListener('drop', async (e) => {
+      t.classList.remove('drag-over-top', 'drag-over-bottom');
+      if (!dragPageId || dragPageId === page.id) return;
+      const srcPage = pageById(dragPageId);
+      if (!srcPage || srcPage.parent !== page.parent) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = t.getBoundingClientRect();
+      const isTop = (e.clientY - rect.top) < (rect.height / 2);
+      const srcBlock = [srcPage, ...getAllPageDescendants(srcPage.id)];
+      const srcIds = new Set(srcBlock.map(x => x.id));
+      const remaining = (cfg.pages || []).filter(x => !srcIds.has(x.id));
+      if (isTop) {
+        const idx = remaining.findIndex(x => x.id === page.id);
+        if (idx !== -1) remaining.splice(idx, 0, ...srcBlock);
+      } else {
+        const targetDesc = getAllPageDescendants(page.id);
+        const lastTargetId = targetDesc.length ? targetDesc[targetDesc.length - 1].id : page.id;
+        const idx = remaining.findIndex(x => x.id === lastTargetId);
+        if (idx !== -1) remaining.splice(idx + 1, 0, ...srcBlock);
+      }
+      cfg.pages = remaining;
+      dragPageId = null;
+      if (!DEMO) await saveConfig();
+      renderPageTabs();
+      toast('已调整页面顺序');
+    });
+
     box.appendChild(t);
   }
-  const delBtn = $('pageDel');
-  if (delBtn) delBtn.disabled = pageTree().length <= 1;
+}
+
+let dragPageId = null;
+
+function getAllPageDescendants(pageId) {
+  const res = [];
+  const collect = (pid) => {
+    for (const p of (cfg.pages || []).filter(x => x.parent === pid)) {
+      res.push(p);
+      collect(p.id);
+    }
+  };
+  collect(pageId);
+  return res;
+}
+
+// ------------------------------------------------------------ page context menu
+
+let pcmTargetId = null;
+
+function showPageContextMenu(x, y, pageId) {
+  const cm = $('pageContextMenu');
+  if (!cm) return;
+  pcmTargetId = pageId;
+  const targetPage = pageById(pageId);
+  if (!targetPage) return;
+
+  const btnDel = $('pcmDel');
+  if (btnDel) {
+    btnDel.disabled = ((cfg.pages || []).length <= 1);
+  }
+
+  const w = 180, h = 180;
+  const px = Math.min(x, window.innerWidth - w - 10);
+  const py = Math.min(y, window.innerHeight - h - 10);
+  cm.style.left = px + 'px';
+  cm.style.top = py + 'px';
+  cm.hidden = false;
+}
+
+function hidePageContextMenu() {
+  const cm = $('pageContextMenu');
+  if (cm) cm.hidden = true;
+  pcmTargetId = null;
+}
+
+function initPageContextMenu() {
+  const cm = $('pageContextMenu');
+  if (!cm) return;
+
+  $('pcmRename').onclick = async () => {
+    const tid = pcmTargetId;
+    hidePageContextMenu();
+    if (tid) await pageRename(tid);
+  };
+
+  $('pcmDup').onclick = async () => {
+    const tid = pcmTargetId;
+    hidePageContextMenu();
+    if (tid) await pageDuplicate(tid);
+  };
+
+  $('pcmSnapshot').onclick = async () => {
+    const tid = pcmTargetId;
+    hidePageContextMenu();
+    if (tid && tid !== cfg.currentPage) {
+      await goToPage(tid);
+    }
+    openPageSnapshotModal();
+  };
+
+  $('pcmDel').onclick = async () => {
+    const tid = pcmTargetId;
+    hidePageContextMenu();
+    if (tid) await pageDelete(tid);
+  };
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#pageContextMenu')) hidePageContextMenu();
+  });
 }
 
 async function pageAddTop() {
@@ -4796,16 +4930,18 @@ async function pageAddChild() {
   toast(`子页「${name.trim()}」已建好 —— 右下角会自动出现返回键`);
 }
 
-async function pageRename() {
-  const p = curPage();
+async function pageRename(targetId) {
+  const p = targetId ? pageById(targetId) : curPage();
+  if (!p) return;
   const name = await askText('页面改名', p.name);
   if (name == null || !name.trim()) return;
   p.name = name.trim();
   await persistAll();
 }
 
-async function pageDuplicate() {
-  const p = curPage();
+async function pageDuplicate(targetId) {
+  const p = targetId ? pageById(targetId) : curPage();
+  if (!p) return;
   const name = await askText('复制本页', p.name + ' 副本');
   if (name == null || !name.trim()) return;
   const id = newPageId();
@@ -4818,8 +4954,9 @@ async function pageDuplicate() {
   await persistAll();
 }
 
-async function pageDelete() {
-  const p = curPage();
+async function pageDelete(targetId) {
+  const p = targetId ? pageById(targetId) : curPage();
+  if (!p) return;
   if (cfg.pages.length <= 1) { toast('至少要留一页'); return; }
   const kids = [];
   const collect = (id) => { for (const c of childPages(id)) { kids.push(c); collect(c.id); } };
@@ -4830,7 +4967,9 @@ async function pageDelete() {
   if (!(await askConfirm('删除页面', msg))) return;
   const doomed = new Set([p.id, ...kids.map((k) => k.id)]);
   cfg.pages = cfg.pages.filter((x) => !doomed.has(x.id));
-  cfg.currentPage = (p.parent && pageById(p.parent)) ? p.parent : cfg.pages[0].id;
+  if (doomed.has(cfg.currentPage)) {
+    cfg.currentPage = (p.parent && pageById(p.parent)) ? p.parent : cfg.pages[0].id;
+  }
   selected = null;
   await persistAll();
   toast('页面已删除');
@@ -6459,13 +6598,13 @@ function bindShell() {
     $('psmExportAll').onclick = exportAllPageSnapshots;
   }
 
-  $('pageAddTop').onclick = pageAddTop;
-  $('pageAddSub').onclick = pageAddChild;
-  $('pageRename').onclick = pageRename;
-  $('pageDup').onclick = pageDuplicate;
+  if ($('pageAddTop')) $('pageAddTop').onclick = pageAddTop;
+  if ($('pageAddSub')) $('pageAddSub').onclick = pageAddChild;
+  if ($('pageRename')) $('pageRename').onclick = pageRename;
+  if ($('pageDup')) $('pageDup').onclick = pageDuplicate;
   const pageSaveBtn = $('pageSave') || $('pageSnapshotBtn');
   if (pageSaveBtn) pageSaveBtn.onclick = openPageSnapshotModal;
-  $('pageDel').onclick = pageDelete;
+  if ($('pageDel')) $('pageDel').onclick = pageDelete;
 
   const sideToggle = $('pageSidebarToggle');
   if (sideToggle) {
@@ -6803,6 +6942,7 @@ async function boot() {
   initInspTabs();
   initWindowControls();
   initContextMenu();
+  initPageContextMenu();
   initIconPicker();
   initCropper();
   initKeyboardShortcuts();

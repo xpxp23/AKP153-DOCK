@@ -260,7 +260,8 @@ function onWakeByKey(row, col) {
   lastWakeTime = Date.now();
   lastActivity = Date.now();
   broadcast('key:flash', { row, col });
-  repaintSoon();
+  // Refresh dynamic strips (clock / CPU / stats), avoid flooding HID bus with 15 static key PNGs
+  broadcast('device:repaint-strips', {});
   log(`device woke up by key r${row}c${col} (wake only)`);
 }
 
@@ -269,15 +270,15 @@ async function onKeyDown(row, col) {
   lastActivity = now;
 
   // Pressing a key while asleep should only light the panel back up, never execute actions.
-  // We also enforce a cooldown window to prevent rapid chatter/chatter double-triggering.
+  // We also enforce a minimal cooldown window (50ms) to prevent rapid chatter/chatter double-triggering.
   const cfgNow = config.load();
-  const cooldown = (cfgNow.keyDebounceMs !== undefined) ? cfgNow.keyDebounceMs : 100;
+  const cooldown = (cfgNow.keyDebounceMs !== undefined) ? cfgNow.keyDebounceMs : 50;
   if (deviceAsleep || (now - lastWakeTime < cooldown)) {
     if (deviceAsleep) {
       deviceAsleep = false;
       lastWakeTime = now;
       await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
-      repaintSoon();
+      broadcast('device:repaint-strips', {});
       broadcast('key:flash', { row, col });
       log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
     } else {
