@@ -318,7 +318,9 @@ async function onKeyDown(row, col) {
 
   const isMulti = spec && (spec.type === 'multi' || spec.type === 'macro');
   const isQr = spec && (spec.type === 'qr_decode' || spec.type === 'qr');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr)) {
+  const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio');
+  const isMedia = spec && (spec.type === 'media');
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     // Show it on the device too: the user is looking at the panel, not the PC.
     broadcast('key:unconfigured', { row, col });
@@ -327,9 +329,10 @@ async function onKeyDown(row, col) {
   }
 
   let actionToRun = spec;
-  if (spec.badgeToggle) {
+  if (spec.badgeToggle && (!isVolume || spec.toggleAction)) {
     const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-    if (spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey) && curState === 1) {
+    const hasAction2 = spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey || spec.action2.type === 'volume' || spec.action2.type === 'audio' || spec.action2.type === 'media');
+    if (hasAction2 && curState === 1) {
       actionToRun = spec.action2;
     }
     const nextState = (curState === 1 ? 0 : 1);
@@ -342,7 +345,7 @@ async function onKeyDown(row, col) {
   const res = await runner.run(actionToRun, { row, col, pageId: page.id });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
-  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio')))) {
+  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio' || actionToRun.type === 'media')))) {
     broadcast('device:repaint-strips', {});
     broadcast('audio:state', res);
   }

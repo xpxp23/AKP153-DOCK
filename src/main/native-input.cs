@@ -449,6 +449,20 @@ namespace AkpInput
             if (!AudioGetVolume(out newLevel, out isMute)) return false;
             newLevel = Math.Max(0, Math.Min(100, newLevel + delta));
             AudioSetVolume(newLevel);
+            if (isMute && delta > 0)
+            {
+                try
+                {
+                    var epv = GetMasterVolumeEndpoint();
+                    if (epv != null)
+                    {
+                        Guid empty = Guid.Empty;
+                        epv.SetMute(false, ref empty);
+                        isMute = false;
+                    }
+                }
+                catch { }
+            }
             if (triggerOsd)
             {
                 SendMedia(delta >= 0 ? "vol_up" : "vol_down");
@@ -473,11 +487,6 @@ namespace AkpInput
                 float f;
                 epv.GetMasterVolumeLevelScalar(out f);
                 curLevel = (int)Math.Round(f * 100);
-                if (triggerOsd)
-                {
-                    SendMedia("mute");
-                    epv.SetMute(newMute, ref empty);
-                }
                 return true;
             }
             catch { return false; }

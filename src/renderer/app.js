@@ -39,44 +39,6 @@ const $ = (id) => document.getElementById(id);
 const ACTION_TEMPLATES = [
   { id: '', name: '⚡ 常用快捷动作模板…' },
   {
-    id: 'vol_up', name: '🔊 音量增大 (+5% 连击加速)',
-    spec: {
-      type: 'volume', action: 'up', step: 5, label: '音量 +',
-      color: '#1565c0', iconName: '音量+'
-    }
-  },
-  {
-    id: 'vol_down', name: '🔉 音量减小 (-5% 连击加速)',
-    spec: {
-      type: 'volume', action: 'down', step: 5, label: '音量 -',
-      color: '#1565c0', iconName: '音量-'
-    }
-  },
-  {
-    id: 'vol_mute', name: '🔇 静音 / 恢复 (动态双态)',
-    spec: {
-      type: 'volume', action: 'mute', label: '静音切换',
-      color: '#c62828', iconName: '静音',
-      badgeToggle: true,
-      badgeState1: { text: '🔊', bg: '#107c41', color: '#ffffff' },
-      badgeState2: { text: '🔇', bg: '#e53935', color: '#ffffff' }
-    }
-  },
-  {
-    id: 'audio_switch', name: '🎧 切换音频设备 (耳机 ⇄ 音箱)',
-    spec: {
-      type: 'volume', action: 'switch_device', target: '', label: '切换输出',
-      color: '#6a1b9a', iconName: '耳机'
-    }
-  },
-  {
-    id: 'vol_preset_50', name: '🎚️ 适中音量 (50%)',
-    spec: {
-      type: 'volume', action: 'set', target: '50', label: '音量 50%',
-      color: '#00838f', iconName: '音量+'
-    }
-  },
-  {
     id: 'media_play', name: '⏯️ 播放 / 暂停',
     spec: {
       type: 'media', cmd: 'play_pause', label: '播放/暂停',
@@ -2463,10 +2425,15 @@ function wireVolumeEditor(box, spec) {
     btn.onclick = async () => {
       const act = btn.dataset.act;
       spec.action = act;
+      spec.toggleAction = false;
+      delete spec.action2;
       if (act === 'up') {
         spec.step = spec.step || 5;
         spec.label = '音量 +';
         spec.color = '#1565c0';
+        delete spec.target;
+        delete spec.hotkey;
+        delete spec.args;
         if (typeof BUILTIN_ICONS !== 'undefined') {
           const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
@@ -2475,6 +2442,9 @@ function wireVolumeEditor(box, spec) {
         spec.step = spec.step || 5;
         spec.label = '音量 -';
         spec.color = '#1565c0';
+        delete spec.target;
+        delete spec.hotkey;
+        delete spec.args;
         if (typeof BUILTIN_ICONS !== 'undefined') {
           const ic = BUILTIN_ICONS.find(i => i.name === '音量-');
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
@@ -2482,7 +2452,10 @@ function wireVolumeEditor(box, spec) {
       } else if (act === 'mute') {
         spec.label = '静音切换';
         spec.color = '#c62828';
-        spec.badgeToggle = true;
+        spec.badgeToggle = false;
+        delete spec.target;
+        delete spec.hotkey;
+        delete spec.args;
         spec.badgeState1 = { text: '🔊', bg: '#107c41', color: '#ffffff' };
         spec.badgeState2 = { text: '🔇', bg: '#e53935', color: '#ffffff' };
         if (typeof BUILTIN_ICONS !== 'undefined') {
@@ -2490,9 +2463,11 @@ function wireVolumeEditor(box, spec) {
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
         }
       } else if (act === 'set') {
-        spec.target = spec.target || '50';
+        spec.target = (spec.target && !isNaN(parseInt(spec.target, 10))) ? String(spec.target) : '50';
         spec.label = `音量 ${spec.target}%`;
         spec.color = '#00838f';
+        delete spec.hotkey;
+        delete spec.args;
         if (typeof BUILTIN_ICONS !== 'undefined') {
           const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
@@ -2500,6 +2475,8 @@ function wireVolumeEditor(box, spec) {
       } else if (act === 'switch_device') {
         spec.label = '切换输出';
         spec.color = '#6a1b9a';
+        delete spec.hotkey;
+        delete spec.args;
         if (typeof BUILTIN_ICONS !== 'undefined') {
           const ic = BUILTIN_ICONS.find(i => i.name === '耳机');
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
@@ -2745,7 +2722,7 @@ function renderInspector() {
             <div class="btnrow">
               <button class="ghost" id="i-pickmacro">设为复合宏</button>
               <button class="ghost" id="i-pickhotkey">设为快捷键</button>
-              <button class="ghost" id="i-pickvol">设为音量</button>
+              <button class="ghost" id="i-pickvol">🔊 设为音量…</button>
               <button class="ghost" id="i-page">${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
             </div>
             ${spec.type === 'hotkey' ? `

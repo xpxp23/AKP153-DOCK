@@ -465,6 +465,12 @@ async function run(spec, context) {
     return Object.assign({ ok: true, action: 'volume_up', step }, res);
   }
 
+  if (type === 'media') {
+    const cmd = String(spec.cmd || spec.action || spec.target || 'play_pause').toLowerCase();
+    await NativeInput.sendMedia(cmd);
+    return { ok: true, action: 'media_' + cmd };
+  }
+
   const rawTarget = String(spec.target || spec.hotkey || '');
   if (!rawTarget) return { ok: false, error: 'EMPTY' };
 

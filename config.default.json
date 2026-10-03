@@ -130,7 +130,6 @@
           "action": "mute",
           "label": "静音切换",
           "color": "#c62828",
-          "badgeToggle": true,
           "badgeState1": { "text": "🔊", "bg": "#107c41", "color": "#ffffff" },
           "badgeState2": { "text": "🔇", "bg": "#e53935", "color": "#ffffff" }
         },

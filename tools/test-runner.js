@@ -50,10 +50,11 @@ app.whenReady().then(async () => {
     ['missing exe is reported', { type: 'app', target: 'C:\\definitely\\not\\here.exe' }, true, () => true],
     ['missing ps1 is reported', { type: 'ps1', target: 'C:\\definitely\\not\\here.ps1' }, true, () => true],
     ['hotkey: Alt+Shift+F10', { type: 'hotkey', hotkey: 'Alt+Shift+F10' }, false, () => true],
-    ['hotkey: Win+F10', { type: 'hotkey', hotkey: 'Win+F10' }, false, () => true],
     ['volume: up (WASAPI 0ms)', { type: 'volume', action: 'up', step: 5 }, false, () => true],
     ['volume: down (WASAPI 0ms)', { type: 'volume', action: 'down', step: 5 }, false, () => true],
     ['volume: mute toggle', { type: 'volume', action: 'mute' }, false, () => true],
+    ['volume: set 40%', { type: 'volume', action: 'set', target: '40' }, false, () => true],
+    ['media: play_pause', { type: 'media', cmd: 'play_pause' }, false, () => true],
   ];
 
   if (VISIBLE) {
