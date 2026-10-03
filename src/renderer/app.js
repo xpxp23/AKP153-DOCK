@@ -2382,6 +2382,8 @@ function wireMacroEditor(box, spec) {
       }
     };
   });
+}
+
 function renderVolumeEditorHtml(spec) {
   const action = spec.action || 'up';
   const step = Number(spec.step) || 5;
