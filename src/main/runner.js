@@ -27,6 +27,22 @@ function exists(p) {
   try { return require('fs').existsSync(p); } catch (e) { return false; }
 }
 
+let lastVolTime = 0;
+let volStreak = 0;
+function computeVolStep(baseStep) {
+  const now = Date.now();
+  if (now - lastVolTime < 380) {
+    volStreak++;
+  } else {
+    volStreak = 0;
+  }
+  lastVolTime = now;
+  if (volStreak >= 5) return Math.min(25, baseStep * 3);
+  if (volStreak >= 3) return Math.min(15, Math.round(baseStep * 2));
+  if (volStreak >= 1) return Math.min(10, Math.round(baseStep * 1.5));
+  return baseStep;
+}
+
 /**
  * Spawn a process that must not show anything.
  *
@@ -286,8 +302,35 @@ async function runSingleAction(action) {
       return { ok: true };
     }
     case 'media': {
-      const cmd = String(action.cmd || 'play_pause');
-      await NativeInput.sendMedia(cmd);
+      const cmd = String(action.cmd || action.action || 'play_pause').toLowerCase();
+      if (cmd.includes('up')) {
+        await NativeInput.stepVolume(computeVolStep(parseInt(action.step, 10) || 5));
+      } else if (cmd.includes('down')) {
+        await NativeInput.stepVolume(-computeVolStep(parseInt(action.step, 10) || 5));
+      } else if (cmd.includes('mute')) {
+        await NativeInput.toggleMute();
+      } else if (cmd.includes('switch')) {
+        await NativeInput.switchAudioDevice(String(action.target || '').trim());
+      } else {
+        await NativeInput.sendMedia(cmd);
+      }
+      return { ok: true };
+    }
+    case 'volume':
+    case 'audio': {
+      const act = String(action.action || action.cmd || action.mode || 'up').toLowerCase();
+      const baseStep = Math.max(1, parseInt(action.step, 10) || 5);
+      if (act.includes('up')) {
+        await NativeInput.stepVolume(computeVolStep(baseStep));
+      } else if (act.includes('down')) {
+        await NativeInput.stepVolume(-computeVolStep(baseStep));
+      } else if (act.includes('mute')) {
+        await NativeInput.toggleMute();
+      } else if (act.includes('set')) {
+        await NativeInput.setVolume(parseInt(action.level || action.target || 50, 10));
+      } else if (act.includes('switch')) {
+        await NativeInput.switchAudioDevice(String(action.target || '').trim());
+      }
       return { ok: true };
     }
     case 'hotkey': {
@@ -390,6 +433,38 @@ async function run(spec, context) {
     return Object.assign({ action: 'qr_decode' }, res);
   }
 
+  if (type === 'volume' || type === 'audio') {
+    const act = String(spec.action || spec.subType || spec.mode || spec.target || 'up').toLowerCase();
+    const baseStep = Math.max(1, parseInt(spec.step, 10) || 5);
+    if (act.includes('up')) {
+      const step = computeVolStep(baseStep);
+      const res = await NativeInput.stepVolume(step);
+      return Object.assign({ ok: true, action: 'volume_up', step }, res);
+    }
+    if (act.includes('down')) {
+      const step = computeVolStep(baseStep);
+      const res = await NativeInput.stepVolume(-step);
+      return Object.assign({ ok: true, action: 'volume_down', step }, res);
+    }
+    if (act.includes('mute')) {
+      const res = await NativeInput.toggleMute();
+      return Object.assign({ ok: true, action: 'volume_mute' }, res);
+    }
+    if (act.includes('set')) {
+      const lvl = Math.max(0, Math.min(100, parseInt(spec.level || spec.target || 50, 10)));
+      const res = await NativeInput.setVolume(lvl);
+      return Object.assign({ ok: true, action: 'volume_set', level: lvl }, res);
+    }
+    if (act.includes('switch') || act.includes('device')) {
+      const targetDev = String(spec.target || spec.device || '').trim();
+      const res = await NativeInput.switchAudioDevice(targetDev);
+      return Object.assign({ ok: true, action: 'audio_switch' }, res);
+    }
+    const step = computeVolStep(baseStep);
+    const res = await NativeInput.stepVolume(step);
+    return Object.assign({ ok: true, action: 'volume_up', step }, res);
+  }
+
   const rawTarget = String(spec.target || spec.hotkey || '');
   if (!rawTarget) return { ok: false, error: 'EMPTY' };
 
@@ -407,6 +482,33 @@ async function run(spec, context) {
         return { ok: true };
       }
       case 'command': {
+        const rawCmd = String(target || '').trim();
+        if (rawCmd.includes('[char]175')) {
+          const step = computeVolStep(5);
+          const res = await NativeInput.stepVolume(step);
+          return Object.assign({ ok: true, action: 'volume_up', step }, res);
+        }
+        if (rawCmd.includes('[char]174')) {
+          const step = computeVolStep(5);
+          const res = await NativeInput.stepVolume(-step);
+          return Object.assign({ ok: true, action: 'volume_down', step }, res);
+        }
+        if (rawCmd.includes('[char]173')) {
+          const res = await NativeInput.toggleMute();
+          return Object.assign({ ok: true, action: 'volume_mute' }, res);
+        }
+        if (rawCmd.includes('[char]179')) {
+          await NativeInput.sendMedia('play_pause');
+          return { ok: true, action: 'media_play_pause' };
+        }
+        if (rawCmd.includes('[char]176')) {
+          await NativeInput.sendMedia('next');
+          return { ok: true, action: 'media_next' };
+        }
+        if (rawCmd.includes('[char]177')) {
+          await NativeInput.sendMedia('prev');
+          return { ok: true, action: 'media_prev' };
+        }
         runShell(target);
         return { ok: true };
       }
@@ -464,6 +566,24 @@ async function sendHotkey(combo) {
   if (!norm) return;
 
   const lower = norm.toLowerCase().replace(/\s+/g, '');
+  if (lower === 'volume_up' || lower === 'volumeup' || lower === 'volup') {
+    return await NativeInput.stepVolume(computeVolStep(5));
+  }
+  if (lower === 'volume_down' || lower === 'volumedown' || lower === 'voldown') {
+    return await NativeInput.stepVolume(-computeVolStep(5));
+  }
+  if (lower === 'volume_mute' || lower === 'volumemute' || lower === 'volmute') {
+    return await NativeInput.toggleMute();
+  }
+  if (lower === 'media_play_pause' || lower === 'mediaplaypause' || lower === 'play_pause') {
+    return await NativeInput.sendMedia('play_pause');
+  }
+  if (lower === 'media_next_track' || lower === 'medianexttrack' || lower === 'media_next') {
+    return await NativeInput.sendMedia('next');
+  }
+  if (lower === 'media_prev_track' || lower === 'mediaprevtrack' || lower === 'media_prev') {
+    return await NativeInput.sendMedia('prev');
+  }
   if (lower === 'win+d') {
     spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).ToggleDesktop()']);
     return;

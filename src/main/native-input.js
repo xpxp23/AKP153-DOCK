@@ -114,6 +114,77 @@ const NativeInput = {
     return sendCmd(`media ${cmd}`);
   },
 
+  // 音频与音量原生控制接口 (0.1ms WASAPI CoreAudio)
+  getVolume: async () => {
+    const res = await sendCmd('vol_get');
+    if (res.startsWith('OK ')) {
+      const parts = res.slice(3).split(' ');
+      const level = parseInt(parts[0], 10) || 0;
+      const isMute = parts[1] ? parts[1].includes('MUTE:1') : false;
+      return { ok: true, level, isMute };
+    }
+    return { ok: false, level: 0, isMute: false };
+  },
+
+  setVolume: async (level) => {
+    const res = await sendCmd(`vol_set ${Math.max(0, Math.min(100, parseInt(level, 10) || 0))}`);
+    if (res.startsWith('OK ')) {
+      const parts = res.slice(3).split(' ');
+      const newLevel = parseInt(parts[0], 10) || 0;
+      const isMute = parts[1] ? parts[1].includes('MUTE:1') : false;
+      return { ok: true, level: newLevel, isMute };
+    }
+    return { ok: false, level: 0, isMute: false };
+  },
+
+  stepVolume: async (delta, triggerOsd = true) => {
+    const res = await sendCmd(`vol_step ${parseInt(delta, 10) || 0} ${triggerOsd ? '1' : '0'}`);
+    if (res.startsWith('OK ')) {
+      const parts = res.slice(3).split(' ');
+      const newLevel = parseInt(parts[0], 10) || 0;
+      const isMute = parts[1] ? parts[1].includes('MUTE:1') : false;
+      return { ok: true, level: newLevel, isMute };
+    }
+    return { ok: false, level: 0, isMute: false };
+  },
+
+  toggleMute: async (triggerOsd = true) => {
+    const res = await sendCmd(`vol_mute_toggle ${triggerOsd ? '1' : '0'}`);
+    if (res.startsWith('OK ')) {
+      const isMute = res.includes('MUTE:1');
+      const parts = res.slice(3).split(' ');
+      const level = parts[1] ? parseInt(parts[1], 10) : 0;
+      return { ok: true, isMute, level };
+    }
+    return { ok: false, isMute: false, level: 0 };
+  },
+
+  getAudioDevices: async () => {
+    const res = await sendCmd('audio_devices');
+    if (res.startsWith('OK ')) {
+      const raw = res.slice(3).trim();
+      if (!raw) return [];
+      const list = raw.split(';').map(item => {
+        const parts = item.split('|');
+        return {
+          id: parts[0] || '',
+          name: parts[1] || '音频设备',
+          isDefault: parts[2] === '1'
+        };
+      });
+      return list;
+    }
+    return [];
+  },
+
+  switchAudioDevice: async (target = '') => {
+    const res = await sendCmd(`audio_switch ${target}`.trim());
+    if (res.startsWith('OK ')) {
+      return { ok: true, name: res.slice(3).trim() };
+    }
+    return { ok: false, error: res.replace(/^ERR\s*/, '') };
+  },
+
   stop: () => {
     if (daemonProc) {
       try {

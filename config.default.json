@@ -126,34 +126,27 @@
           "badge": "⏯"
         },
         "2,1": {
-          "type": "hotkey",
+          "type": "volume",
+          "action": "mute",
           "label": "静音切换",
-          "hotkey": "Volume_Mute",
-          "target": "Volume_Mute",
-          "args": "",
-          "icon": "",
-          "color": "#d84315",
-          "badge": "🔇"
+          "color": "#c62828",
+          "badgeToggle": true,
+          "badgeState1": { "text": "🔊", "bg": "#107c41", "color": "#ffffff" },
+          "badgeState2": { "text": "🔇", "bg": "#e53935", "color": "#ffffff" }
         },
         "2,2": {
-          "type": "hotkey",
+          "type": "volume",
+          "action": "down",
+          "step": 5,
           "label": "音量 -",
-          "hotkey": "Volume_Down",
-          "target": "Volume_Down",
-          "args": "",
-          "icon": "",
-          "color": "#455a64",
-          "badge": "🔉"
+          "color": "#1565c0"
         },
         "2,3": {
-          "type": "hotkey",
+          "type": "volume",
+          "action": "up",
+          "step": 5,
           "label": "音量 +",
-          "hotkey": "Volume_Up",
-          "target": "Volume_Up",
-          "args": "",
-          "icon": "",
-          "color": "#37474f",
-          "badge": "🔊"
+          "color": "#1565c0"
         },
         "2,4": {
           "type": "url",

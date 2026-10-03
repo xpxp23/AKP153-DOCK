@@ -39,50 +39,61 @@ const $ = (id) => document.getElementById(id);
 const ACTION_TEMPLATES = [
   { id: '', name: '⚡ 常用快捷动作模板…' },
   {
-    id: 'vol_up', name: '🔊 音量增大',
+    id: 'vol_up', name: '🔊 音量增大 (+5% 连击加速)',
     spec: {
-      type: 'command', label: '音量 +',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]175)"',
+      type: 'volume', action: 'up', step: 5, label: '音量 +',
       color: '#1565c0', iconName: '音量+'
     }
   },
   {
-    id: 'vol_down', name: '🔉 音量减小',
+    id: 'vol_down', name: '🔉 音量减小 (-5% 连击加速)',
     spec: {
-      type: 'command', label: '音量 -',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]174)"',
+      type: 'volume', action: 'down', step: 5, label: '音量 -',
       color: '#1565c0', iconName: '音量-'
     }
   },
   {
-    id: 'vol_mute', name: '🔇 静音 / 恢复',
+    id: 'vol_mute', name: '🔇 静音 / 恢复 (动态双态)',
     spec: {
-      type: 'command', label: '静音',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"',
-      color: '#c62828', iconName: '静音'
+      type: 'volume', action: 'mute', label: '静音切换',
+      color: '#c62828', iconName: '静音',
+      badgeToggle: true,
+      badgeState1: { text: '🔊', bg: '#107c41', color: '#ffffff' },
+      badgeState2: { text: '🔇', bg: '#e53935', color: '#ffffff' }
+    }
+  },
+  {
+    id: 'audio_switch', name: '🎧 切换音频设备 (耳机 ⇄ 音箱)',
+    spec: {
+      type: 'volume', action: 'switch_device', target: '', label: '切换输出',
+      color: '#6a1b9a', iconName: '耳机'
+    }
+  },
+  {
+    id: 'vol_preset_50', name: '🎚️ 适中音量 (50%)',
+    spec: {
+      type: 'volume', action: 'set', target: '50', label: '音量 50%',
+      color: '#00838f', iconName: '音量+'
     }
   },
   {
     id: 'media_play', name: '⏯️ 播放 / 暂停',
     spec: {
-      type: 'command', label: '播放/暂停',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]179)"',
+      type: 'media', cmd: 'play_pause', label: '播放/暂停',
       color: '#2e7d32', iconName: '播放/暂停'
     }
   },
   {
     id: 'media_next', name: '⏭️ 下一首',
     spec: {
-      type: 'command', label: '下一曲',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]176)"',
+      type: 'media', cmd: 'next', label: '下一曲',
       color: '#00838f', iconName: '下一曲'
     }
   },
   {
     id: 'media_prev', name: '⏮️ 上一首',
     spec: {
-      type: 'command', label: '上一曲',
-      target: 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "(New-Object -ComObject WScript.Shell).SendKeys([char]177)"',
+      type: 'media', cmd: 'prev', label: '上一曲',
       color: '#00838f', iconName: '上一曲'
     }
   },
@@ -193,6 +204,9 @@ function contrast(hex) {
 
 function glyphFor(type) {
   switch (type) {
+    case 'volume':
+    case 'audio': return '🔊';
+    case 'media': return '⏯️';
     case 'multi':
     case 'macro': return '🎛️';
     case 'app': return '▶';
@@ -213,6 +227,7 @@ function glyphFor(type) {
 /** The type select used to show raw values (`app`, `ps1`...) - unreadable in an
  *  otherwise Chinese UI. */
 const TYPE_NAMES = {
+  volume: '🔊 音频与音量控制 (WASAPI 毫秒级极速)',
   multi: '🎛️ 复合动作 (多操作宏 / 键鼠编排)',
   app: '应用程序 / 快捷方式',
   hotkey: '虚拟快捷键 / 组合键宏',
@@ -225,7 +240,7 @@ const TYPE_NAMES = {
   qr_decode: '📷 屏幕/剪贴板二维码解码',
 };
 const TYPE_SHORT = {
-  multi: '宏', app: '应用', hotkey: '快捷键', folder: '文件夹', url: '网址',
+  volume: '音量', multi: '宏', app: '应用', hotkey: '快捷键', folder: '文件夹', url: '网址',
   command: '命令', ps1: '脚本', file: '文件', page: '切页', qr_decode: '扫码',
 };
 
@@ -388,8 +403,82 @@ const BADGE_TOGGLE_PRESETS = [
   { name: '🔵 1 / 🟣 2', s1: { text: '1', bg: '#1976d2', color: '#ffffff' }, s2: { text: '2', bg: '#7b1fa2', color: '#ffffff' } },
 ];
 
+let lastAudioState = { volume: 50, isMute: false, device: '' };
+
+function normalizeAudioState(state) {
+  if (!state) return lastAudioState;
+  const vol = (state.level !== undefined ? state.level : (state.volume !== undefined ? state.volume : lastAudioState.volume));
+  const isMute = state.isMute !== undefined ? !!state.isMute : lastAudioState.isMute;
+  const device = state.device !== undefined ? state.device : lastAudioState.device;
+  return { volume: Math.max(0, Math.min(100, Math.round(Number(vol)))), isMute, device };
+}
+
+async function updateVolumeState(state) {
+  if (!state) return;
+  lastAudioState = normalizeAudioState(state);
+
+  // 1. 同步刷新副屏声学监听表 (80x80 Strip)
+  if (cfg && !DEMO) {
+    const strips = pageStrips();
+    for (let row = 0; row < ROWS; row++) {
+      const s = strips[String(row)];
+      if (s && s.type === 'volume') await pushStrip(row);
+    }
+    // 2. 同步刷新主按键硬件屏幕（实时微标/静音态）
+    const buttons = pageButtons();
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < KEY_COLS; c++) {
+        const spec = buttons[`${r},${c}`];
+        if (spec && (spec.type === 'volume' || spec.type === 'audio')) {
+          await pushKey(r, c);
+        }
+      }
+    }
+  }
+
+  // 3. 刷新软件 UI 画布网格
+  refreshGrid();
+
+  // 4. 若右侧属性检查器正在查看音量动作或副屏，更新动态反馈
+  const curIconEl = $('i-vol-cur-icon');
+  const curLevelEl = $('i-vol-cur-level');
+  if (curIconEl && curLevelEl) {
+    curIconEl.textContent = lastAudioState.isMute ? '🔇' : '🔊';
+    curLevelEl.textContent = lastAudioState.isMute ? '已静音' : `${lastAudioState.volume}%`;
+  }
+}
+
 function getActiveBadge(spec) {
   if (!spec) return null;
+
+  // 专属声学动作与系统物理音频状态闭环联动
+  if (spec.type === 'volume' || spec.type === 'audio') {
+    if (spec.action === 'mute') {
+      const isMute = lastAudioState ? lastAudioState.isMute : false;
+      const s1 = spec.badgeState1 || { text: '🔊', bg: '#107c41', color: '#ffffff' };
+      const s2 = spec.badgeState2 || { text: '🔇', bg: '#e53935', color: '#ffffff' };
+      const sObj = isMute ? s2 : s1;
+      return {
+        text: sObj.text || (isMute ? '🔇' : '🔊'),
+        bg: sObj.bg || (isMute ? '#e53935' : '#107c41'),
+        color: sObj.color || '#ffffff',
+        state: isMute ? 1 : 0,
+        isToggle: true,
+      };
+    }
+    if ((spec.action === 'up' || spec.action === 'down' || spec.action === 'set') && !spec.badge && !spec.badgeToggle) {
+      const vol = lastAudioState ? lastAudioState.volume : 50;
+      const isMute = lastAudioState ? lastAudioState.isMute : false;
+      return {
+        text: isMute ? 'MUTE' : `${vol}%`,
+        bg: isMute ? '#d32f2f' : '#1565c0',
+        color: '#ffffff',
+        state: 0,
+        isToggle: false,
+      };
+    }
+  }
+
   if (spec.badgeToggle) {
     const s1 = spec.badgeState1 || { text: 'ON', bg: '#107c41', color: '#ffffff' };
     const s2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935', color: '#ffffff' };
@@ -464,11 +553,19 @@ async function paintKey(spec, size, keyPos) {
       ctx.drawImage(img, (size - w) / 2, iconTop + (iconBox - h) / 2, w, h);
     }
   } else if (spec.type && spec.type !== 'text') {
+    let gl = glyphFor(spec.type);
+    if (spec.type === 'volume' || spec.type === 'audio') {
+      if (spec.action === 'up') gl = '🔊';
+      else if (spec.action === 'down') gl = '🔉';
+      else if (spec.action === 'mute') gl = (lastAudioState && lastAudioState.isMute) ? '🔇' : '🔊';
+      else if (spec.action === 'switch_device') gl = '🎧';
+      else if (spec.action === 'set') gl = '🎚️';
+    }
     ctx.fillStyle = fg;
     ctx.font = `${Math.round(iconBox * 0.72)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(glyphFor(spec.type), size / 2, iconTop + iconBox / 2);
+    ctx.fillText(gl, size / 2, iconTop + iconBox / 2);
   }
 
   // 自定义角标徽章（静态徽章或动态双态 Toggle 徽章）
@@ -611,12 +708,124 @@ function pageStripLabel() {
   return `第 ${n}/${tops.length} 页\n${name}`;
 }
 
+function paintVolumeStrip(spec, size, row, vol, isMute) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  const page = curPage();
+  const grad = page && page.gradient;
+
+  if (isMute) {
+    const g = ctx.createLinearGradient(0, 0, 0, size);
+    g.addColorStop(0, '#3a0c0c');
+    g.addColorStop(1, '#1b0505');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+  } else if (grad && grad.enabled && (!spec || !spec.customColor)) {
+    const master = getGlobalGradientCanvas(grad);
+    if (master) {
+      const sx = 5 * 96;
+      const sy = row * 96;
+      ctx.drawImage(master, sx, sy, 96, 96, 0, 0, size, size);
+    } else {
+      ctx.fillStyle = spec.color || '#0d131a';
+      ctx.fillRect(0, 0, size, size);
+    }
+  } else {
+    const g = ctx.createLinearGradient(0, 0, 0, size);
+    g.addColorStop(0, '#16222f');
+    g.addColorStop(1, '#0b1118');
+    ctx.fillStyle = spec.color ? spec.color : g;
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  // Header tag
+  ctx.save();
+  ctx.fillStyle = isMute ? '#ff5252' : '#00e5ff';
+  ctx.font = 'bold 11px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(isMute ? '🔇 已静音' : '🔊 声学监听', size / 2, 7);
+  ctx.restore();
+
+  // Center display
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (isMute) {
+    ctx.fillStyle = '#ff5252';
+    ctx.font = 'bold 20px "Segoe UI", sans-serif';
+    ctx.fillText('MUTE', size / 2, size * 0.44);
+  } else {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 24px "Segoe UI", sans-serif';
+    ctx.fillText(`${vol}%`, size / 2, size * 0.44);
+  }
+  ctx.restore();
+
+  // Bottom level meter
+  const barX = 10;
+  const barY = size - 17;
+  const barW = size - 20;
+  const barH = 7;
+  const barRadius = 3.5;
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(barX, barY, barW, barH, barRadius);
+  else ctx.rect(barX, barY, barW, barH);
+  ctx.fill();
+
+  if (!isMute && vol > 0) {
+    const fillW = Math.max(barH, Math.min(barW, Math.round((barW * vol) / 100)));
+    const fg = ctx.createLinearGradient(barX, 0, barX + fillW, 0);
+    if (vol > 80) {
+      fg.addColorStop(0, '#00e676');
+      fg.addColorStop(0.7, '#ffd600');
+      fg.addColorStop(1, '#ff3d00');
+    } else {
+      fg.addColorStop(0, '#00e5ff');
+      fg.addColorStop(1, '#00e676');
+    }
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(barX, barY, fillW, barH, barRadius);
+    else ctx.rect(barX, barY, fillW, barH);
+    ctx.fill();
+  }
+
+  // Border frame
+  ctx.strokeStyle = isMute ? 'rgba(255, 82, 82, 0.4)' : 'rgba(0, 229, 255, 0.25)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+
+  return c;
+}
+
 async function pushStrip(row) {
   if (!cfg || DEMO) return;
   const spec = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const size = 80;
   let s = Object.assign({}, spec);
-  if (s.type === 'clock') {
+  if (s.type === 'volume') {
+    let vol = lastAudioState ? lastAudioState.volume : 50;
+    let isMute = lastAudioState ? lastAudioState.isMute : false;
+    try {
+      const stats = await api.systemStats();
+      if (stats && stats.volume !== undefined) {
+        vol = stats.volume;
+        isMute = !!stats.isMute;
+        lastAudioState.volume = vol;
+        lastAudioState.isMute = isMute;
+      }
+    } catch (_) {}
+    const c = paintVolumeStrip(s, size, row, vol, isMute);
+    const rotated = rotateCanvas(c, $('rotate').value);
+    const dataUrl = toJpegUnder(rotated, 10240);
+    await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1] });
+    return;
+  } else if (s.type === 'clock') {
     const d = new Date();
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
@@ -875,11 +1084,13 @@ function refreshGrid() {
         : s.type === 'cpu' ? '💻 CPU 监控'
         : s.type === 'mem' ? '📊 内存监控'
         : s.type === 'sys' ? '📈 态势仪表'
+        : s.type === 'volume' ? (lastAudioState && lastAudioState.isMute ? '🔇 已静音' : `🔊 音量 ${lastAudioState ? lastAudioState.volume : 50}%`)
         : (s.label || '（空）');
       const gl = s.type === 'cpu' ? '💻'
         : s.type === 'mem' ? '📊'
         : s.type === 'sys' ? '📈'
         : s.type === 'clock' ? '⏰'
+        : s.type === 'volume' ? (lastAudioState && lastAudioState.isMute ? '🔇' : '🔊')
         : '▢';
       cell.classList.add('display');
       cell.classList.remove('filled');
@@ -2171,6 +2382,232 @@ function wireMacroEditor(box, spec) {
       }
     };
   });
+function renderVolumeEditorHtml(spec) {
+  const action = spec.action || 'up';
+  const step = Number(spec.step) || 5;
+  const target = spec.target || '';
+  const isMute = lastAudioState ? lastAudioState.isMute : false;
+  const curVol = lastAudioState ? lastAudioState.volume : 50;
+
+  return `
+    <div class="volume-editor-card">
+      <div class="vol-mode-row">
+        <label style="font-size: 11px; color: var(--muted); margin-bottom: 6px; display: block;">⚡ 控制模式：</label>
+        <div class="vol-mode-pills">
+          <button type="button" class="vol-pill ${action === 'up' ? 'active' : ''}" data-act="up">🔊 增大音量</button>
+          <button type="button" class="vol-pill ${action === 'down' ? 'active' : ''}" data-act="down">🔉 减小音量</button>
+          <button type="button" class="vol-pill ${action === 'mute' ? 'active' : ''}" data-act="mute">🔇 静音 / 恢复</button>
+          <button type="button" class="vol-pill ${action === 'set' ? 'active' : ''}" data-act="set">🎚️ 设为指定音量</button>
+          <button type="button" class="vol-pill ${action === 'switch_device' ? 'active' : ''}" data-act="switch_device">🎧 切换输出设备</button>
+        </div>
+      </div>
+
+      ${(action === 'up' || action === 'down') ? `
+        <div class="vol-sub-row" style="margin-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="font-size: 11px; color: var(--muted); margin: 0;">调节步长 (Turbo 连击自动加速)：</label>
+            <span style="font-size: 12px; font-weight: bold; color: var(--accent);"><b id="v-vol-step">${step}</b>%</span>
+          </div>
+          <div class="vol-step-pills">
+            ${[2, 5, 8, 10, 15, 20].map(s => `
+              <button type="button" class="vol-step-pill ${step === s ? 'active' : ''}" data-step="${s}">±${s}%</button>
+            `).join('')}
+          </div>
+          <input type="range" id="i-vol-step-range" min="1" max="25" value="${step}" style="margin-top: 6px; width: 100%;" />
+        </div>
+      ` : ''}
+
+      ${action === 'set' ? `
+        <div class="vol-sub-row" style="margin-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="font-size: 11px; color: var(--muted); margin: 0;">🎯 目标音量绝对值：</label>
+            <span style="font-size: 12px; font-weight: bold; color: var(--accent);"><b id="v-vol-target">${target || '50'}</b>%</span>
+          </div>
+          <div class="vol-step-pills">
+            ${[0, 20, 35, 50, 65, 80, 100].map(val => `
+              <button type="button" class="vol-target-pill ${String(target) === String(val) ? 'active' : ''}" data-val="${val}">${val}%</button>
+            `).join('')}
+          </div>
+          <input type="range" id="i-vol-target-range" min="0" max="100" value="${target || 50}" style="margin-top: 6px; width: 100%;" />
+        </div>
+      ` : ''}
+
+      ${action === 'switch_device' ? `
+        <div class="vol-sub-row" style="margin-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="font-size: 11px; color: var(--muted); margin: 0;">🎯 目标输出设备（留空则智能轮换）：</label>
+            <button type="button" class="ghost tiny" id="i-vol-refresh-devs" style="padding: 2px 6px;">🔄 刷新声卡</button>
+          </div>
+          <select id="i-vol-device-select" class="vol-dev-select" style="width: 100%; margin-top: 4px;">
+            <option value="">🔄 耳机 ⇄ 音箱 智能轮换 (默认)</option>
+          </select>
+          <p class="muted small" style="margin-top: 4px;">采用 Windows IPolicyConfig 底层无感切换默认声卡，毫秒级即时生效。</p>
+        </div>
+      ` : ''}
+
+      <div class="vol-status-card" style="margin-top: 10px; padding: 8px 10px; background: rgba(0,0,0,0.18); border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="i-vol-cur-icon" style="font-size: 18px;">${isMute ? '🔇' : '🔊'}</span>
+          <span style="font-size: 12px; color: var(--fg);">系统音量：<b id="i-vol-cur-level">${isMute ? '已静音' : curVol + '%'}</b></span>
+        </div>
+        <button type="button" class="primary tiny" id="i-vol-test-now" style="padding: 3px 12px;">▶ 立即试听/测试</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireVolumeEditor(box, spec) {
+  box.querySelectorAll('.vol-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      const act = btn.dataset.act;
+      spec.action = act;
+      if (act === 'up') {
+        spec.step = spec.step || 5;
+        spec.label = '音量 +';
+        spec.color = '#1565c0';
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
+      } else if (act === 'down') {
+        spec.step = spec.step || 5;
+        spec.label = '音量 -';
+        spec.color = '#1565c0';
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '音量-');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
+      } else if (act === 'mute') {
+        spec.label = '静音切换';
+        spec.color = '#c62828';
+        spec.badgeToggle = true;
+        spec.badgeState1 = { text: '🔊', bg: '#107c41', color: '#ffffff' };
+        spec.badgeState2 = { text: '🔇', bg: '#e53935', color: '#ffffff' };
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '静音');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
+      } else if (act === 'set') {
+        spec.target = spec.target || '50';
+        spec.label = `音量 ${spec.target}%`;
+        spec.color = '#00838f';
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
+      } else if (act === 'switch_device') {
+        spec.label = '切换输出';
+        spec.color = '#6a1b9a';
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '耳机');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
+      }
+      await commit(true);
+      renderInspector();
+    };
+  });
+
+  box.querySelectorAll('.vol-step-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      const step = Number(btn.dataset.step) || 5;
+      spec.step = step;
+      await commit(true);
+      renderInspector();
+    };
+  });
+
+  const stepRange = box.querySelector('#i-vol-step-range');
+  const vStep = box.querySelector('#v-vol-step');
+  if (stepRange && vStep) {
+    stepRange.addEventListener('input', () => {
+      vStep.textContent = stepRange.value;
+      spec.step = Number(stepRange.value);
+    });
+    stepRange.addEventListener('change', async () => {
+      await commit(true);
+      renderInspector();
+    });
+  }
+
+  box.querySelectorAll('.vol-target-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      const val = btn.dataset.val;
+      spec.target = val;
+      spec.label = `音量 ${val}%`;
+      await commit(true);
+      renderInspector();
+    };
+  });
+
+  const targetRange = box.querySelector('#i-vol-target-range');
+  const vTarget = box.querySelector('#v-vol-target');
+  if (targetRange && vTarget) {
+    targetRange.addEventListener('input', () => {
+      vTarget.textContent = targetRange.value;
+      spec.target = targetRange.value;
+      spec.label = `音量 ${targetRange.value}%`;
+    });
+    targetRange.addEventListener('change', async () => {
+      await commit(true);
+      renderInspector();
+    });
+  }
+
+  const devSelect = box.querySelector('#i-vol-device-select');
+  const btnRefreshDevs = box.querySelector('#i-vol-refresh-devs');
+  const loadDevices = async () => {
+    if (!devSelect || typeof api === 'undefined' || !api.audioGetDevices) return;
+    try {
+      const res = await api.audioGetDevices();
+      const devs = Array.isArray(res) ? res : (res && res.devices ? res.devices : []);
+      if (devs && devs.length > 0) {
+        devSelect.innerHTML = `<option value="">🔄 耳机 ⇄ 音箱 智能轮换 (默认)</option>` +
+          devs.map(d => `<option value="${escapeAttr(d.name)}" ${spec.target === d.name ? 'selected' : ''}>${d.isDefault ? '🔊 [默认] ' : '🔈 '}${escapeHtml(d.name)}</option>`).join('');
+      }
+    } catch (_) {}
+  };
+  if (devSelect) {
+    loadDevices();
+    devSelect.onchange = async () => {
+      spec.target = devSelect.value;
+      await commit(true);
+    };
+  }
+  if (btnRefreshDevs) {
+    btnRefreshDevs.onclick = async () => {
+      toast('正在探测 Windows 音频输出设备…');
+      await loadDevices();
+    };
+  }
+
+  const btnTest = box.querySelector('#i-vol-test-now');
+  if (btnTest) {
+    btnTest.onclick = async () => {
+      if (typeof api === 'undefined' || !api.actionRun) return;
+      btnTest.disabled = true;
+      try {
+        const res = await api.actionRun(spec);
+        if (res && res.ok) {
+          if (res.action === 'volume_mute') {
+            toast(res.isMute ? '🔇 已切换为静音' : `🔊 已取消静音 (${res.level}%)`);
+          } else if (res.action === 'volume_up' || res.action === 'volume_down' || res.action === 'volume_set') {
+            toast(`🔊 音量已调至 ${res.level}% (步长: ${res.step || 5}%)`);
+          } else if (res.action === 'audio_switch') {
+            toast(`🎧 已切换音频输出：${res.device || '成功'}`);
+          } else {
+            toast('✅ 动作执行成功');
+          }
+        } else {
+          toast('动作执行失败: ' + ((res && res.error) || '未知错误'));
+        }
+      } catch (err) {
+        toast('执行出错: ' + (err.message || err));
+      } finally {
+        btnTest.disabled = false;
+      }
+    };
+  }
 }
 
 let lastSwapSyncBadges = false;
@@ -2225,6 +2662,7 @@ function renderInspector() {
       <div class="btnrow">
         <button class="ghost" id="i-quickmacro">🎛️ 设为复合宏…</button>
         <button class="ghost" id="i-quickhotkey">设为快捷键…</button>
+        <button class="ghost" id="i-quickvol">🔊 设为音量…</button>
         <button class="ghost" id="i-page">设为翻页键…</button>
       </div>`;
     $('i-pickapp').onclick = () => pickInto({ properties: ['openFile'] });
@@ -2244,6 +2682,17 @@ function renderInspector() {
       pageButtons()[selected.row + ',' + selected.col] = {
         type: 'hotkey', label: '显示桌面', hotkey: 'Win+D', target: 'Win+D', color: '#107c41', icon: '', args: ''
       };
+      commit(true);
+      renderInspector();
+    };
+    $('i-quickvol').onclick = () => {
+      pageButtons()[selected.row + ',' + selected.col] = {
+        type: 'volume', action: 'up', step: 5, label: '音量 +', color: '#1565c0'
+      };
+      if (typeof BUILTIN_ICONS !== 'undefined') {
+        const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
+        if (ic) pageButtons()[selected.row + ',' + selected.col].icon = svgToDataUrl(ic.svg, '#ffffff');
+      }
       commit(true);
       renderInspector();
     };
@@ -2294,6 +2743,7 @@ function renderInspector() {
             <div class="btnrow">
               <button class="ghost" id="i-pickmacro">设为复合宏</button>
               <button class="ghost" id="i-pickhotkey">设为快捷键</button>
+              <button class="ghost" id="i-pickvol">设为音量</button>
               <button class="ghost" id="i-page">${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
             </div>
             ${spec.type === 'hotkey' ? `
@@ -2311,6 +2761,10 @@ function renderInspector() {
             ${spec.type === 'multi' || spec.type === 'macro' ? `
               <div id="i-macro-editor-container">
                 ${renderMacroEditorHtml(spec)}
+              </div>
+            ` : spec.type === 'volume' || spec.type === 'audio' ? `
+              <div id="i-volume-editor-container">
+                ${renderVolumeEditorHtml(spec)}
               </div>
             ` : spec.type === 'page' ? `
               <div class="page-inspector-card">
@@ -2388,6 +2842,7 @@ function renderInspector() {
                 <select id="i-type">
                   <option value="app" ${spec.type === 'app' ? 'selected' : ''}>应用程序 / 路径 (App)</option>
                   <option value="hotkey" ${spec.type === 'hotkey' ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
+                  <option value="volume" ${spec.type === 'volume' ? 'selected' : ''}>🔊 音频/音量 (Volume)</option>
                   <option value="command" ${spec.type === 'command' ? 'selected' : ''}>命令行 (CMD)</option>
                   <option value="url" ${spec.type === 'url' ? 'selected' : ''}>打开网址 (URL)</option>
                   <option value="folder" ${spec.type === 'folder' ? 'selected' : ''}>打开文件夹</option>
@@ -2397,6 +2852,10 @@ function renderInspector() {
               ${spec.type === 'multi' ? `
                 <div id="i-macro-editor-container">
                   ${renderMacroEditorHtml(spec)}
+                </div>
+              ` : spec.type === 'volume' ? `
+                <div id="i-volume-editor-container">
+                  ${renderVolumeEditorHtml(spec)}
                 </div>
               ` : spec.type !== 'hotkey' ? `
                 <div class="row">
@@ -2450,6 +2909,7 @@ function renderInspector() {
                 <select id="i-toggle-action2-type">
                   <option value="command" ${((spec.action2 && spec.action2.type) === 'command' || (!spec.action2 && spec.type === 'app')) ? 'selected' : ''}>命令行 (CMD / taskkill)</option>
                   <option value="hotkey" ${(spec.action2 && spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
+                  <option value="volume" ${(spec.action2 && spec.action2.type === 'volume') ? 'selected' : ''}>🔊 音量控制 (Volume)</option>
                   <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 路径 (App)</option>
                   <option value="url" ${(spec.action2 && spec.action2.type === 'url') ? 'selected' : ''}>打开网址 (URL)</option>
                 </select>
@@ -2749,6 +3209,27 @@ function renderInspector() {
     commit(true);
     renderInspector();
   };
+
+  const btnPickVol = $('i-pickvol');
+  if (btnPickVol) {
+    btnPickVol.onclick = () => {
+      spec.type = 'volume';
+      spec.action = spec.action || 'up';
+      spec.step = spec.step || 5;
+      spec.color = '#1565c0';
+      if (!spec.label) spec.label = '音量 +';
+      if (typeof BUILTIN_ICONS !== 'undefined') {
+        const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
+        if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+      }
+      commit(true);
+      renderInspector();
+    };
+  }
+
+  if (spec.type === 'volume' || spec.type === 'audio') {
+    wireVolumeEditor(box, spec);
+  }
 
   const iptHotkey = $('i-hotkey');
   if (iptHotkey) {
@@ -3210,6 +3691,15 @@ function renderInspector() {
         if (!spec.loop) spec.loop = { mode: 'once', interval: 50 };
         if (!spec.color) spec.color = '#1b5e20';
         if (!spec.label) spec.label = '复合宏';
+      } else if (v === 'volume' || v === 'audio') {
+        spec.action = spec.action || 'up';
+        spec.step = spec.step || 5;
+        spec.color = spec.color || '#1565c0';
+        if (!spec.label) spec.label = spec.action === 'up' ? '音量 +' : (spec.action === 'down' ? '音量 -' : '音量');
+        if (typeof BUILTIN_ICONS !== 'undefined') {
+          const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
+          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+        }
       }
     }
     await commit(true);
@@ -3516,6 +4006,7 @@ function renderStripInspector(box) {
             <option value="cpu" ${s.type === 'cpu' ? 'selected' : ''}>💻 CPU 占用率（实时动态监控）</option>
             <option value="mem" ${s.type === 'mem' ? 'selected' : ''}>📊 内存占用率（实时动态监控）</option>
             <option value="sys" ${s.type === 'sys' ? 'selected' : ''}>📈 系统态势仪表（CPU + 内存组合）</option>
+            <option value="volume" ${s.type === 'volume' ? 'selected' : ''}>🔊 声学监听与音量监控（实时动态）</option>
           </select>
         </div>
         <div class="row"><label>文字（回车换行，时钟模式下忽略）</label>
@@ -6799,6 +7290,7 @@ function bindDevice() {
   api.on('host:status', (s) => setStatus(s));
   api.on('device:repaint', () => repaintAll());
   api.on('device:repaint-strips', () => repaintStrips());
+  api.on('audio:state', (data) => updateVolumeState(data));
   api.on('toast', (t) => toast(t && t.message));
   api.on('key:flash', (k) => {
     const cell = document.querySelector(`.cell[data-row="${k.row}"][data-col="${k.col}"]`);
@@ -6951,14 +7443,23 @@ async function boot() {
   renderLibrary();
   renderPageTabs();
 
-  // 定期检测并刷新系统状态监控副屏（CPU / 内存）
+  // 启动即时获取系统物理音量并初始化状态
+  if (!DEMO && window.api && api.audioGetVolume) {
+    api.audioGetVolume().then((res) => {
+      if (res && res.level !== undefined) {
+        updateVolumeState(res);
+      }
+    }).catch(() => {});
+  }
+
+  // 定期检测并刷新系统状态监控副屏（CPU / 内存 / 声学音量）
   setInterval(async () => {
     if (DEMO || !cfg) return;
     const strips = pageStrips();
     let hasSys = false;
     for (const row of [0, 1, 2]) {
       const s = strips[String(row)];
-      if (s && ['cpu', 'mem', 'sys'].includes(s.type)) {
+      if (s && ['cpu', 'mem', 'sys', 'volume'].includes(s.type)) {
         hasSys = true;
         await pushStrip(row);
       }

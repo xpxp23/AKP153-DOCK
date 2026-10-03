@@ -3781,3 +3781,95 @@ body[data-theme="dark"] .psm-card:hover {
   border-top: 1px dashed var(--line);
   padding-top: 8px;
 }
+
+/* =========================================================================
+   Volume & Audio Action Inspector Styles
+   ========================================================================= */
+.volume-editor-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.vol-mode-pills {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.vol-pill {
+  padding: 6px 4px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  transition: all 0.12s ease;
+  box-sizing: border-box;
+}
+
+.vol-pill:hover {
+  border-color: var(--accent);
+  background: var(--card);
+}
+
+.vol-pill.active {
+  border-color: var(--accent);
+  background: rgba(0, 191, 165, 0.12);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.vol-step-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vol-step-pill, .vol-target-pill {
+  flex: 1;
+  min-width: 36px;
+  padding: 4px 6px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.12s ease;
+}
+
+.vol-step-pill:hover, .vol-target-pill:hover {
+  border-color: var(--accent);
+}
+
+.vol-step-pill.active, .vol-target-pill.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.vol-dev-select {
+  padding: 6px 8px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+}
+.vol-dev-select:focus {
+  border-color: var(--accent);
+}
+

@@ -6,6 +6,7 @@ const os = require('os');
 
 const config = require('./config.js');
 const runner = require('./runner.js');
+const NativeInput = require('./native-input.js');
 
 runner.setLoopStateListener((keyId, isRunning, context) => {
   broadcast('macro:loopState', { keyId, isRunning, context });
@@ -341,6 +342,10 @@ async function onKeyDown(row, col) {
   const res = await runner.run(actionToRun, { row, col, pageId: page.id });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
+  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio')))) {
+    broadcast('device:repaint-strips', {});
+    broadcast('audio:state', res);
+  }
   if (isQr) {
     if (res.error !== 'CANCELLED') {
       broadcast('key:result', { row, col, success: !!res.ok, text: res.text || '' });
@@ -506,8 +511,42 @@ ipcMain.handle('host:status', () => ({
   draws: Object.assign({}, drawStats),
 }));
 
-ipcMain.handle('action:run', (e, spec) => runner.run(spec));
+ipcMain.handle('action:run', async (e, spec) => {
+  const res = await runner.run(spec);
+  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (spec && (spec.type === 'volume' || spec.type === 'audio')))) {
+    broadcast('device:repaint-strips', {});
+    broadcast('audio:state', res);
+  }
+  return res;
+});
 ipcMain.handle('action:classify', (e, p) => runner.classify(p));
+
+ipcMain.handle('audio:getVolume', async () => NativeInput.getVolume());
+ipcMain.handle('audio:setVolume', async (e, lvl) => {
+  const res = await NativeInput.setVolume(lvl);
+  broadcast('device:repaint-strips', {});
+  broadcast('audio:state', res);
+  return res;
+});
+ipcMain.handle('audio:stepVolume', async (e, delta, osd) => {
+  const res = await NativeInput.stepVolume(delta, osd);
+  broadcast('device:repaint-strips', {});
+  broadcast('audio:state', res);
+  return res;
+});
+ipcMain.handle('audio:toggleMute', async (e, osd) => {
+  const res = await NativeInput.toggleMute(osd);
+  broadcast('device:repaint-strips', {});
+  broadcast('audio:state', res);
+  return res;
+});
+ipcMain.handle('audio:getDevices', async () => NativeInput.getAudioDevices());
+ipcMain.handle('audio:switchDevice', async (e, target) => {
+  const res = await NativeInput.switchAudioDevice(target);
+  broadcast('device:repaint-strips', {});
+  broadcast('audio:state', res);
+  return res;
+});
 
 function expandEnv(str) {
   if (!str) return '';
@@ -756,7 +795,7 @@ ipcMain.handle('icon:extract', async (e, p) => {
   }
 });
 
-ipcMain.handle('system:stats', () => {
+ipcMain.handle('system:stats', async () => {
   const cpu = getCpuUsage();
   const total = os.totalmem();
   const free = os.freemem();
@@ -764,7 +803,13 @@ ipcMain.handle('system:stats', () => {
   const mem = Math.round((used / total) * 100);
   const memUsedGb = (used / (1024 ** 3)).toFixed(1);
   const memTotalGb = (total / (1024 ** 3)).toFixed(1);
-  return { cpu, mem, memUsedGb, memTotalGb };
+  let volume = 50;
+  let isMute = false;
+  try {
+    const v = await NativeInput.getVolume();
+    if (v && v.ok) { volume = v.level; isMute = v.isMute; }
+  } catch (_) {}
+  return { cpu, mem, memUsedGb, memTotalGb, volume, isMute };
 });
 
 ipcMain.handle('dialog:pick', async (e, opts) => {

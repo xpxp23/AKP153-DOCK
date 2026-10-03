@@ -46,13 +46,20 @@ contextBridge.exposeInMainWorld('api', {
   libraryExport: (a) => ipcRenderer.invoke('library:export', a),
   libraryImport: () => ipcRenderer.invoke('library:import'),
 
+  audioGetVolume: () => ipcRenderer.invoke('audio:getVolume'),
+  audioSetVolume: (lvl) => ipcRenderer.invoke('audio:setVolume', lvl),
+  audioStepVolume: (delta, osd) => ipcRenderer.invoke('audio:stepVolume', delta, osd),
+  audioToggleMute: (osd) => ipcRenderer.invoke('audio:toggleMute', osd),
+  audioGetDevices: () => ipcRenderer.invoke('audio:getDevices'),
+  audioSwitchDevice: (target) => ipcRenderer.invoke('audio:switchDevice', target),
+
   macroGetCursor: () => ipcRenderer.invoke('macro:getCursor'),
   macroStopAll: () => ipcRenderer.invoke('macro:stopAll'),
   macroActiveLoops: () => ipcRenderer.invoke('macro:activeLoops'),
 
   on: (channel, cb) => {
     const allowed = ['host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
-      'key:unconfigured', 'toast', 'page:changed', 'config:external', 'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState'];
+      'key:unconfigured', 'toast', 'page:changed', 'config:external', 'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState', 'audio:state'];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);
     ipcRenderer.on(channel, handler);
