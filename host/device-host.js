@@ -73,6 +73,7 @@ class Device {
     this.asleep = false;
     this.broken = false;
     this.brightness = 80;
+    this.savedBrightness = 80;
     this.queue = Promise.resolve();
     this.watchdog = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
@@ -180,7 +181,8 @@ class Device {
         process.stderr.write(`[input] key press while asleep at r${pos.row}c${pos.col} -> wake only\n`);
         this.asleep = false;
         this.lastPress.delete(key);
-        this.wake(this.brightness, true).catch(() => {});
+        const wakeB = this.savedBrightness || this.brightness || 80;
+        this.wake(wakeB, true).catch(() => {});
         emit({ event: 'wake', by: 'key', row: pos.row, col: pos.col });
         return;
       }
@@ -228,13 +230,18 @@ class Device {
 
   /** LCD panel brightness. Command is "LIG" + 0x00 0x00 + value (6 bytes). */
   async setBrightness(pct) {
-    this.brightness = Number(pct);
-    await this.cmd([76, 73, 71, 0, 0, gamma(pct)]);
+    const val = Number(pct);
+    this.brightness = val;
+    if (val > 0) {
+      this.savedBrightness = val;
+    }
+    await this.cmd([76, 73, 71, 0, 0, gamma(val)]);
   }
 
   /** LED ring brightness. Command is "LBLIG" + value (6 bytes). */
   async setLedBrightness(pct) {
-    await this.cmd([76, 66, 76, 73, 71, gamma(pct)]);
+    const val = Number(pct);
+    await this.cmd([76, 66, 76, 73, 71, gamma(val)]);
   }
 
   async draw(row, col, jpegBase64) {
@@ -308,15 +315,19 @@ class Device {
     };
 
     this.asleep = true;
-    if (m === 'blackout' || m === 'zeros-last') {
+    if (m === 'blackout') {
       await step('CLEAR_ALL', () => this.clearScreen());
       await step('LBLIG0', () => this.setLedBrightness(0));
       await step('LIG0', () => this.setBrightness(0));
       await step('HAN', () => this.cmd(CMD.HAN));
       await step('sleep', () => this.cmd(CMD.SLEEP));
       await step('DEVICE_CLOSE', () => this.cmd(CMD.DEVICE_CLOSE));
+    } else if (m === 'zeros-last') {
+      await step('LBLIG0', () => this.setLedBrightness(0));
+      await step('LIG0', () => this.setBrightness(0));
+      await step('HAN', () => this.cmd(CMD.HAN));
+      await step('sleep', () => this.cmd(CMD.SLEEP));
     } else if (m === 'vendor') {
-      await step('CLEAR_ALL', () => this.clearScreen());
       await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
       await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
       await step('LBLIG0[76,66,76,73,71,0]', () => this.setLedBrightness(0));
@@ -325,7 +336,6 @@ class Device {
       await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
       await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
     } else {
-      await step('CLEAR_ALL', () => this.clearScreen());
       await step('LIG0', () => this.setBrightness(0));
       await step('LBLIG0', () => this.setLedBrightness(0));
     }
@@ -343,7 +353,10 @@ class Device {
     const was = this.asleep;
     this.asleep = false;
     if (!was && !force) return false;
-    const b = brightness == null ? this.brightness : brightness;
+    let b = brightness == null ? this.savedBrightness : Number(brightness);
+    if (!b || b <= 0) b = this.savedBrightness || 80;
+    this.brightness = b;
+    this.savedBrightness = b;
     await this.cmd(CMD.DIS).catch(() => {});
     await this.cmd(CMD.WAKE).catch(() => {});
     await this.setBrightness(b).catch(() => {});

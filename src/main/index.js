@@ -292,14 +292,15 @@ async function goToPage(id, why) {
   return true;
 }
 
-function onWakeByKey(row, col) {
+async function onWakeByKey(row, col) {
   deviceAsleep = false;
   lastWakeTime = Date.now();
   lastActivity = Date.now();
   broadcast('key:flash', { row, col });
-  // Refresh dynamic strips (clock / CPU / stats), avoid flooding HID bus with 15 static key PNGs
-  broadcast('device:repaint-strips', {});
-  log(`device woke up by key r${row}c${col} (wake only)`);
+  const cfg = config.load();
+  await safeRpc('wake', { brightness: cfg.brightness, force: true });
+  repaintSoon();
+  log(`device woke up by key r${row}c${col} (wake only, restored brightness=${cfg.brightness})`);
 }
 
 async function onKeyDown(row, col) {
@@ -315,7 +316,7 @@ async function onKeyDown(row, col) {
       deviceAsleep = false;
       lastWakeTime = now;
       await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
-      broadcast('device:repaint-strips', {});
+      repaintSoon();
       broadcast('key:flash', { row, col });
       log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
     } else {

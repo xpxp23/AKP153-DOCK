@@ -63,6 +63,17 @@ async function run() {
     check(`Host [${mode}]: 唤醒后再次按键恢复正常 down+up`, JSON.stringify(normalEvents) === JSON.stringify(['down', 'up']));
   }
 
+  // 验证休眠与唤醒亮度保护（使用独立 Device 实例避免旧队列干扰）
+  const bdev = new Device();
+  bdev.open();
+  await bdev.setBrightness(75);
+  await bdev.sleep('zeros-last');
+  check('Host 亮度保护: 休眠后保留用户基准亮度 savedBrightness', bdev.savedBrightness === 75);
+  check('Host 亮度保护: 休眠期间当前生效亮度为 0', bdev.brightness === 0);
+  await bdev.wake();
+  check('Host 亮度保护: 唤醒后自动恢复基准亮度 75', bdev.brightness === 75);
+  bdev.close();
+
   process.stdout.write = origOut;
   process.stderr.write = origErr;
   dev.close();
