@@ -95,10 +95,10 @@
             </label>
             <label class="fld">硬件休眠指令顺序
               <select id="sleepMode">
-                <option value="zeros-last">亮度归零后断电（全黑纯黑，推荐 ✓）</option>
-                <option value="nobright">不发亮度指令直接休眠（全黑 ✓）</option>
-                <option value="vendor">标准（厂商顺序，微光）</option>
-                <option value="light">只降亮度（微光）</option>
+                <option value="zeros-last">深度灭屏休眠（显存清空+按键/灯环亮度归零+拓展坞彻底断光，推荐 ✓）</option>
+                <option value="vendor">标准休眠（厂商休眠顺序）</option>
+                <option value="nobright">快速指令休眠（仅发送休眠指令，不重置亮度）</option>
+                <option value="light">仅调低亮度（保留显存画面）</option>
               </select>
             </label>
             <div class="card-hint muted">💡 休眠时按任意键即可唤醒并点亮屏幕；自动具备 100ms 防误触唤醒保护。</div>

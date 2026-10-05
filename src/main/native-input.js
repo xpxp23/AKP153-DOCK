@@ -185,6 +185,23 @@ const NativeInput = {
     return { ok: false, error: res.replace(/^ERR\s*/, '') };
   },
 
+  shutdownBlock: (hwndOrReason, reason) => {
+    let hwnd = 0;
+    let r = reason;
+    if (typeof hwndOrReason === 'string' && isNaN(Number(hwndOrReason))) {
+      r = hwndOrReason;
+      hwnd = 0;
+    } else if (hwndOrReason != null) {
+      hwnd = hwndOrReason;
+    }
+    const finalReason = r || 'AKP153 控制台正在安全关闭并休眠屏幕...';
+    return sendCmd(`shutdown_block ${hwnd} ${finalReason}`);
+  },
+
+  shutdownUnblock: (hwnd = 0) => {
+    return sendCmd(`shutdown_unblock ${hwnd || 0}`);
+  },
+
   stop: () => {
     if (daemonProc) {
       try {

@@ -297,10 +297,10 @@ class Device {
    *   zeros-last LBLIG 0, LIG 0, HAN, sleep    (panel off last)
    *   light      LIG 0, LBLIG 0                (brightness only)
    */
-  static SLEEP_MODES = ['vendor', 'nobright', 'zeros-last', 'light'];
+  static SLEEP_MODES = ['zeros-last', 'blackout', 'vendor', 'nobright', 'light'];
 
   async sleep(mode) {
-    const m = Device.SLEEP_MODES.includes(mode) ? mode : 'vendor';
+    const m = Device.SLEEP_MODES.includes(mode) ? mode : 'zeros-last';
     const report = [];
     const step = async (name, fn) => {
       try { await fn(); report.push(name + '=ok'); }
@@ -308,7 +308,15 @@ class Device {
     };
 
     this.asleep = true;
-    if (m === 'vendor') {
+    if (m === 'blackout' || m === 'zeros-last') {
+      await step('CLEAR_ALL', () => this.clearScreen());
+      await step('LBLIG0', () => this.setLedBrightness(0));
+      await step('LIG0', () => this.setBrightness(0));
+      await step('HAN', () => this.cmd(CMD.HAN));
+      await step('sleep', () => this.cmd(CMD.SLEEP));
+      await step('DEVICE_CLOSE', () => this.cmd(CMD.DEVICE_CLOSE));
+    } else if (m === 'vendor') {
+      await step('CLEAR_ALL', () => this.clearScreen());
       await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
       await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
       await step('LBLIG0[76,66,76,73,71,0]', () => this.setLedBrightness(0));
@@ -316,12 +324,8 @@ class Device {
     } else if (m === 'nobright') {
       await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
       await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
-    } else if (m === 'zeros-last') {
-      await step('LBLIG0', () => this.setLedBrightness(0));
-      await step('LIG0', () => this.setBrightness(0));
-      await step('HAN', () => this.cmd(CMD.HAN));
-      await step('sleep', () => this.cmd(CMD.SLEEP));
     } else {
+      await step('CLEAR_ALL', () => this.clearScreen());
       await step('LIG0', () => this.setBrightness(0));
       await step('LBLIG0', () => this.setLedBrightness(0));
     }

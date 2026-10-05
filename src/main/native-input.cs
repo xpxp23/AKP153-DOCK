@@ -102,6 +102,53 @@ namespace AkpInput
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateWindowEx(int dwExStyle, string lpClassName, string lpWindowName, int dwStyle, int x, int y, int nWidth, int nHeight, IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool DestroyWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string pwszReason);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
+
+        private static IntPtr _guardHwnd = IntPtr.Zero;
+
+        static bool BlockShutdown(IntPtr hwnd, string reason)
+        {
+            if (hwnd == IntPtr.Zero)
+            {
+                if (_guardHwnd == IntPtr.Zero)
+                {
+                    _guardHwnd = CreateWindowEx(0, "STATIC", "AKP153_ShutdownGuard", 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+                }
+                hwnd = _guardHwnd;
+            }
+            if (hwnd == IntPtr.Zero) return false;
+            return ShutdownBlockReasonCreate(hwnd, reason);
+        }
+
+        static bool UnblockShutdown(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero)
+            {
+                hwnd = _guardHwnd;
+            }
+            bool ok = false;
+            if (hwnd != IntPtr.Zero)
+            {
+                ok = ShutdownBlockReasonDestroy(hwnd);
+            }
+            if (_guardHwnd != IntPtr.Zero)
+            {
+                DestroyWindow(_guardHwnd);
+                _guardHwnd = IntPtr.Zero;
+            }
+            return ok;
+        }
+
         const uint SWP_NOZORDER = 0x0004;
         const uint SWP_NOACTIVATE = 0x0010;
         const uint SWP_SHOWWINDOW = 0x0040;
@@ -718,6 +765,41 @@ namespace AkpInput
                         else
                         {
                             Console.WriteLine(resDev.StartsWith("ERR") ? resDev : "ERR SWITCH_FAILED");
+                        }
+                        break;
+
+                    case "shutdown_block":
+                        {
+                            IntPtr hwnd = IntPtr.Zero;
+                            int startIdx = 1;
+                            if (parts.Length > 1)
+                            {
+                                long val;
+                                if (long.TryParse(parts[1], out val) && val != 0)
+                                {
+                                    hwnd = new IntPtr(val);
+                                    startIdx = 2;
+                                }
+                            }
+                            string reason = parts.Length > startIdx ? string.Join(" ", parts, startIdx, parts.Length - startIdx) : "AKP153 控制台正在安全关闭并休眠屏幕...";
+                            bool ok = BlockShutdown(hwnd, reason);
+                            Console.WriteLine(ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
+                        }
+                        break;
+
+                    case "shutdown_unblock":
+                        {
+                            IntPtr hwnd = IntPtr.Zero;
+                            if (parts.Length > 1)
+                            {
+                                long val;
+                                if (long.TryParse(parts[1], out val) && val != 0)
+                                {
+                                    hwnd = new IntPtr(val);
+                                }
+                            }
+                            bool ok = UnblockShutdown(hwnd);
+                            Console.WriteLine(ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
                         }
                         break;
 

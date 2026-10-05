@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, globalShortcut, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
@@ -160,7 +160,7 @@ function repaintSoon() {
 }
 
 async function doSleep() {
-  const r = await safeRpc('sleep', { mode: config.load().sleepMode || 'vendor' });
+  const r = await safeRpc('sleep', { mode: config.load().sleepMode || 'zeros-last' });
   deviceAsleep = true;
   log('sleep:', JSON.stringify((r && r.report) || r));
   return r;
@@ -174,6 +174,42 @@ async function doWake() {
   log('wake:', JSON.stringify(r));
   repaintSoon();
   return r;
+}
+
+let isQuitting = false;
+let mainHwndStr = null;
+async function prepareExitAndSleep() {
+  if (isQuitting) return;
+  isQuitting = true;
+  log('prepareExitAndSleep: 正在关闭并休眠 AKP153 控制台硬件...');
+  try {
+    if (process.platform === 'win32') {
+      try {
+        await NativeInput.shutdownBlock(mainHwndStr || 0, 'AKP153 控制台正在熄灭硬件屏幕...');
+      } catch (e) {
+        log('NativeInput.shutdownBlock 失败:', e);
+      }
+    }
+
+    if (host && hostReady) {
+      // 退出/关机时强制采用彻底黑屏模式 (blackout)
+      await safeRpc('sleep', { mode: 'blackout' });
+      // 留出 150ms 让 USB 报文完全写入硬件控制器
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  } catch (err) {
+    log('prepareExitAndSleep 硬件休眠失败:', err);
+  } finally {
+    if (process.platform === 'win32') {
+      try { await NativeInput.shutdownUnblock(mainHwndStr || 0); } catch (_) {}
+    }
+    try { NativeInput.stop(); } catch (_) {}
+    if (host) {
+      try { host.kill(); } catch (e) {}
+      host = null;
+    }
+    app.exit(0);
+  }
 }
 
 
@@ -440,6 +476,26 @@ function createWindow() {
   win.on('closed', () => { win = null; });
   win.on('hide', () => { /* keep running */ });
 
+  if (process.platform === 'win32') {
+    try {
+      const handleBuf = win.getNativeWindowHandle();
+      if (handleBuf && handleBuf.length > 0) {
+        mainHwndStr = handleBuf.length === 8 ? handleBuf.readBigInt64LE(0).toString() : handleBuf.readInt32LE(0).toString();
+      }
+      // WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016
+      win.hookWindowMessage(0x0011, async () => {
+        log('收到 WM_QUERYENDSESSION 关机请求，执行 native shutdownBlock 并进入硬件灭屏...');
+        await prepareExitAndSleep();
+      });
+      win.hookWindowMessage(0x0016, () => {
+        log('收到 WM_ENDSESSION 关机确认，立即退出...');
+        prepareExitAndSleep();
+      });
+    } catch (e) {
+      log('hookWindowMessage 异常:', e);
+    }
+  }
+
   // Removing the application menu also removed its Ctrl+Shift+I accelerator.
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') {
@@ -472,7 +528,7 @@ function createTray() {
     { label: '打开配置文件', click: () => shell.openPath(config.FILE) },
     { label: '关于', click: () => showWindow() },
     { type: 'separator' },
-    { label: '退出', click: () => { if (host) try { host.kill(); } catch (e) {} app.quit(); } },
+    { label: '退出', click: () => { prepareExitAndSleep(); } },
   ]);
   tray.setContextMenu(menu);
   tray.on('double-click', () => showWindow());
@@ -889,7 +945,7 @@ ipcMain.handle('window:maximize', () => {
 ipcMain.handle('window:close', () => {
   const cfg = config.load();
   if (cfg.closeToTray === false) {
-    app.exit(0);
+    prepareExitAndSleep();
   } else {
     if (win) win.hide();
   }
@@ -1223,6 +1279,30 @@ if (!gotLock) {
     } catch (_) {}
   });
 
+  // Windows 系统电源状态与待机联动
+  if (powerMonitor) {
+    powerMonitor.on('shutdown', (e) => {
+      log('powerMonitor: 捕获到系统关机信号，正在进入休眠灭屏...');
+      try { e.preventDefault(); } catch (_) {}
+      prepareExitAndSleep();
+    });
+
+    powerMonitor.on('suspend', async () => {
+      log('powerMonitor: 捕获到系统待机休眠信号，熄灭 AKP153 控制台...');
+      await doSleep();
+    });
+
+    powerMonitor.on('resume', async () => {
+      log('powerMonitor: 捕获到系统唤醒恢复信号，唤醒 AKP153 控制台...');
+      await doWake();
+    });
+  }
+
   app.on('window-all-closed', (e) => { e.preventDefault(); }); // tray app
-  app.on('before-quit', () => { if (host) try { host.kill(); } catch (e) {} });
+  app.on('before-quit', (e) => {
+    if (!isQuitting && host && hostReady) {
+      try { e.preventDefault(); } catch (_) {}
+      prepareExitAndSleep();
+    }
+  });
 }
