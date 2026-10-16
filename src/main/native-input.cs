@@ -5,6 +5,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Windows.Forms;
+using Microsoft.Win32.SafeHandles;
 
 namespace AkpInput
 {
@@ -78,6 +80,8 @@ namespace AkpInput
         const uint MOUSEEVENTF_WHEEL = 0x0800;
         const uint MOUSEEVENTF_MOVE = 0x0001;
 
+        const uint WM_CLOSE = 0x0010;
+
         [DllImport("user32.dll", SetLastError = true)]
         static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
@@ -93,11 +97,32 @@ namespace AkpInput
         [DllImport("user32.dll")]
         static extern IntPtr GetForegroundWindow();
 
+        [DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
         [DllImport("user32.dll")]
         static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
@@ -114,10 +139,296 @@ namespace AkpInput
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
 
+        [DllImport("ole32.dll")]
+        static extern int PropVariantClear(ref PROPVARIANT pvar);
+
         private static IntPtr _guardHwnd = IntPtr.Zero;
+
+        class ShutdownGuardForm : Form
+        {
+            const int WM_QUERYENDSESSION = 0x0011;
+            const int WM_ENDSESSION = 0x0016;
+
+            public ShutdownGuardForm()
+            {
+                this.ShowInTaskbar = false;
+                this.WindowState = FormWindowState.Minimized;
+                this.FormBorderStyle = FormBorderStyle.None;
+                this.Size = new System.Drawing.Size(0, 0);
+            }
+
+            protected override void SetVisibleCore(bool value)
+            {
+                base.SetVisibleCore(false);
+            }
+
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                try
+                {
+                    ShutdownBlockReasonCreate(this.Handle, "AKP153 控制台正在安全关闭并休眠屏幕...");
+                }
+                catch { }
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == WM_QUERYENDSESSION)
+                {
+                    // 操作系统正在关机，在独立 STA 消息循环内同步执行硬件灭屏直写
+                    try
+                    {
+                        DirectHardwareBlackout();
+                    }
+                    catch { }
+                    try
+                    {
+                        ShutdownBlockReasonDestroy(this.Handle);
+                    }
+                    catch { }
+                    m.Result = new IntPtr(1);
+                    return;
+                }
+                if (m.Msg == WM_ENDSESSION)
+                {
+                    if (m.WParam != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            DirectHardwareBlackout();
+                        }
+                        catch { }
+                        Application.Exit();
+                    }
+                    m.Result = IntPtr.Zero;
+                    return;
+                }
+                base.WndProc(ref m);
+            }
+        }
+
+        private static Thread _guardThread = null;
+        private static ShutdownGuardForm _guardForm = null;
+
+        public static void StartShutdownGuard()
+        {
+            if (_guardThread != null) return;
+            _guardThread = new Thread(() =>
+            {
+                try
+                {
+                    _guardForm = new ShutdownGuardForm();
+                    Application.Run(_guardForm);
+                }
+                catch { }
+            });
+            _guardThread.SetApartmentState(ApartmentState.STA);
+            _guardThread.IsBackground = true;
+            _guardThread.Name = "AkpShutdownGuard";
+            _guardThread.Start();
+        }
+
+        public static void StopShutdownGuard()
+        {
+            if (_guardForm != null && !_guardForm.IsDisposed)
+            {
+                try
+                {
+                    _guardForm.Invoke((MethodInvoker)delegate
+                    {
+                        ShutdownBlockReasonDestroy(_guardForm.Handle);
+                        _guardForm.Close();
+                    });
+                }
+                catch { }
+                _guardForm = null;
+            }
+        }
+
+        private static string _cachedDevicePath = null;
+
+        public static void SetDevicePath(string path)
+        {
+            if (!string.IsNullOrEmpty(path))
+            {
+                _cachedDevicePath = path.Trim();
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SP_DEVICE_INTERFACE_DATA
+        {
+            public int cbSize;
+            public Guid interfaceClassGuid;
+            public int flags;
+            public IntPtr reserved;
+        }
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        static extern IntPtr SetupDiGetClassDevs(ref Guid ClassGuid, IntPtr Enumerator, IntPtr hwndParent, uint Flags);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        static extern bool SetupDiEnumDeviceInterfaces(IntPtr DeviceInfoSet, IntPtr DeviceInfoData, ref Guid InterfaceClassGuid, uint MemberIndex, ref SP_DEVICE_INTERFACE_DATA DeviceInterfaceData);
+
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr DeviceInfoSet, ref SP_DEVICE_INTERFACE_DATA DeviceInterfaceData, IntPtr DeviceInterfaceDetailData, int DeviceInterfaceDetailDataSize, ref int RequiredSize, IntPtr DeviceInfoData);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern SafeFileHandle CreateFile(
+            string lpFileName,
+            uint dwDesiredAccess,
+            uint dwShareMode,
+            IntPtr lpSecurityAttributes,
+            uint dwCreationDisposition,
+            uint dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool WriteFile(
+            SafeFileHandle hFile,
+            byte[] lpBuffer,
+            uint nNumberOfBytesToWrite,
+            out uint lpNumberOfBytesWritten,
+            IntPtr lpOverlapped);
+
+        static List<string> EnumerateAkpDevices()
+        {
+            var list = new List<string>();
+            Guid hidGuid = new Guid("4d1e55b2-f16f-11cf-88cb-001111000030");
+            uint DIGCF_PRESENT = 0x00000002;
+            uint DIGCF_DEVICEINTERFACE = 0x00000010;
+
+            IntPtr devInfo = SetupDiGetClassDevs(ref hidGuid, IntPtr.Zero, IntPtr.Zero, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+            if (devInfo == IntPtr.Zero || devInfo == new IntPtr(-1)) return list;
+
+            try
+            {
+                SP_DEVICE_INTERFACE_DATA ifData = new SP_DEVICE_INTERFACE_DATA();
+                ifData.cbSize = Marshal.SizeOf(typeof(SP_DEVICE_INTERFACE_DATA));
+                uint idx = 0;
+
+                while (SetupDiEnumDeviceInterfaces(devInfo, IntPtr.Zero, ref hidGuid, idx++, ref ifData))
+                {
+                    int reqSize = 0;
+                    SetupDiGetDeviceInterfaceDetail(devInfo, ref ifData, IntPtr.Zero, 0, ref reqSize, IntPtr.Zero);
+                    if (reqSize > 0)
+                    {
+                        IntPtr detailBuf = Marshal.AllocHGlobal(reqSize);
+                        try
+                        {
+                            Marshal.WriteInt32(detailBuf, (IntPtr.Size == 8) ? 8 : 4 + Marshal.SystemDefaultCharSize);
+                            if (SetupDiGetDeviceInterfaceDetail(devInfo, ref ifData, detailBuf, reqSize, ref reqSize, IntPtr.Zero))
+                            {
+                                IntPtr pPath = new IntPtr(detailBuf.ToInt64() + 4);
+                                string path = Marshal.PtrToStringAuto(pPath);
+                                if (!string.IsNullOrEmpty(path))
+                                {
+                                    string lower = path.ToLowerInvariant();
+                                    if ((lower.Contains("vid_5548") && lower.Contains("pid_6674")) ||
+                                        (lower.Contains("vid_0300") && lower.Contains("pid_1010")))
+                                    {
+                                        list.Add(path);
+                                    }
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.FreeHGlobal(detailBuf);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                SetupDiDestroyDeviceInfoList(devInfo);
+            }
+            return list;
+        }
+
+        static byte[] MakeHidPacket(byte[] cmd)
+        {
+            byte[] buf = new byte[513];
+            buf[0] = 0;
+            buf[1] = 67; buf[2] = 82; buf[3] = 84; buf[4] = 0; buf[5] = 0; // "CRT\0\0"
+            for (int i = 0; i < cmd.Length && (6 + i) < buf.Length; i++)
+            {
+                buf[6 + i] = cmd[i];
+            }
+            return buf;
+        }
+
+        private static readonly object _blackoutLock = new object();
+
+        public static bool DirectHardwareBlackout()
+        {
+            lock (_blackoutLock)
+            {
+                var candidatePaths = new List<string>();
+                if (!string.IsNullOrEmpty(_cachedDevicePath))
+                {
+                    candidatePaths.Add(_cachedDevicePath);
+                }
+
+                var scanned = EnumerateAkpDevices();
+                foreach (var p in scanned)
+                {
+                    if (!candidatePaths.Contains(p)) candidatePaths.Add(p);
+                }
+
+                if (candidatePaths.Count == 0) return false;
+
+                uint GENERIC_WRITE = 0x40000000;
+                uint GENERIC_READ = 0x80000000;
+                uint FILE_SHARE_READ = 0x00000001;
+                uint FILE_SHARE_WRITE = 0x00000002;
+                uint OPEN_EXISTING = 3;
+
+                byte[][] blackoutSeq = new byte[][]
+                {
+                    new byte[] { 67, 76, 69, 0, 0, 0, 255 },     // CLEAR_ALL (清空显存)
+                    new byte[] { 76, 66, 76, 73, 71, 0 },          // LBLIG 0 (LED灯带调零)
+                    new byte[] { 76, 73, 71, 0, 0, 0 },            // LIG 0 (屏幕背光调零)
+                    new byte[] { 72, 65, 78 },                     // HAN (准备休眠)
+                    new byte[] { 115, 108, 101, 101, 112 },        // sleep (芯片休眠)
+                    new byte[] { 67, 76, 69, 0, 0, 68, 67 }        // DEVICE_CLOSE (断开连接)
+                };
+
+                bool anySuccess = false;
+                foreach (var path in candidatePaths)
+                {
+                    try
+                    {
+                        using (var handle = CreateFile(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
+                        {
+                            if (handle.IsInvalid) continue;
+
+                            foreach (var cmd in blackoutSeq)
+                            {
+                                byte[] pkt = MakeHidPacket(cmd);
+                                uint written;
+                                WriteFile(handle, pkt, 513, out written, IntPtr.Zero);
+                                Thread.Sleep(4);
+                            }
+                            anySuccess = true;
+                        }
+                    }
+                    catch { }
+                }
+                return anySuccess;
+            }
+        }
 
         static bool BlockShutdown(IntPtr hwnd, string reason)
         {
+            if (_guardForm != null && !_guardForm.IsDisposed)
+            {
+                return ShutdownBlockReasonCreate(_guardForm.Handle, reason);
+            }
             if (hwnd == IntPtr.Zero)
             {
                 if (_guardHwnd == IntPtr.Zero)
@@ -132,6 +443,10 @@ namespace AkpInput
 
         static bool UnblockShutdown(IntPtr hwnd)
         {
+            if (_guardForm != null && !_guardForm.IsDisposed)
+            {
+                return ShutdownBlockReasonDestroy(_guardForm.Handle);
+            }
             if (hwnd == IntPtr.Zero)
             {
                 hwnd = _guardHwnd;
@@ -153,18 +468,26 @@ namespace AkpInput
         const uint SWP_NOACTIVATE = 0x0010;
         const uint SWP_SHOWWINDOW = 0x0040;
 
-        public static void MouseMove(int x, int y, bool relative)
+        public static void MouseMove(int x, int y, bool relative, int durationMs = 0)
         {
-            if (relative)
+            POINT startPt;
+            GetCursorPos(out startPt);
+            int targetX = relative ? (startPt.X + x) : x;
+            int targetY = relative ? (startPt.Y + y) : y;
+
+            if (durationMs > 15)
             {
-                POINT p;
-                GetCursorPos(out p);
-                SetCursorPos(p.X + x, p.Y + y);
+                int steps = Math.Max(5, Math.Min(80, durationMs / 10));
+                int stepSleep = Math.Max(1, durationMs / steps);
+                for (int i = 1; i <= steps; i++)
+                {
+                    int curX = startPt.X + (targetX - startPt.X) * i / steps;
+                    int curY = startPt.Y + (targetY - startPt.Y) * i / steps;
+                    SetCursorPos(curX, curY);
+                    Thread.Sleep(stepSleep);
+                }
             }
-            else
-            {
-                SetCursorPos(x, y);
-            }
+            SetCursorPos(targetX, targetY);
         }
 
         public static void MouseClick(string button, int x, int y)
@@ -193,39 +516,39 @@ namespace AkpInput
                 mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
                 Thread.Sleep(20);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-                Thread.Sleep(80);
+                Thread.Sleep(60);
                 mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
                 Thread.Sleep(20);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
             }
             else
             {
-                // default left click
                 mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
                 Thread.Sleep(20);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
             }
         }
 
-        public static void MouseDrag(int fromX, int fromY, int toX, int toY)
+        public static void MouseDrag(int fromX, int fromY, int toX, int toY, int durationMs = 150)
         {
             SetCursorPos(fromX, fromY);
-            Thread.Sleep(30);
+            Thread.Sleep(25);
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(30);
+            Thread.Sleep(25);
 
-            // 平滑插值移动
-            int steps = 15;
+            int totalMs = Math.Max(50, Math.Min(10000, durationMs));
+            int steps = Math.Max(10, Math.Min(80, totalMs / 12));
+            int stepSleep = Math.Max(1, totalMs / steps);
             for (int i = 1; i <= steps; i++)
             {
                 int curX = fromX + (toX - fromX) * i / steps;
                 int curY = fromY + (toY - fromY) * i / steps;
                 SetCursorPos(curX, curY);
-                Thread.Sleep(10);
+                Thread.Sleep(stepSleep);
             }
 
             SetCursorPos(toX, toY);
-            Thread.Sleep(30);
+            Thread.Sleep(25);
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
         }
 
@@ -237,12 +560,19 @@ namespace AkpInput
         public static void SendUnicodeText(string text)
         {
             if (string.IsNullOrEmpty(text)) return;
-            var inputs = new INPUT[text.Length * 2];
-            for (int i = 0; i < text.Length; i++)
+            string normalized = text.Replace("\\r\\n", "\n").Replace("\\n", "\n");
+            var inputs = new List<INPUT>(normalized.Length * 2);
+            for (int i = 0; i < normalized.Length; i++)
             {
-                char ch = text[i];
-                // Key down
-                inputs[i * 2] = new INPUT
+                char ch = normalized[i];
+                if (ch == '\r') continue;
+                if (ch == '\n')
+                {
+                    inputs.Add(CreateKeyInput(0x0D, false, false));
+                    inputs.Add(CreateKeyInput(0x0D, true, false));
+                    continue;
+                }
+                inputs.Add(new INPUT
                 {
                     type = INPUT_KEYBOARD,
                     u = new InputUnion
@@ -256,9 +586,8 @@ namespace AkpInput
                             dwExtraInfo = UIntPtr.Zero
                         }
                     }
-                };
-                // Key up
-                inputs[i * 2 + 1] = new INPUT
+                });
+                inputs.Add(new INPUT
                 {
                     type = INPUT_KEYBOARD,
                     u = new InputUnion
@@ -272,9 +601,172 @@ namespace AkpInput
                             dwExtraInfo = UIntPtr.Zero
                         }
                     }
-                };
+                });
             }
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+            if (inputs.Count > 0)
+            {
+                var arr = inputs.ToArray();
+                SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
+            }
+        }
+
+        static INPUT CreateKeyInput(ushort vk, bool keyUp, bool extended)
+        {
+            uint flags = keyUp ? KEYEVENTF_KEYUP : KEYEVENTF_KEYDOWN;
+            if (extended) flags |= KEYEVENTF_EXTENDEDKEY;
+            return new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new InputUnion
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = vk,
+                        wScan = 0,
+                        dwFlags = flags,
+                        time = 0,
+                        dwExtraInfo = UIntPtr.Zero
+                    }
+                }
+            };
+        }
+
+        static bool IsExtendedVk(ushort vk)
+        {
+            return vk == 0x5B || vk == 0x5C || // LWIN, RWIN
+                   vk == 0x21 || vk == 0x22 || vk == 0x23 || vk == 0x24 || // PGUP, PGDN, END, HOME
+                   vk == 0x25 || vk == 0x26 || vk == 0x27 || vk == 0x28 || // LEFT, UP, RIGHT, DOWN
+                   vk == 0x2D || vk == 0x2E || vk == 0x2C; // INS, DEL, PRTSCN
+        }
+
+        static ushort ResolveVk(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return 0;
+            string k = token.Trim().ToLowerInvariant();
+            switch (k)
+            {
+                case "enter": case "return": return 0x0D;
+                case "esc": case "escape": return 0x1B;
+                case "tab": return 0x09;
+                case "space": case "spacebar": return 0x20;
+                case "backspace": case "bksp": case "bs": return 0x08;
+                case "del": case "delete": return 0x2E;
+                case "ins": case "insert": return 0x2D;
+                case "home": return 0x24;
+                case "end": return 0x23;
+                case "pgup": case "pageup": return 0x21;
+                case "pgdn": case "pagedown": return 0x22;
+                case "up": case "arrowup": return 0x26;
+                case "down": case "arrowdown": return 0x28;
+                case "left": case "arrowleft": return 0x25;
+                case "right": case "arrowright": return 0x27;
+                case "prtscn": case "printscreen": case "prtsc": return 0x2C;
+                case "pause": case "break": return 0x13;
+                case "capslock": case "caps": return 0x14;
+                case "numlock": return 0x90;
+                case "scrolllock": return 0x91;
+                case "apps": case "contextmenu": return 0x5D;
+                case "vol_up": case "volume_up": case "volumeup": case "audiovolumeup": return 0xAF;
+                case "vol_down": case "volume_down": case "volumedown": case "audiovolumedown": return 0xAE;
+                case "vol_mute": case "volume_mute": case "volumemute": case "audiovolumemute": return 0xAD;
+                case "media_play_pause": case "mediaplaypause": case "play_pause": return 0xB3;
+                case "media_next": case "media_next_track": case "medianexttrack": return 0xB0;
+                case "media_prev": case "media_prev_track": case "mediaprevtrack": return 0xB1;
+                case "media_stop": case "mediastop": return 0xB2;
+                case ";": case "semicolon": return 0xBA;
+                case "=": case "plus": case "equal": return 0xBB;
+                case ",": case "comma": return 0xBC;
+                case "-": case "minus": case "hyphen": return 0xBD;
+                case ".": case "period": case "dot": return 0xBE;
+                case "/": case "slash": return 0xBF;
+                case "`": case "tilde": case "backquote": return 0xC0;
+                case "[": case "bracketleft": return 0xDB;
+                case "\\": case "backslash": return 0xDC;
+                case "]": case "bracketright": return 0xDD;
+                case "'": case "quote": return 0xDE;
+            }
+            if (k.StartsWith("f") && k.Length >= 2 && k.Length <= 3)
+            {
+                int fn;
+                if (int.TryParse(k.Substring(1), out fn) && fn >= 1 && fn <= 24)
+                {
+                    return (ushort)(0x70 + fn - 1);
+                }
+            }
+            if (k.StartsWith("num") && k.Length == 4 && char.IsDigit(k[3]))
+            {
+                return (ushort)(0x60 + (k[3] - '0'));
+            }
+            if (k.Length == 1)
+            {
+                char c = char.ToUpperInvariant(k[0]);
+                if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+                {
+                    return (ushort)c;
+                }
+            }
+            return 0;
+        }
+
+        public static bool SendHotkey(string combo)
+        {
+            if (string.IsNullOrWhiteSpace(combo)) return false;
+            string[] parts = combo.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
+            bool ctrl = false, alt = false, shift = false, win = false;
+            ushort mainVk = 0;
+
+            foreach (var raw in parts)
+            {
+                string p = raw.Trim().ToLowerInvariant();
+                if (p == "ctrl" || p == "control" || p == "lctrl" || p == "rctrl") ctrl = true;
+                else if (p == "alt" || p == "menu" || p == "lalt" || p == "ralt") alt = true;
+                else if (p == "shift" || p == "lshift" || p == "rshift") shift = true;
+                else if (p == "win" || p == "meta" || p == "super" || p == "lwin" || p == "rwin") win = true;
+                else
+                {
+                    ushort resolved = ResolveVk(p);
+                    if (resolved != 0) mainVk = resolved;
+                }
+            }
+
+            if (!ctrl && !alt && !shift && !win && mainVk == 0) return false;
+
+            var downList = new List<INPUT>();
+            var upList = new List<INPUT>();
+
+            if (ctrl)
+            {
+                downList.Add(CreateKeyInput(0x11, false, false));
+                upList.Insert(0, CreateKeyInput(0x11, true, false));
+            }
+            if (alt)
+            {
+                downList.Add(CreateKeyInput(0x12, false, false));
+                upList.Insert(0, CreateKeyInput(0x12, true, false));
+            }
+            if (shift)
+            {
+                downList.Add(CreateKeyInput(0x10, false, false));
+                upList.Insert(0, CreateKeyInput(0x10, true, false));
+            }
+            if (win)
+            {
+                downList.Add(CreateKeyInput(0x5B, false, true));
+                upList.Insert(0, CreateKeyInput(0x5B, true, true));
+            }
+            if (mainVk != 0)
+            {
+                bool ext = IsExtendedVk(mainVk);
+                downList.Add(CreateKeyInput(mainVk, false, ext));
+                upList.Insert(0, CreateKeyInput(mainVk, true, ext));
+            }
+
+            var all = new List<INPUT>(downList.Count + upList.Count);
+            all.AddRange(downList);
+            all.AddRange(upList);
+            var arr = all.ToArray();
+            uint sent = SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
+            return sent > 0;
         }
 
         public static void SetWindowBounds(int x, int y, int width, int height, string target)
@@ -283,22 +775,36 @@ namespace AkpInput
             if (!string.IsNullOrEmpty(target))
             {
                 string t = target.Trim().ToLowerInvariant();
-                foreach (var p in Process.GetProcesses())
+                Process[] procs = Process.GetProcesses();
+                try
                 {
-                    try
+                    foreach (var p in procs)
                     {
-                        if (p.MainWindowHandle != IntPtr.Zero)
+                        try
                         {
-                            string pName = p.ProcessName.ToLowerInvariant();
-                            string wTitle = p.MainWindowTitle.ToLowerInvariant();
-                            if (pName.Contains(t) || wTitle.Contains(t))
+                            if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
                             {
-                                hwnd = p.MainWindowHandle;
-                                break;
+                                string pName = p.ProcessName.ToLowerInvariant();
+                                string wTitle = p.MainWindowTitle.ToLowerInvariant();
+                                if (pName.Contains(t) || wTitle.Contains(t))
+                                {
+                                    hwnd = p.MainWindowHandle;
+                                }
                             }
                         }
+                        catch { }
+                        finally
+                        {
+                            try { p.Dispose(); } catch { }
+                        }
                     }
-                    catch { }
+                }
+                finally
+                {
+                    foreach (var p in procs)
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
                 }
             }
 
@@ -314,16 +820,146 @@ namespace AkpInput
             }
         }
 
+        public static string GetForegroundProcessInfo()
+        {
+            IntPtr hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return "";
+            uint pid = 0;
+            GetWindowThreadProcessId(hwnd, out pid);
+            if (pid == 0) return "";
+            string procName = "";
+            string title = "";
+            try
+            {
+                using (Process p = Process.GetProcessById((int)pid))
+                {
+                    procName = p.ProcessName ?? "";
+                }
+            }
+            catch { }
+            try
+            {
+                var sb = new StringBuilder(256);
+                if (GetWindowText(hwnd, sb, sb.Capacity) > 0)
+                {
+                    title = sb.ToString();
+                }
+            }
+            catch { }
+            return procName + "|" + pid + "|" + title.Replace("\r", "").Replace("\n", " ");
+        }
+
+        public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return "ERR EMPTY";
+            string target = procName.Trim();
+            if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                target = target.Substring(0, target.Length - 4);
+            }
+
+            IntPtr hwnd = IntPtr.Zero;
+            Process[] procs = Process.GetProcessesByName(target);
+            try
+            {
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            hwnd = p.MainWindowHandle;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs)
+                {
+                    try { p.Dispose(); } catch { }
+                }
+            }
+
+            if (hwnd == IntPtr.Zero) return "NOWINDOW";
+
+            IntPtr fg = GetForegroundWindow();
+            if (allowMinimize && fg == hwnd && !IsIconic(hwnd))
+            {
+                ShowWindowAsync(hwnd, 6); // SW_MINIMIZE
+                return "MINIMIZED";
+            }
+
+            if (IsIconic(hwnd))
+            {
+                ShowWindowAsync(hwnd, 9); // SW_RESTORE
+            }
+
+            uint fgPid;
+            uint fgThread = GetWindowThreadProcessId(fg, out fgPid);
+            uint curThread = GetCurrentThreadId();
+            bool attached = false;
+            if (fgThread != 0 && fgThread != curThread)
+            {
+                attached = AttachThreadInput(curThread, fgThread, true);
+            }
+            try
+            {
+                SetForegroundWindow(hwnd);
+            }
+            finally
+            {
+                if (attached) AttachThreadInput(curThread, fgThread, false);
+            }
+            return "FOCUSED";
+        }
+
+        public static bool GracefulCloseProcess(string procName)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return false;
+            string target = procName.Trim();
+            if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                target = target.Substring(0, target.Length - 4);
+            }
+            bool closedAny = false;
+            Process[] procs = Process.GetProcessesByName(target);
+            try
+            {
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        if (p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            PostMessage(p.MainWindowHandle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                            closedAny = true;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs)
+                {
+                    try { p.Dispose(); } catch { }
+                }
+            }
+            return closedAny;
+        }
+
         public static void SendMedia(string cmd)
         {
             byte vk = 0;
             string c = (cmd ?? "").ToLowerInvariant();
-            if (c == "vol_up") vk = 0xAF; // VK_VOLUME_UP
-            else if (c == "vol_down") vk = 0xAE; // VK_VOLUME_DOWN
-            else if (c == "mute") vk = 0xAD; // VK_VOLUME_MUTE
-            else if (c == "play_pause") vk = 0xB3; // VK_MEDIA_PLAY_PAUSE
-            else if (c == "next") vk = 0xB0; // VK_MEDIA_NEXT_TRACK
-            else if (c == "prev") vk = 0xB1; // VK_MEDIA_PREV_TRACK
+            if (c == "vol_up") vk = 0xAF;
+            else if (c == "vol_down") vk = 0xAE;
+            else if (c == "mute") vk = 0xAD;
+            else if (c == "play_pause") vk = 0xB3;
+            else if (c == "next") vk = 0xB0;
+            else if (c == "prev") vk = 0xB1;
 
             if (vk != 0)
             {
@@ -378,6 +1014,7 @@ namespace AkpInput
         {
             [FieldOffset(0)] public ushort vt;
             [FieldOffset(8)] public IntPtr pwszVal;
+            [FieldOffset(8)] public long uhVal;
         }
 
         [Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -542,35 +1179,59 @@ namespace AkpInput
         public static List<AudioDeviceInfo> AudioGetDevices()
         {
             var list = new List<AudioDeviceInfo>();
+            IMMDeviceEnumerator enumerator = null;
+            IMMDevice defDev = null;
+            IMMDeviceCollection col = null;
             try
             {
-                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-                IMMDevice defDev;
+                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
                 string defId = "";
                 if (enumerator.GetDefaultAudioEndpoint(0, 0, out defDev) == 0 && defDev != null)
                 {
                     defDev.GetId(out defId);
                 }
 
-                IMMDeviceCollection col;
                 enumerator.EnumAudioEndpoints(0, 1, out col);
+                if (col == null) return list;
                 uint count;
                 col.GetCount(out count);
                 for (uint i = 0; i < count; i++)
                 {
-                    IMMDevice d;
-                    col.Item(i, out d);
-                    string id;
-                    d.GetId(out id);
-                    IPropertyStore store;
-                    d.OpenPropertyStore(0, out store);
-                    PROPVARIANT pv;
-                    store.GetValue(ref PKEY_Device_FriendlyName, out pv);
-                    string name = Marshal.PtrToStringUni(pv.pwszVal) ?? "Audio Device";
-                    list.Add(new AudioDeviceInfo { Id = id, Name = name, IsDefault = (id == defId) });
+                    IMMDevice d = null;
+                    IPropertyStore store = null;
+                    PROPVARIANT pv = new PROPVARIANT();
+                    try
+                    {
+                        col.Item(i, out d);
+                        if (d == null) continue;
+                        string id;
+                        d.GetId(out id);
+                        d.OpenPropertyStore(0, out store);
+                        string name = "Audio Device";
+                        if (store != null && store.GetValue(ref PKEY_Device_FriendlyName, out pv) == 0)
+                        {
+                            if (pv.pwszVal != IntPtr.Zero)
+                            {
+                                name = Marshal.PtrToStringUni(pv.pwszVal) ?? "Audio Device";
+                            }
+                        }
+                        list.Add(new AudioDeviceInfo { Id = id, Name = name, IsDefault = (id == defId) });
+                    }
+                    finally
+                    {
+                        try { PropVariantClear(ref pv); } catch { }
+                        if (store != null) try { Marshal.ReleaseComObject(store); } catch { }
+                        if (d != null) try { Marshal.ReleaseComObject(d); } catch { }
+                    }
                 }
             }
             catch { }
+            finally
+            {
+                if (col != null) try { Marshal.ReleaseComObject(col); } catch { }
+                if (defDev != null) try { Marshal.ReleaseComObject(defDev); } catch { }
+                if (enumerator != null) try { Marshal.ReleaseComObject(enumerator); } catch { }
+            }
             return list;
         }
 
@@ -593,17 +1254,22 @@ namespace AkpInput
             }
 
             if (chosen == null) return "ERR TARGET_NOT_FOUND";
+            IPolicyConfig policy = null;
             try
             {
-                var policy = (IPolicyConfig)new PolicyConfigComObject();
-                policy.SetDefaultEndpoint(chosen.Id, 0); // eConsole
-                policy.SetDefaultEndpoint(chosen.Id, 1); // eMultimedia
-                policy.SetDefaultEndpoint(chosen.Id, 2); // eCommunications
+                policy = (IPolicyConfig)new PolicyConfigComObject();
+                policy.SetDefaultEndpoint(chosen.Id, 0);
+                policy.SetDefaultEndpoint(chosen.Id, 1);
+                policy.SetDefaultEndpoint(chosen.Id, 2);
                 return chosen.Name;
             }
             catch (Exception ex)
             {
                 return "ERR " + ex.Message;
+            }
+            finally
+            {
+                if (policy != null) try { Marshal.ReleaseComObject(policy); } catch { }
             }
         }
 
@@ -646,7 +1312,8 @@ namespace AkpInput
                         int posX = int.Parse(parts[1]);
                         int posY = int.Parse(parts[2]);
                         bool rel = parts.Length > 3 && parts[3].ToLowerInvariant() == "rel";
-                        MouseMove(posX, posY, rel);
+                        int moveDur = parts.Length > 4 ? int.Parse(parts[4]) : 0;
+                        MouseMove(posX, posY, rel, moveDur);
                         Console.WriteLine("OK");
                         break;
 
@@ -655,7 +1322,8 @@ namespace AkpInput
                         int fy = int.Parse(parts[2]);
                         int tx = int.Parse(parts[3]);
                         int ty = int.Parse(parts[4]);
-                        MouseDrag(fx, fy, tx, ty);
+                        int dragDur = parts.Length > 5 ? int.Parse(parts[5]) : 150;
+                        MouseDrag(fx, fy, tx, ty, dragDur);
                         Console.WriteLine("OK");
                         break;
 
@@ -666,11 +1334,34 @@ namespace AkpInput
                         break;
 
                     case "text":
-                        // text is the remainder of the line
                         int textStart = line.IndexOf(parts[0]) + parts[0].Length;
                         string textContent = line.Substring(textStart).Trim();
                         SendUnicodeText(textContent);
                         Console.WriteLine("OK");
+                        break;
+
+                    case "hotkey":
+                        int hkStart = line.IndexOf(parts[0]) + parts[0].Length;
+                        string hkCombo = line.Substring(hkStart).Trim();
+                        bool hkOk = SendHotkey(hkCombo);
+                        Console.WriteLine(hkOk ? "OK" : "ERR INVALID_HOTKEY");
+                        break;
+
+                    case "fg_window":
+                        Console.WriteLine("OK " + GetForegroundProcessInfo());
+                        break;
+
+                    case "win_activate":
+                        string actTarget = parts.Length > 1 ? parts[1] : "";
+                        bool toggleMin = parts.Length > 2 && parts[2] == "1";
+                        string actRes = ActivateOrToggleWindow(actTarget, toggleMin);
+                        Console.WriteLine("OK " + actRes);
+                        break;
+
+                    case "win_close":
+                        string clsTarget = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1) : "";
+                        bool closed = GracefulCloseProcess(clsTarget);
+                        Console.WriteLine(closed ? "OK CLOSED" : "ERR NOT_FOUND");
                         break;
 
                     case "window_rect":
@@ -678,7 +1369,7 @@ namespace AkpInput
                         int wy = int.Parse(parts[2]);
                         int ww = int.Parse(parts[3]);
                         int wh = int.Parse(parts[4]);
-                        string wtarget = parts.Length > 5 ? parts[5] : null;
+                        string wtarget = parts.Length > 5 ? string.Join(" ", parts, 5, parts.Length - 5) : null;
                         SetWindowBounds(wx, wy, ww, wh, wtarget);
                         Console.WriteLine("OK");
                         break;
@@ -803,6 +1494,25 @@ namespace AkpInput
                         }
                         break;
 
+                    case "set_device_path":
+                        if (parts.Length > 1)
+                        {
+                            SetDevicePath(string.Join(" ", parts, 1, parts.Length - 1));
+                            Console.WriteLine("OK");
+                        }
+                        else
+                        {
+                            Console.WriteLine("ERR MISSING_PATH");
+                        }
+                        break;
+
+                    case "blackout_hardware":
+                        {
+                            bool ok = DirectHardwareBlackout();
+                            Console.WriteLine(ok ? "OK" : "ERR NO_DEVICE");
+                        }
+                        break;
+
                     case "ping":
                         Console.WriteLine("PONG");
                         break;
@@ -814,7 +1524,7 @@ namespace AkpInput
             }
             catch (Exception ex)
             {
-                Console.WriteLine("ERR " + ex.Message);
+                Console.WriteLine("ERR " + ex.Message.Replace("\r", " ").Replace("\n", " "));
             }
         }
 
@@ -827,25 +1537,39 @@ namespace AkpInput
             {
                 if (args[0] == "--daemon")
                 {
-                    string l;
-                    while ((l = Console.ReadLine()) != null)
+                    StartShutdownGuard();
+                    try
                     {
-                        if (l == "exit" || l == "quit") break;
-                        ExecuteCommand(l);
+                        string l;
+                        while ((l = Console.ReadLine()) != null)
+                        {
+                            if (l == "exit" || l == "quit") break;
+                            ExecuteCommand(l);
+                        }
+                    }
+                    finally
+                    {
+                        StopShutdownGuard();
                     }
                     return;
                 }
 
-                // One-shot mode
                 ExecuteCommand(string.Join(" ", args));
                 return;
             }
 
-            // Default: Read lines until EOF
-            string line;
-            while ((line = Console.ReadLine()) != null)
+            StartShutdownGuard();
+            try
             {
-                ExecuteCommand(line);
+                string line;
+                while ((line = Console.ReadLine()) != null)
+                {
+                    ExecuteCommand(line);
+                }
+            }
+            finally
+            {
+                StopShutdownGuard();
             }
         }
     }

@@ -6,8 +6,9 @@
  *   node tools/config-cli.js show
  *   node tools/config-cli.js set r0c0 --type app --target "F:\Program Files\QOwnNotes\QOwnNotes.exe"
  *   node tools/config-cli.js set r2c1 --type page --mode next
+ *   node tools/config-cli.js set r2c2 --type volume --action up --step 5
  *   node tools/config-cli.js set-page 主页面 --from patch.json
- *   node tools/config-cli.js strip 2 --type page
+ *   node tools/config-cli.js strip 2 --type volume
  *   node tools/config-cli.js lib-add r0c0 --name "QOwnNotes" --tags 笔记,常用
  *
  * 所有写操作都会走 config.js 的原子保存（tmp + rename）。
@@ -50,13 +51,14 @@ function cellKey(v) {
   return null;
 }
 
-const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'hotkey', 'multi', 'macro', 'qr_decode'];
+const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'hotkey', 'volume', 'audio', 'media', 'multi', 'macro', 'qr_decode'];
 const PAGE_MODES = ['next', 'prev', 'goto', 'up', 'home'];
-const STRIP_TYPES = ['clock', 'text', 'page', 'cpu', 'mem', 'sys'];
+const STRIP_TYPES = ['clock', 'text', 'page', 'cpu', 'mem', 'sys', 'volume'];
 
 const COLOR_FOR = {
   app: '#1565c0', folder: '#ef6c00', url: '#0277bd', command: '#4e342e',
   ps1: '#6a1b9a', page: '#455a64', file: '#37474f', hotkey: '#107c41',
+  volume: '#1565c0', audio: '#1565c0', media: '#283593',
   multi: '#1b5e20', macro: '#1b5e20', qr_decode: '#00838f',
 };
 
@@ -144,6 +146,26 @@ function buildSpec(f, opts) {
     spec.hotkey = f.hotkey || f.target || 'Win+D';
     spec.target = spec.hotkey;
     if (!spec.label) spec.label = spec.hotkey;
+  } else if (type === 'volume' || type === 'audio') {
+    spec.type = 'volume';
+    spec.action = String(f.action || f.mode || 'up').toLowerCase();
+    spec.step = Number(f.step) || 5;
+    if (spec.action === 'set') {
+      spec.target = String(f.target || f.level || '50');
+    } else if (spec.action === 'switch_device' || spec.action === 'switch') {
+      spec.action = 'switch_device';
+      spec.target = String(f.target || f.device || '');
+    }
+    if (!spec.label) {
+      spec.label = spec.action === 'up' ? '音量 +'
+        : spec.action === 'down' ? '音量 -'
+        : spec.action === 'mute' ? '静音切换'
+        : spec.action === 'set' ? `音量 ${spec.target}%`
+        : '切换输出';
+    }
+  } else if (type === 'media') {
+    spec.cmd = String(f.cmd || f.action || f.target || 'play_pause').toLowerCase();
+    if (!spec.label) spec.label = spec.cmd === 'next' ? '下一曲' : spec.cmd === 'prev' ? '上一曲' : '播放/暂停';
   } else if (type === 'multi' || type === 'macro') {
     spec.type = 'multi';
     if (!spec.label) spec.label = f.label || '复合宏';
@@ -194,8 +216,6 @@ function buildSpec(f, opts) {
   if (f['icon-scale'] !== undefined) spec.iconScale = Number(f['icon-scale']);
   if (f['label-pos'] !== undefined) spec.labelPos = String(f['label-pos']);
 
-  // 图标：显式 --icon-file 优先，否则对 exe/lnk 自动抽取（和界面里拖文件的行为一致），
-  // 用 --no-icons 关掉。
   const autoIcon = o.icons !== false && spec.target && /\.(exe|lnk|ico)$/i.test(spec.target)
     && fs.existsSync(spec.target);
   const iconSrc = f['icon-file'] || (autoIcon ? spec.target : '');
@@ -225,7 +245,8 @@ switch (CMD) {
     say(`页面（${config.pageTree().length}）：`);
     for (const { page, depth } of config.pageTree()) {
       const n = Object.keys(page.buttons).length;
-      say(`  ${'  '.repeat(depth)}${depth ? '↳ ' : ''}${page.name}  [${page.id}]  ${n} 个按键`
+      const appTag = page.autoApp ? ` [关联:${page.autoApp}]` : '';
+      say(`  ${'  '.repeat(depth)}${depth ? '↳ ' : ''}${page.name}  [${page.id}]  ${n} 个按键${appTag}`
         + (page.id === cfg.currentPage ? '   ← 当前' : ''));
     }
     say('');
@@ -251,9 +272,15 @@ switch (CMD) {
       say('整板渐变：已关闭');
     }
     say('');
-    say(`按键库：${(cfg.library || []).length} 条`);
+    say(`按键库：${(cfg.library || []).length} 条 | 页面快照：${(cfg.pageSnapshots || []).length} 个`);
     for (const e of cfg.library || []) say(`  ${e.id}  ${e.name}  [${(e.tags || []).join(',')}]`);
-    done({ currentPage: cur.id, gradient: cur.gradient, pages: config.pageTree().map((t) => ({ id: t.page.id, name: t.page.name, depth: t.depth })) });
+    for (const s of cfg.pageSnapshots || []) say(`  ${s.id}  [整页快照] ${s.name}  [${(s.tags || []).join(',')}]`);
+    done({
+      currentPage: cur.id,
+      gradient: cur.gradient,
+      pages: config.pageTree().map((t) => ({ id: t.page.id, name: t.page.name, depth: t.depth, autoApp: t.page.autoApp || '' })),
+      snapshots: (cfg.pageSnapshots || []).length,
+    });
     break;
   }
 
@@ -270,9 +297,10 @@ switch (CMD) {
     if (f.from) page.gradient.from = String(f.from);
     if (f.to) page.gradient.to = String(f.to);
     if (f.angle !== undefined) page.gradient.angle = Number(f.angle);
+    if (f['auto-app'] !== undefined) page.autoApp = String(f['auto-app'] === true ? '' : f['auto-app']).trim();
     saveIt();
     say(`已更新「${page.name}」的整板渐变：${page.gradient.enabled ? '已开启' : '已关闭'} (${page.gradient.from} -> ${page.gradient.to}, ${page.gradient.angle}°)`);
-    done({ page: page.id, gradient: page.gradient });
+    done({ page: page.id, gradient: page.gradient, autoApp: page.autoApp });
     break;
   }
 
@@ -308,7 +336,6 @@ switch (CMD) {
   }
 
   case 'set-page': {
-    // 整页配置：--from patch.json（{"r0c0": {...}, ...}）或 --from -（stdin）
     const page = findPage(f.page || f._[1]);
     if (!page) die('用法：set-page <页面名> --from patch.json  [--replace]');
     if (!f.from) die('缺 --from <json文件>（或 --from - 从 stdin 读）');
@@ -342,7 +369,7 @@ switch (CMD) {
 
   case 'add-page': {
     const name = f._[1] || f.name;
-    if (!name) die('用法：add-page <名字> [--parent <页面>]');
+    if (!name) die('用法：add-page <名字> [--parent <页面>] [--auto-app <进程名>]');
     const cfg = config.load();
     let parent = null;
     if (f.parent) {
@@ -350,11 +377,12 @@ switch (CMD) {
       if (!parent) die(`找不到父页面「${f.parent}」`);
     }
     const id = config.newPageId();
-    cfg.pages.push({ id, name: String(name), parent, buttons: {}, strips: {} });
+    const autoApp = f['auto-app'] && f['auto-app'] !== true ? String(f['auto-app']).trim() : '';
+    cfg.pages.push({ id, name: String(name), parent, autoApp, buttons: {}, strips: {} });
     cfg.currentPage = id;
     saveIt();
     say(`已新建${parent ? '子页' : '顶层页'}「${name}」[${id}]${parent ? '（进去后右下角自动是返回键）' : ''}`);
-    done({ page: id, name, parent });
+    done({ page: id, name, parent, autoApp });
     break;
   }
 
@@ -398,7 +426,7 @@ switch (CMD) {
 
   case 'strip': {
     const n = String(f._[1] != null ? f._[1] : f.n);
-    if (!['0', '1', '2'].includes(n)) die('用法：strip <0|1|2> --type clock|text|page [--label 文字] [--color #hex]');
+    if (!['0', '1', '2'].includes(n)) die('用法：strip <0|1|2> --type clock|text|page|cpu|mem|sys|volume [--label 文字] [--color #hex]');
     const page = findPage(f.page);
     if (!page) die(`找不到页面「${f.page}」`);
     const type = String(f.type || 'text').toLowerCase();
@@ -416,8 +444,12 @@ switch (CMD) {
 
   case 'lib-list': {
     const cfg = config.load();
-    const list = f.tag ? (cfg.library || []).filter((e) => (e.tags || []).includes(f.tag)) : (cfg.library || []);
-    say(`按键库 ${list.length} 条${f.tag ? `（标签 ${f.tag}）` : ''}：`);
+    const allItems = [
+      ...(cfg.library || []).map((e) => Object.assign({}, e, { _kind: 'key' })),
+      ...(cfg.pageSnapshots || []).map((s) => Object.assign({}, s, { kind: 'page', _kind: 'page' })),
+    ];
+    const list = f.tag ? allItems.filter((e) => (e.tags || []).includes(f.tag)) : allItems;
+    say(`按键库与快照共 ${list.length} 条${f.tag ? `（标签 ${f.tag}）` : ''}：`);
     for (const e of list) {
       const isPage = e.kind === 'page' || (!e.spec && e.page);
       const what = isPage
@@ -459,13 +491,9 @@ switch (CMD) {
   }
 
   case 'lib-put': {
-    // 直接把一个软件/网址/命令存进库 —— 不需要先占一个格子。
-    // （lib-add 是"把某个格子里已配好的东西存进库"，两者用途不同）
     const cfg = config.load();
     cfg.library = cfg.library || [];
 
-    // 批量：--from lib.json  = [{name, tags, type, target, label?, color?}, ...]
-    // 一次写完，避免逐个条目各写一次文件。
     if (f.from) {
       let raw;
       try {
@@ -475,9 +503,12 @@ switch (CMD) {
       try { list = JSON.parse(raw); } catch (e) { die('不是合法 JSON：' + e.message); }
       if (!Array.isArray(list)) die('顶层要是一个数组：[{name, tags, target}, ...]');
       let n = 0;
-      const icons = f.icons !== false;      // 默认顺便抽图标；--no-icons 关掉
+      const icons = f.icons !== false;
       for (const item of list) {
-        if (!item || !item.target) { say(`  跳过（没有 target）：${JSON.stringify(item)}`); continue; }
+        if (!item || (!item.target && item.type !== 'volume' && item.type !== 'page' && item.type !== 'multi')) {
+          say(`  跳过（缺少有效动作）：${JSON.stringify(item)}`);
+          continue;
+        }
         const one = Object.assign({}, f, item);
         const spec = buildSpec(one, { icons });
         const name = String(item.name || spec.label || spec.target).slice(0, 24);
@@ -513,21 +544,26 @@ switch (CMD) {
   }
 
   case 'lib-page': {
-    // 整页快照：把某一页（15 键 + 3 屏）存进库，以后能建成新页或覆盖回来
+    // 整页快照：把某一页（15 键 + 3 屏）存进 pageSnapshots 专属快照库
     const page = findPage(f._[1] || f.page);
     if (!page) die('用法：lib-page <页面名> [--name 另起个名] [--tags a,b]');
     if (!Object.keys(page.buttons).length) die(`「${page.name}」是空的，没什么可存`);
     const cfg = config.load();
-    cfg.library = cfg.library || [];
-    const name = String(f.name || page.name).slice(0, 24);
-    cfg.library.unshift({
-      id: 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
-      name, kind: 'page', tags: config.normalizeTags(f.tags || '整页'),
+    cfg.pageSnapshots = cfg.pageSnapshots || [];
+    const name = String(f.name || page.name).slice(0, 30);
+    cfg.pageSnapshots.unshift({
+      id: 'PS_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name,
+      tags: config.normalizeTags(f.tags || '整页'),
       savedAt: new Date().toISOString(),
-      page: { buttons: JSON.parse(JSON.stringify(page.buttons)), strips: JSON.parse(JSON.stringify(page.strips)) },
+      page: {
+        buttons: JSON.parse(JSON.stringify(page.buttons)),
+        strips: JSON.parse(JSON.stringify(page.strips)),
+        gradient: page.gradient ? JSON.parse(JSON.stringify(page.gradient)) : undefined,
+      },
     });
     saveIt();
-    say(`已把整页「${page.name}」存入按键库（${Object.keys(page.buttons).length} 个键），库里叫「${name}」`);
+    say(`已把整页「${page.name}」存入页面快照库（${Object.keys(page.buttons).length} 个键），名称为「${name}」`);
     done({ name, keys: Object.keys(page.buttons).length });
     break;
   }
@@ -535,17 +571,18 @@ switch (CMD) {
   case 'lib-restore': {
     // 把整页快照还原：--as new（建成新页）或 --as overwrite（覆盖指定页）
     const ref = f._[1] || f.name;
-    if (!ref) die('用法：lib-restore <库条目名或id> --as new|overwrite [--page 页面]');
+    if (!ref) die('用法：lib-restore <快照名或id> --as new|overwrite [--page 页面]');
     const cfg = config.load();
-    const e = (cfg.library || []).find((x) => x.id === ref || x.name === ref);
-    if (!e) die(`库里没有「${ref}」`);
-    if (e.kind !== 'page' && !e.page) die('这一条不是整页快照（它是单个按键）');
+    const e = (cfg.pageSnapshots || []).find((x) => x.id === ref || x.name === ref)
+      || (cfg.library || []).find((x) => (x.id === ref || x.name === ref) && (x.kind === 'page' || x.page));
+    if (!e || !e.page) die(`页面快照库里没有「${ref}」`);
     const how = String(f.as || 'new').toLowerCase();
     if (how === 'overwrite') {
       const page = findPage(f.page);
       if (!page) die('缺 --page <页面名>');
       page.buttons = JSON.parse(JSON.stringify(e.page.buttons || {}));
       page.strips = JSON.parse(JSON.stringify(e.page.strips || {}));
+      if (e.page.gradient) page.gradient = JSON.parse(JSON.stringify(e.page.gradient));
       saveIt();
       say(`已用「${e.name}」覆盖「${page.name}」`);
       done({ mode: 'overwrite', page: page.id });
@@ -556,6 +593,7 @@ switch (CMD) {
       id, name: String(f.name2 || e.name).slice(0, 24), parent: null,
       buttons: JSON.parse(JSON.stringify(e.page.buttons || {})),
       strips: JSON.parse(JSON.stringify(e.page.strips || {})),
+      gradient: e.page.gradient ? JSON.parse(JSON.stringify(e.page.gradient)) : undefined,
     });
     cfg.currentPage = id;
     saveIt();
@@ -568,12 +606,15 @@ switch (CMD) {
     const ref = f._[1] || f.id || f.name;
     if (!ref) die('用法：lib-rm <id 或 名字>');
     const cfg = config.load();
-    const before = (cfg.library || []).length;
+    const beforeLib = (cfg.library || []).length;
+    const beforeSnap = (cfg.pageSnapshots || []).length;
     cfg.library = (cfg.library || []).filter((e) => e.id !== ref && e.name !== ref);
-    if (cfg.library.length === before) die(`库里没有「${ref}」`);
+    cfg.pageSnapshots = (cfg.pageSnapshots || []).filter((s) => s.id !== ref && s.name !== ref);
+    const removed = (beforeLib - cfg.library.length) + (beforeSnap - cfg.pageSnapshots.length);
+    if (!removed) die(`库里没有「${ref}」`);
     saveIt();
-    say(`已从库里删掉 ${before - cfg.library.length} 条`);
-    done({ removed: before - cfg.library.length });
+    say(`已从库里删掉 ${removed} 条`);
+    done({ removed });
     break;
   }
 
@@ -595,21 +636,22 @@ switch (CMD) {
   set <rXcY> --type <t> --target <路径>     配一个键
       --label 名字 --args 参数 --color #hex --icon-file <文件> --page <页面>
       --type page --mode next|prev|goto|up|home [--to <页面>]
+      --type volume --action up|down|mute|set|switch_device [--step 5]
   clear <rXcY> [--page <页面>]             清空一个键
   set-page <页面> --from <json|-> [--replace]   整页写入（{"r0c0": {...}}）
-  add-page <名字> [--parent <页面>]         新建页 / 子页
+  add-page <名字> [--parent <页面>] [--auto-app <进程名>]  新建页 / 子页
   rm-page <页面>                           删除页（连带子页）
   rename-page <页面> --to <新名>
   use <页面>                               切换当前页
-  set-gradient [<页面>] [--from #hex] [--to #hex] [--angle 度数] [--enable|--disable]
-                                          设置当前页（或指定页）的整板渐变
-  strip <0|1|2> --type clock|text|page [--label 文字] [--color #hex]
-  lib-list [--tag <标签>]                  看按键库
+  set-gradient [<页面>] [--from #hex] [--to #hex] [--angle 度数] [--enable|--disable] [--auto-app <进程>]
+                                          设置当前页（或指定页）的整板渐变与关联应用
+  strip <0|1|2> --type clock|text|page|cpu|mem|sys|volume [--label 文字] [--color #hex]
+  lib-list [--tag <标签>]                  看按键库与快照
   lib-add <rXcY> [--name 名字] [--tags a,b] 把某个格子里配好的东西存进库
   lib-put --type <t> --target <路径> [--name 名字] [--tags a,b] [--icon-file <文件>]
                                           直接把一个软件/网址存进库（不用先占格子）
-  lib-page <页面> [--name 名字] [--tags a,b]  把整页存进库（整页快照）
-  lib-restore <库条目> --as new|overwrite [--page 页面]  用整页快照还原
+  lib-page <页面> [--name 名字] [--tags a,b]  把整页存进快照库（整页快照）
+  lib-restore <快照名> --as new|overwrite [--page 页面]  用整页快照还原
   lib-rm <id|名字>                         从库里删
   backup                                   备份 config.json
 

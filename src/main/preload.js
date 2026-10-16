@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld('api', {
   actionClassify: (p) => ipcRenderer.invoke('action:classify', p),
 
   iconExtract: (p) => ipcRenderer.invoke('icon:extract', p),
+  readImage: async (p) => {
+    const dataUrl = await ipcRenderer.invoke('icon:extract', p);
+    return dataUrl ? { ok: true, dataUrl } : { ok: false, dataUrl: null };
+  },
   dialogPick: (opts) => ipcRenderer.invoke('dialog:pick', opts),
 
   setLogin: (v) => ipcRenderer.invoke('app:setLogin', v),
@@ -58,8 +62,12 @@ contextBridge.exposeInMainWorld('api', {
   macroActiveLoops: () => ipcRenderer.invoke('macro:activeLoops'),
 
   on: (channel, cb) => {
-    const allowed = ['host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
-      'key:unconfigured', 'toast', 'page:changed', 'config:external', 'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState', 'audio:state'];
+    const allowed = [
+      'host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
+      'key:unconfigured', 'toast', 'page:changed', 'config:external',
+      'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
+      'audio:state', 'app:runningStates', 'device:sleep-state'
+    ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);
     ipcRenderer.on(channel, handler);

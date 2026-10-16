@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Runs whatever a button points at.
- * Action types: app | file | folder | url | command | ps1
+ * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode
  */
 const { spawn, spawnSync } = require('child_process');
 const { shell } = require('electron');
@@ -11,7 +11,7 @@ const NativeInput = require('./native-input');
 
 const EXT_EXEC = new Set(['.exe', '.bat', '.cmd', '.com', '.msi', '.ps1']);
 
-/** Targets we try to *focus* before launching. Single-instance apps
+/** Targets we try to *focus* (or smart-toggle) before launching. Single-instance apps
  *  (QOwnNotes, WeChat DevTools, VS Code, most Electron apps) silently drop a
  *  second launch, so without this a key press looks like it did nothing. */
 const FOCUSABLE = new Set(['.exe', '.lnk']);
@@ -45,16 +45,7 @@ function computeVolStep(baseStep) {
 
 /**
  * Spawn a process that must not show anything.
- *
- * NEVER pass `detached: true` here. Node's own docs state that on Windows a
- * detached child "will have its own console window", and `windowsHide` does NOT
- * suppress it - measured on this machine: detached flashes a console window
- * (hosted by Windows Terminal), while the same command without detached is
- * completely silent. `unref()` alone is enough to let the app exit without
- * waiting, and Windows does not kill children when the parent quits.
- *
- * Always attach an 'error' listener - a ChildProcess that emits 'error' with no
- * listener would crash the main process.
+ * NEVER pass `detached: true` here on Windows.
  */
 function spawnQuiet(file, args, opts) {
   const child = spawn(file, args, Object.assign({ stdio: 'ignore', windowsHide: true }, opts || {}));
@@ -65,8 +56,6 @@ function spawnQuiet(file, args, opts) {
 
 /**
  * Spawn a GUI desktop application that should be visible to the user.
- * Uses windowsHide: false and detached: true so it properly creates its own
- * normal desktop window and runs detached from the main Electron process.
  */
 function spawnApp(file, args, opts) {
   const child = spawn(file, args || [], Object.assign({
@@ -79,17 +68,6 @@ function spawnApp(file, args, opts) {
   return child;
 }
 
-/**
- * Run a PowerShell snippet and resolve with its stdout.
- *
- * Uses -EncodedCommand (base64/UTF-16LE) on purpose: passing the script as a
- * plain argument would push Chinese paths through cmd quoting, which is the
- * exact bug class that broke `spawn('cmd.exe', ['/c', line])` earlier.
- *
- * The prelude is mandatory: PowerShell 5.1 writes redirected stdout in the
- * OEM code page (GBK on a Chinese system), so a resolved shortcut target like
- * `微信开发者工具.exe` arrives as mojibake and silently never matches a process.
- */
 const PS_PRELUDE = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
   + "$OutputEncoding=[Console]::OutputEncoding\n";
 
@@ -125,6 +103,18 @@ async function processNameFor(target) {
   }
   if (resolvedNameCache.has(target)) return resolvedNameCache.get(target);
 
+  try {
+    const details = shell.readShortcutLink(target);
+    if (details && details.target) {
+      const exp = probe.expandPath(details.target);
+      if (exp && path.extname(exp)) {
+        const n = path.basename(exp, path.extname(exp));
+        resolvedNameCache.set(target, n);
+        return n;
+      }
+    }
+  } catch (_) {}
+
   const out = await runPowerShell(`
 $ErrorActionPreference='SilentlyContinue'
 $sh = New-Object -ComObject WScript.Shell
@@ -145,26 +135,36 @@ Write-Output ('AKP_TARGET=' + $t)
 function isRunning(name) {
   if (!name) return false;
   try {
+    const clean = name.replace(/\.exe$/i, '');
     const r = spawnSync('tasklist',
-      ['/FI', `IMAGENAME eq ${name}.exe`, '/NH', '/FO', 'CSV'],
-      { encoding: 'latin1', windowsHide: true, timeout: 5000 });
-    return String(r.stdout || '').toLowerCase().includes((name + '.exe').toLowerCase());
+      ['/FI', `IMAGENAME eq ${clean}.exe`, '/NH', '/FO', 'CSV'],
+      { encoding: 'latin1', windowsHide: true, timeout: 4000 });
+    return String(r.stdout || '').toLowerCase().includes((clean + '.exe').toLowerCase());
   } catch (e) {
     return false;
   }
 }
 
-/** Bring an existing instance's main window to the front. Returns true if it did.
- *
- *  The wait loop matters: right after a launch the process exists but has no
- *  MainWindowHandle yet for a few hundred ms. Without it we would decide
- *  "no window" and launch a second copy. Doing the waiting inside PowerShell
- *  keeps it to one process spawn instead of several. */
-async function activateWindow(name) {
-  if (!name) return false;
+/**
+ * Bring an existing instance's main window to the front (or toggle minimize if
+ * allowMinimize is true and the window is already foreground).
+ */
+async function activateWindow(name, allowMinimize = false) {
+  if (!name) return null;
+
+  // 1. Try 0.5ms native C# daemon first
+  try {
+    const nat = await NativeInput.activateOrToggleWindow(name, allowMinimize);
+    if (nat && nat.ok) {
+      return nat.state === 'MINIMIZED' ? 'minimized' : 'focused';
+    }
+  } catch (_) {}
+
+  // 2. Fallback to PowerShell (waits up to 2s if the process is still creating its main window)
   const out = await runPowerShell(`
 $ErrorActionPreference='SilentlyContinue'
-$name = ${psQuote(name)}
+$name = ${psQuote(name.replace(/\.exe$/i, ''))}
+$allowMin = ${allowMinimize ? '$true' : '$false'}
 $proc = $null
 for ($i = 0; $i -lt 8 -and -not $proc; $i++) {
   $proc = @(Get-Process) | Where-Object { $_.ProcessName -eq $name -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
@@ -184,50 +184,53 @@ public class WinApiHelper {
     public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
     public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
 }
 '@
   Add-Type -TypeDefinition $win32
-  if ([WinApiHelper]::IsIconic($hwnd)) {
-    [WinApiHelper]::ShowWindowAsync($hwnd, 9)
+  $fg = [WinApiHelper]::GetForegroundWindow()
+  if ($allowMin -and ($fg -eq $hwnd) -and -not [WinApiHelper]::IsIconic($hwnd)) {
+    [WinApiHelper]::ShowWindowAsync($hwnd, 6) | Out-Null
+    Write-Output 'AKP_RESULT=minimized'
+    exit 0
   }
-  [WinApiHelper]::SetForegroundWindow($hwnd)
+  if ([WinApiHelper]::IsIconic($hwnd)) {
+    [WinApiHelper]::ShowWindowAsync($hwnd, 9) | Out-Null
+  }
+  [WinApiHelper]::SetForegroundWindow($hwnd) | Out-Null
 }
 
 $ok = (New-Object -ComObject WScript.Shell).AppActivate([int]$proc.Id)
 if ($ok) { Write-Output 'AKP_RESULT=focused' } else { Write-Output 'AKP_RESULT=nowindow' }
 `);
-  return /AKP_RESULT=focused/.test(out);
+  if (/AKP_RESULT=minimized/.test(out)) return 'minimized';
+  if (/AKP_RESULT=focused/.test(out)) return 'focused';
+  return null;
 }
 
 /**
- * Already running -> raise its window and stop. Otherwise return false so the
- * caller launches normally.
+ * Already running -> raise its window (or minimize if already foreground and allowMinimize=true) and stop.
+ * Otherwise return null so the caller launches normally.
  */
-async function focusExisting(target) {
+async function focusExisting(target, allowMinimize = false) {
   try {
     const name = await processNameFor(target);
-    if (!name || !isRunning(name)) return false;
-    return await activateWindow(name);
+    if (!name || !isRunning(name)) return null;
+    return await activateWindow(name, allowMinimize);
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
 /**
  * Run a raw command line through cmd.exe.
- *
- * Do NOT use `spawn('cmd.exe', ['/c', line])`: Node re-quotes each argv element
- * for CreateProcess, and cmd.exe then sees a mangled line - redirection (`>`),
- * pipes and quoted paths silently stop working. Passing the whole line with
- * `shell: true` makes Node invoke `cmd.exe /d /s /c "<line>"`, which is exactly
- * what child_process.exec does and what Companion uses.
  */
 function runShell(line) {
   const child = spawn(line, {
     shell: true,
     stdio: 'ignore',
     windowsHide: true,
-    // NO detached - see spawnQuiet(): it hands the child its own console window
   });
   child.on('error', () => { /* fire and forget */ });
   child.unref();
@@ -261,25 +264,27 @@ async function runSingleAction(action) {
       return { ok: true };
     }
     case 'mouse_click': {
-      const btn = action.button || 'left';
-      const x = Number(action.x);
-      const y = Number(action.y);
-      const usePos = !isNaN(x) && !isNaN(y) && x >= 0 && y >= 0;
-      await NativeInput.mouseClick(btn, usePos ? x : -1, usePos ? y : -1);
+      const btn = action.double ? 'double' : (action.button || 'left');
+      const rawX = action.x !== '' && action.x !== undefined && action.x !== null ? Number(action.x) : -1;
+      const rawY = action.y !== '' && action.y !== undefined && action.y !== null ? Number(action.y) : -1;
+      const usePos = !isNaN(rawX) && !isNaN(rawY) && rawX >= 0 && rawY >= 0;
+      await NativeInput.mouseClick(btn, usePos ? rawX : -1, usePos ? rawY : -1);
       return { ok: true };
     }
     case 'mouse_move': {
       const x = Number(action.x) || 0;
       const y = Number(action.y) || 0;
-      await NativeInput.mouseMove(x, y, !!action.relative);
+      const duration = Math.max(0, Number(action.duration) || 0);
+      await NativeInput.mouseMove(x, y, !!action.relative, duration);
       return { ok: true };
     }
     case 'mouse_drag': {
-      const fx = Number(action.fromX) || 0;
-      const fy = Number(action.fromY) || 0;
-      const tx = Number(action.toX) || 0;
-      const ty = Number(action.toY) || 0;
-      await NativeInput.mouseDrag(fx, fy, tx, ty);
+      const fx = Number(action.fromX !== undefined ? action.fromX : action.x1) || 0;
+      const fy = Number(action.fromY !== undefined ? action.fromY : action.y1) || 0;
+      const tx = Number(action.toX !== undefined ? action.toX : action.x2) || 0;
+      const ty = Number(action.toY !== undefined ? action.toY : action.y2) || 0;
+      const duration = Math.max(50, Number(action.duration) || 300);
+      await NativeInput.mouseDrag(fx, fy, tx, ty, duration);
       return { ok: true };
     }
     case 'mouse_wheel': {
@@ -288,7 +293,7 @@ async function runSingleAction(action) {
       return { ok: true };
     }
     case 'text': {
-      const txt = String(action.content || action.text || '');
+      const txt = String(action.content !== undefined ? action.content : (action.text || ''));
       await NativeInput.sendText(txt);
       return { ok: true };
     }
@@ -338,11 +343,17 @@ async function runSingleAction(action) {
       if (combo) await sendHotkey(combo);
       return { ok: true };
     }
+    case 'cmd':
+    case 'command': {
+      return await run(Object.assign({}, action, { type: 'command' }));
+    }
+    case 'open': {
+      return await run(Object.assign({}, action, { type: 'app' }));
+    }
     case 'app':
     case 'file':
     case 'folder':
     case 'url':
-    case 'command':
     case 'ps1':
     default: {
       return await run(action);
@@ -358,7 +369,6 @@ async function runMacro(spec, context) {
   const loopCfg = (typeof spec.loop === 'object' && spec.loop) ? spec.loop : (spec.loop ? { mode: 'toggle' } : { mode: 'once' });
   const isLoopToggle = loopCfg.mode === 'toggle';
 
-  // Toggle STOP check: 若正在循环运行，再次拍下该键立即中止
   if (keyId && activeLoops.has(keyId)) {
     const token = activeLoops.get(keyId);
     token.stop = true;
@@ -367,7 +377,6 @@ async function runMacro(spec, context) {
     return { ok: true, action: 'loop_stopped' };
   }
 
-  // 非循环宏的防抖互斥锁 (Busy Lock)
   if (keyId && busyKeys.has(keyId)) {
     return { ok: false, error: 'BUSY' };
   }
@@ -399,7 +408,6 @@ async function runMacro(spec, context) {
     return { ok: true, action: 'loop_started' };
   }
 
-  // 固定次数运行 或 单次串行执行
   if (keyId) busyKeys.add(keyId);
   try {
     const times = (loopCfg.mode === 'times' && Number(loopCfg.times) > 0) ? Number(loopCfg.times) : 1;
@@ -489,6 +497,14 @@ async function run(spec, context) {
       }
       case 'command': {
         const rawCmd = String(target || '').trim();
+        if (rawCmd.toLowerCase().startsWith('wm_close:')) {
+          const procName = rawCmd.slice('wm_close:'.length).trim();
+          const closed = await NativeInput.closeWindowGracefully(procName);
+          if (!closed || !closed.ok) {
+            runShell(`taskkill /IM "${procName.replace(/\.exe$/i, '')}.exe"`);
+          }
+          return { ok: true, action: 'graceful_close' };
+        }
         if (rawCmd.includes('[char]175')) {
           const step = computeVolStep(5);
           const res = await NativeInput.stepVolume(step);
@@ -545,13 +561,14 @@ async function run(spec, context) {
 
         const wantsArgs = !!(spec.args && String(spec.args).trim());
 
-        if (FOCUSABLE.has(ext)) {
-          const focused = await focusExisting(target);
-          if (focused) return { ok: true, action: 'focused' };
+        if (FOCUSABLE.has(ext) && !wantsArgs) {
+          const allowMinimize = spec.smartToggle !== false;
+          const focusResult = await focusExisting(target, allowMinimize);
+          if (focusResult) return { ok: true, action: focusResult };
         }
 
-        if (EXT_EXEC.has(ext)) {
-          const args = wantsArgs ? String(spec.args).split(/\s+/).filter(Boolean) : [];
+        if (EXT_EXEC.has(ext) && wantsArgs) {
+          const args = String(spec.args).split(/\s+/).filter(Boolean);
           spawnApp(target, args, {
             cwd: spec.cwd || path.dirname(target),
           });
@@ -567,18 +584,22 @@ async function run(spec, context) {
   }
 }
 
+function escapeSendKeysChar(k) {
+  return String(k).replace(/([+^%~(){}])/g, '{$1}');
+}
+
 async function sendHotkey(combo) {
   const norm = String(combo || '').trim();
   if (!norm) return;
 
   const lower = norm.toLowerCase().replace(/\s+/g, '');
-  if (lower === 'volume_up' || lower === 'volumeup' || lower === 'volup') {
+  if (lower === 'volume_up' || lower === 'volumeup' || lower === 'volup' || lower === 'audiovolumeup') {
     return await NativeInput.stepVolume(computeVolStep(5));
   }
-  if (lower === 'volume_down' || lower === 'volumedown' || lower === 'voldown') {
+  if (lower === 'volume_down' || lower === 'volumedown' || lower === 'voldown' || lower === 'audiovolumedown') {
     return await NativeInput.stepVolume(-computeVolStep(5));
   }
-  if (lower === 'volume_mute' || lower === 'volumemute' || lower === 'volmute') {
+  if (lower === 'volume_mute' || lower === 'volumemute' || lower === 'volmute' || lower === 'audiovolumemute') {
     return await NativeInput.toggleMute();
   }
   if (lower === 'media_play_pause' || lower === 'mediaplaypause' || lower === 'play_pause') {
@@ -619,7 +640,13 @@ async function sendHotkey(combo) {
     return;
   }
 
-  // 包含 Win 键的组合
+  // 1. 优先调用原生 0.5ms SendInput 引擎（免除 PowerShell 启动开销，彻底免疫 SendKeys 特殊字符与引号注入）
+  try {
+    const nat = await NativeInput.sendHotkey(norm);
+    if (nat && nat.ok) return;
+  } catch (_) {}
+
+  // 2. 降级兜底（兼容未重新编译旧版 akp-input.exe 的环境）
   if (/win/i.test(norm)) {
     const parts = norm.split('+').map(s => s.trim().toLowerCase());
     const key = parts.find(p => p !== 'win' && p !== 'ctrl' && p !== 'alt' && p !== 'shift') || 'v';
@@ -652,11 +679,10 @@ ${hasShift ? '$w::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)' : ''}
 ${hasAlt ? '$w::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)' : ''}
 ${hasCtrl ? '$w::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)' : ''}
 `;
-    spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCode.replace(/\n/g, ' ')]);
+    await runPowerShell(psCode, 3000);
     return;
   }
 
-  // 常规按键组合
   let prefix = '';
   const parts = norm.split('+').map(s => s.trim());
   let mainKey = '';
@@ -674,27 +700,26 @@ ${hasCtrl ? '$w::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)' : ''}
     'f7': '{F7}', 'f8': '{F8}', 'f9': '{F9}', 'f10': '{F10}', 'f11': '{F11}', 'f12': '{F12}',
     'enter': '{ENTER}', 'return': '{ENTER}', 'esc': '{ESC}', 'escape': '{ESC}',
     'tab': '{TAB}', 'backspace': '{BACKSPACE}', 'delete': '{DELETE}', 'del': '{DELETE}',
-    'insert': '{INSERT}', 'home': '{HOME}', 'end': '{END}', 'pageup': '{PGUP}',
-    'pagedown': '{PGDN}', 'up': '{UP}', 'down': '{DOWN}', 'left': '{LEFT}', 'right': '{RIGHT}',
+    'insert': '{INSERT}', 'home': '{HOME}', 'end': '{END}', 'pageup': '{PGUP}', 'pgup': '{PGUP}',
+    'pagedown': '{PGDN}', 'pgdn': '{PGDN}', 'up': '{UP}', 'down': '{DOWN}', 'left': '{LEFT}', 'right': '{RIGHT}',
     'space': ' ', 'prtscn': '{PRTSC}', 'printscreen': '{PRTSC}',
   };
   if (specialMap[mappedKey]) {
     mappedKey = specialMap[mappedKey];
   } else if (mappedKey.length === 1) {
-    mappedKey = mappedKey.toLowerCase();
+    mappedKey = escapeSendKeysChar(mappedKey.toLowerCase());
+  } else {
+    mappedKey = escapeSendKeysChar(mappedKey);
   }
 
   const sendKeyStr = prefix + mappedKey;
-  const script = `(New-Object -ComObject WScript.Shell).SendKeys('${sendKeyStr}')`;
-  spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+  await runPowerShell(`(New-Object -ComObject WScript.Shell).SendKeys(${psQuote(sendKeyStr)})`, 3000);
 }
 
 /** Classify a dropped path so the UI can pre-fill sensible defaults. */
 function classify(p) {
   if (!p) return { type: 'app', label: '' };
   if (looksLikeUrl(p)) return { type: 'url', label: stripHost(p), abs: p, exists: true };
-  // Dropped paths are normally absolute, but some sources hand us a bare
-  // filename - resolve it against the app directory so it stays usable.
   const full = path.isAbsolute(p) ? p : path.resolve(p);
   const ext = path.extname(full).toLowerCase();
   let isDir = false;
@@ -747,10 +772,6 @@ function stripHost(u) {
   try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u.slice(0, 24); }
 }
 
-/**
- * Answer "what will this key actually do?" without pressing it.
- * Used by tools/check-target.js to turn "按了没反应" into a concrete report.
- */
 async function diagnose(target) {
   const t = String(target || '');
   const ext = path.extname(t).toLowerCase();
@@ -762,7 +783,7 @@ async function diagnose(target) {
     focusable: FOCUSABLE.has(ext),
     processName: name ? name + '.exe' : '(无法解析)',
     running: isRunning(name),
-    willDo: FOCUSABLE.has(ext) && isRunning(name) ? '唤起已在运行的窗口' : '启动它',
+    willDo: FOCUSABLE.has(ext) && isRunning(name) ? '唤起或切换已在运行的窗口' : '启动它',
   };
 }
 
@@ -777,4 +798,6 @@ module.exports = {
   classify,
   looksLikeUrl,
   diagnose,
+  isRunning,
+  processNameFor,
 };

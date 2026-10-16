@@ -28,30 +28,19 @@ const DEFAULTS = {
   version: 2,
   brightness: 80,
   idleSleepMinutes: 5,
-  // Which command order actually cuts this panel's backlight.
-  // Measured on the AKP153 with host/sniff-sleep.js: only the two orders that
-  // END with HAN+sleep go fully dark. 'vendor' (Companion's order, brightness
-  // zeros last) left the backlight at a faint glow - those trailing LBLIG/LIG
-  // writes re-light it. 'zeros-last' is the same idea done correctly.
   sleepMode: 'zeros-last',
   openAtLogin: true,
-  // Device shell colour in the editor: 'light' (default) or 'dark'.
   theme: 'light',
-  // Remembered window geometry - the layout needs >=1000px or the inspector
-  // gets squeezed into an unusable sliver.
   window: null,
   // 交互偏好与系统行为
-  appDropMode: 'dual',       // 'dual': 自动启动/退出双态闭环 | 'single': 普通单动作
+  // 'smart': 智能单键任务栏模式(启动/置顶/最小化切换+真实状态监控) | 'graceful': 优雅关闭双态(WM_CLOSE) | 'dual': 强退双态(taskkill) | 'single': 普通单动作
+  appDropMode: 'dual',
   keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
   closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
-  // Page tree. Each page: {id, name, parent, buttons, strips}
-  //   parent = null  -> top level page
-  //   parent = <id>  -> sub page ("folder"); the device grows a back key
-  // There is a single current page: the editor and the device always show the
-  // same one, so what you edit is what you see.
+  autoSwitchPage: true,      // 按前台活动应用自动切换关联页面 (Auto-Profile Switching)
   pages: [],
   currentPage: null,
-  // Saved button presets. Each entry: {id, name, savedAt, spec}
+  pageSnapshots: [],
   library: [],
 };
 
@@ -104,6 +93,7 @@ function load() {
     if (!p.id) p.id = newPageId();
     if (!p.name) p.name = '未命名页';
     if (p.parent === undefined) p.parent = null;
+    if (typeof p.autoApp !== 'string') p.autoApp = '';
     p.buttons = (p.buttons && typeof p.buttons === 'object') ? p.buttons : {};
     p.strips = Object.assign(clone(DEFAULT_STRIPS), p.strips || {});
     p.gradient = Object.assign(
@@ -113,6 +103,17 @@ function load() {
     // a page action without a mode is a key that does nothing - default it
     for (const s of Object.values(p.buttons)) {
       if (s && s.type === 'page' && !s.mode) s.mode = 'next';
+      // Migrate legacy flat dual-action fields (act2Type/act2Target) created by older Key Studio
+      if (s && s.toggleAction && !s.action2 && (s.act2Target || s.act2Type)) {
+        s.action2 = {
+          type: s.act2Type || 'command',
+          target: s.act2Target || '',
+          args: s.act2Args || '',
+        };
+        delete s.act2Type;
+        delete s.act2Target;
+        delete s.act2Args;
+      }
     }
   }
   // a page whose parent vanished becomes a top-level page
@@ -122,12 +123,42 @@ function load() {
   if (!cache.pages.some((p) => p.id === cache.currentPage)) {
     cache.currentPage = cache.pages[0].id;
   }
+  if (!Array.isArray(cache.pageSnapshots)) cache.pageSnapshots = [];
   if (!Array.isArray(cache.library)) cache.library = [];
+
+  // Normalize library entries & migrate any legacy page snapshots into pageSnapshots
+  const cleanLib = [];
   for (const e of cache.library) {
+    if (!e) continue;
     if (!e.id) e.id = 'L' + Math.random().toString(36).slice(2, 10);
     if (!Array.isArray(e.tags)) e.tags = normalizeTags(e.tags || e.tag);
     if (typeof e.name !== 'string') e.name = (e.spec && e.spec.label) || '未命名';
+    if (e.kind === 'page' || (!e.spec && e.page)) {
+      const snapId = e.id.startsWith('PS_') ? e.id : ('PS_' + e.id.replace(/^L/, ''));
+      if (!cache.pageSnapshots.some((s) => s.id === snapId)) {
+        cache.pageSnapshots.push({
+          id: snapId,
+          name: e.name || '整页快照',
+          tags: e.tags,
+          savedAt: e.savedAt || new Date().toISOString(),
+          page: e.page || { buttons: {}, strips: {} },
+        });
+      }
+    } else {
+      if (e.spec && e.spec.toggleAction && !e.spec.action2 && (e.spec.act2Target || e.spec.act2Type)) {
+        e.spec.action2 = {
+          type: e.spec.act2Type || 'command',
+          target: e.spec.act2Target || '',
+          args: e.spec.act2Args || '',
+        };
+        delete e.spec.act2Type;
+        delete e.spec.act2Target;
+        delete e.spec.act2Args;
+      }
+      cleanLib.push(e);
+    }
   }
+  cache.library = cleanLib;
   cache.version = DEFAULTS.version;
   return cache;
 }
@@ -145,14 +176,6 @@ function invalidate() {
 
 /**
  * Has the file been changed by somebody other than us?
- *
- * Compares the raw text against what we last read/wrote. This replaces the
- * earlier "ignore events within 900ms of our own save" heuristic, which was
- * wrong: a 4-second mtime poll would still see the mtime change made by our own
- * save(), find msSinceSave() == 4000ms, and fire a bogus "external change"
- * reload - which repaints all 18 keys over HID and makes the panel feel dead
- * for a few seconds. Comparing content is exact, and it also skips the harmless
- * case of an external rewrite with identical content.
  */
 function changedOnDisk() {
   const raw = readRaw();
@@ -172,8 +195,7 @@ function childPages(id) {
   return load().pages.filter((p) => p.parent === id);
 }
 
-/** Top-level pages in order, then their children depth-first.
- *  Shape matches the renderer's pageTree(): [{page, depth}] */
+/** Top-level pages in order, then their children depth-first. */
 function pageTree() {
   const cfg = load();
   const out = [];

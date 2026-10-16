@@ -10,10 +10,15 @@
  * Talks JSON-RPC over stdin/stdout, one JSON object per line.
  *
  * Commands:  open | close | draw | clear | brightness | sleep | wake | ping | status
- * Events:    ready | opened | lost | error | down | up
+ * Events:    ready | opened | lost | error | down | up | wake
  */
 
-const HID = require('node-hid');
+let HID = null;
+try {
+  HID = require('node-hid');
+} catch (_) {
+  // Handled gracefully in open() / watchdog if node-hid is not installed yet
+}
 
 const CANDIDATES = [
   { vendorId: 0x5548, productId: 0x6674 }, // AJAZZ AKP-153
@@ -22,16 +27,9 @@ const CANDIDATES = [
 
 const PREFIX = Buffer.from([67, 82, 84, 0, 0]); // "CRT\0\0"
 
-// AKP153 inherits packetSize:512 from the "Stream Dock HSV 293S" base model in
-// Companion's driver - it does NOT override it. Every HID write must therefore
-// be [0] + payload padded to 513 bytes. Using 1024 makes the device silently
-// drop everything (no error, just a dead screen).
 const PACKET = 512;
 const PKT = PACKET + 1;
 
-// Command opcodes. These are FIXED-LENGTH records - a wrong length is silently
-// ignored by the device, which is how the "screen is lit but very dim and
-// brightness does nothing" bug happened. Keep the byte counts exact.
 const CMD = {
   DIS: [68, 73, 83],                       // wake panel
   WAKE: [119, 97, 107, 101],
@@ -42,15 +40,9 @@ const CMD = {
   CLEAR_ALL: [67, 76, 69, 0, 0, 0, 255],   // "CLE" \0 \0 \0 0xff
   DEVICE_CLOSE: [67, 76, 69, 0, 0, 68, 67],
 };
-// "LIG"  + 0x00 0x00 + value    -> panel brightness     (6 bytes)
-// "LBLIG"+ value                -> LED ring brightness  (6 bytes)
-// "CLE"  + 0x00 0x00 0x00 + id  -> clear one key        (7 bytes)
 
 const RECONNECT_MS = 2000;
 
-// AKP153 grid: 6 columns x 3 rows.
-//   columns 0..4, rows 0..2  -> 15 physical buttons
-//   column 5                 -> 3 display strips (not pressable)
 function buttonId(row, col) {
   if (col >= 0 && col <= 4 && row >= 0 && row <= 2) return 13 - 3 * col + row;
   return null;
@@ -78,13 +70,13 @@ class Device {
     this.watchdog = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
     this.lastPress = new Map();
+    this.lastFrames = new Map(); // "${row},${col}" -> jpegBase64 (Frame Diff Cache)
   }
 
   get isOpen() {
     return !!this.hid && !this.broken;
   }
 
-  // All writes go through one sequential chain - parallel HID writes corrupt frames.
   lock(fn) {
     const next = this.queue.then(fn, fn);
     this.queue = next.catch(() => {});
@@ -92,6 +84,7 @@ class Device {
   }
 
   close() {
+    this.lastFrames.clear();
     if (this.hid) {
       try { this.hid.removeAllListeners('data'); } catch (e) { /* ignore */ }
       try { this.hid.removeAllListeners('error'); } catch (e) { /* ignore */ }
@@ -101,16 +94,12 @@ class Device {
     this.info = null;
   }
 
-  /**
-   * (Re)open the device. Always drops any previous handle first - after a USB
-   * re-plug the old handle is dead and Windows may hand out a NEW path, so
-   * reusing or skipping re-enumeration leaves us writing into the void.
-   */
   open() {
     this.close();
     this.broken = false;
     this.stopped = false;
 
+    if (!HID) throw new Error('NODE_HID_MISSING');
     const all = HID.devices();
     const matches = [];
     for (const c of CANDIDATES) {
@@ -142,9 +131,8 @@ class Device {
     const hid = this.hid;
     hid.on('error', (err) => {
       const message = String((err && err.message) || err);
-      // A dead handle (unplugged / re-enumerated) must be dropped immediately,
-      // otherwise every later write "succeeds" into the void.
       this.broken = true;
+      this.lastFrames.clear();
       emit({ event: 'lost', message });
     });
     hid.on('data', (data) => {
@@ -157,21 +145,9 @@ class Device {
           if (buttonId(row, col) === id) pos = { row, col };
         }
       }
-      // stderr is forwarded into the app's log - this is the only way to tell
-      // "device sent nothing" apart from "we failed to act on it".
       process.stderr.write(`[input] len=${data.length} id=${id} state=${state} mapped=${!!pos}\n`);
       if (!pos) return;
 
-      // AKP153's inputs are type "push", not "button".
-      //
-      // The vendor driver branches on this: type "button" uses the state byte
-      // (0 = up, non-zero = down), while type "push" emits a single event per
-      // report and IGNORES the state byte. On this device data[10] is always 0,
-      // so treating it as "up" swallowed every press - not a single action ever
-      // ran even though the device was reporting fine.
-      //
-      // One report == one complete press, so synthesise down+up.
-      // The debounce is belt-and-braces against press/release chatter.
       const key = pos.row + ',' + pos.col;
       const now = Date.now();
       if (now - (this.lastPress.get(key) || 0) < 120) return;
@@ -190,18 +166,12 @@ class Device {
       emit({ event: 'down', row: pos.row, col: pos.col });
       emit({ event: 'up', row: pos.row, col: pos.col });
     });
-
   }
 
   pad(buf) {
     return Buffer.concat([buf], PKT);
   }
 
-  /**
-   * Write exactly PKT bytes and verify the transport accepted them.
-   * A wrong packet size makes the device silently ignore everything, so this
-   * check turns "dead screen" into a loud error.
-   */
   writeRaw(buf) {
     if (this.broken || !this.hid) throw new Error('NOT_OPEN');
     if (buf.length !== PKT) throw new Error('BAD_PACKET_SIZE ' + buf.length + ' != ' + PKT);
@@ -209,14 +179,13 @@ class Device {
     try {
       n = this.hid.write(buf);
     } catch (e) {
-      // A failed write means the handle is dead (unplugged / re-enumerated).
-      // Flag it so the watchdog reopens instead of retrying into the void
-      // forever - this is exactly how "已连接但黑屏" happened.
       this.broken = true;
+      this.lastFrames.clear();
       throw new Error('WRITE_FAILED ' + ((e && e.message) || e));
     }
     if (typeof n === 'number' && n < buf.length) {
       this.broken = true;
+      this.lastFrames.clear();
       throw new Error('SHORT_WRITE ' + n + '/' + buf.length);
     }
     return n;
@@ -228,7 +197,6 @@ class Device {
     });
   }
 
-  /** LCD panel brightness. Command is "LIG" + 0x00 0x00 + value (6 bytes). */
   async setBrightness(pct) {
     const val = Number(pct);
     this.brightness = val;
@@ -238,28 +206,29 @@ class Device {
     await this.cmd([76, 73, 71, 0, 0, gamma(val)]);
   }
 
-  /** LED ring brightness. Command is "LBLIG" + value (6 bytes). */
   async setLedBrightness(pct) {
     const val = Number(pct);
     await this.cmd([76, 66, 76, 73, 71, gamma(val)]);
   }
 
-  async draw(row, col, jpegBase64) {
-    // Pushing image data at a sleeping panel can partially re-light the
-    // backlight, which looks like "it dimmed to 1 instead of turning off".
-    // While asleep we only accept the wake command.
+  async draw(row, col, jpegBase64, force = false) {
     if (this.asleep) {
-      // Log it (throttled): a draw landing on a sleeping panel partially
-      // re-lights the backlight, which looks like "sleep only dimmed it".
       const now = Date.now();
       if (now - (this.lastSkipLog || 0) > 5000) {
         this.lastSkipLog = now;
         process.stderr.write(`[draw] SKIPPED r${row}c${col} - panel is asleep\n`);
       }
-      return false;
+      return { drawn: false, skipped: true };
     }
     const id = col === 5 ? stripId(row) : buttonId(row, col);
     if (id === null) throw new Error('BAD_POSITION');
+    if (!jpegBase64) throw new Error('EMPTY_IMAGE');
+
+    const frameKey = `${row},${col}`;
+    if (!force && this.lastFrames.get(frameKey) === jpegBase64) {
+      return { drawn: false, skipped: true };
+    }
+
     const img = Buffer.from(jpegBase64, 'base64');
     const total = img.length;
     if (total === 0) throw new Error('EMPTY_IMAGE');
@@ -275,39 +244,33 @@ class Device {
         this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), chunk])));
       }
       this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), PREFIX, Buffer.from(CMD.STP)])));
-      return true;
+      this.lastFrames.set(frameKey, jpegBase64);
+      return { drawn: true, skipped: false };
     });
   }
 
-  /** "CLE\0\0\0\xff" - clears the whole panel (kills the on-chip LCD RAM). */
   async clearScreen() {
+    this.lastFrames.clear();
     await this.cmd(CMD.CLEAR_ALL);
   }
 
-  /** Clear a single key by its device id. */
   async clearKey(id) {
+    this.lastFrames.clear();
     await this.cmd([67, 76, 69, 0, 0, 0, id]);
   }
 
-  /**
-   * True hardware sleep: HAN + sleep cut the backlight and LCD power.
-   * Deliberately does NOT send CLE - that would wipe the LCD RAM and the
-   * panel would come back as black squares.
-   */
-  /**
-   * Sleep sequence. The exact byte order matters and differs between
-   * firmwares, so it is selectable - see host/sniff-sleep.js to test which one
-   * actually cuts the backlight on a given unit.
-   *
-   *   vendor     HAN, sleep, LBLIG 0, LIG 0   (what Companion's driver does)
-   *   nobright   HAN, sleep                    (no brightness writes after)
-   *   zeros-last LBLIG 0, LIG 0, HAN, sleep    (panel off last)
-   *   light      LIG 0, LBLIG 0                (brightness only)
-   */
   static SLEEP_MODES = ['zeros-last', 'blackout', 'vendor', 'nobright', 'light'];
 
-  async sleep(mode) {
+  async sleep(mode, force) {
     const m = Device.SLEEP_MODES.includes(mode) ? mode : 'zeros-last';
+    // 若面板已处于休眠状态，且非关机彻底灭屏 (blackout) 亦非强制重发，则立即幂等返回，
+    // 严禁向休眠中的硬件重复发送 LIG 0 / LBLIG 0，避免单片机 PWM 背光电路产生瞬态频闪。
+    if (this.asleep && m !== 'blackout' && !force) {
+      return ['mode=' + m, 'already_asleep=ok'];
+    }
+    if (!this.isOpen) {
+      try { this.open(); } catch (e) { /* emergency reconnect */ }
+    }
     const report = [];
     const step = async (name, fn) => {
       try { await fn(); report.push(name + '=ok'); }
@@ -315,6 +278,7 @@ class Device {
     };
 
     this.asleep = true;
+    this.lastFrames.clear();
     if (m === 'blackout') {
       await step('CLEAR_ALL', () => this.clearScreen());
       await step('LBLIG0', () => this.setLedBrightness(0));
@@ -343,15 +307,10 @@ class Device {
     return report;
   }
 
-  /**
-   * force: always run the sequence, even if we think we're awake.
-   * Needed on connect - a previous owner (Companion's idle timer) may have
-   * left the panel powered down, and the device keeps that state after the
-   * owner quits.
-   */
   async wake(brightness, force) {
     const was = this.asleep;
     this.asleep = false;
+    this.lastFrames.clear();
     if (!was && !force) return false;
     let b = brightness == null ? this.savedBrightness : Number(brightness);
     if (!b || b <= 0) b = this.savedBrightness || 80;
@@ -364,12 +323,9 @@ class Device {
     return true;
   }
 
-  /**
-   * Reboot the panel: clear + wake + brightness. Used when a re-plug leaves the
-   * device powered on but displaying nothing.
-   */
   async reset(brightness) {
     this.asleep = false;
+    this.lastFrames.clear();
     const b = brightness == null ? this.brightness : brightness;
     await this.cmd(CMD.DIS).catch(() => {});
     await this.cmd(CMD.WAKE).catch(() => {});
@@ -383,19 +339,10 @@ class Device {
     return true;
   }
 
-  /**
-   * Self-healing: if the handle is dead (USB re-plug, power blip), keep trying
-   * to reopen and re-wake, then tell the UI to repaint.
-   */
   startWatchdog() {
     if (this.watchdog) return;
     this.watchdog = setInterval(async () => {
-      if (this.stopped) return;
-      // Check the device is still really there. While asleep we send no writes
-      // at all (draws are suppressed), so a dead handle produces no error to
-      // notice - we would sit forever on a stale handle and never receive
-      // another input report. Comparing the live HID path catches unplug,
-      // re-enumeration and silent handle death.
+      if (this.stopped || !HID) return;
       let present = false;
       try {
         present = HID.devices().some((d) => d.path === (this.info && this.info.path));
@@ -407,7 +354,6 @@ class Device {
       const wasAsleep = this.asleep;
       try {
         this.open();
-        // Reopening resets the panel; restore the state we were in.
         if (wasAsleep) {
           await this.sleep();
         } else {
@@ -420,8 +366,6 @@ class Device {
     }, RECONNECT_MS);
   }
 }
-
-// ---------------------------------------------------------------- rpc plumbing
 
 const device = new Device();
 
@@ -446,8 +390,6 @@ async function handle(msg) {
         const info = device.open();
         return reply(id, { info: { path: info.path, product: info.product, manufacturer: info.manufacturer } });
       } catch (e) {
-        // Opening failed (unplugged / still busy) - the watchdog will keep
-        // retrying in the background, so report and let it do its job.
         return fail(id, e.message);
       }
     }
@@ -463,15 +405,16 @@ async function handle(msg) {
       await device.setBrightness(msg.value);
       if (msg.led !== false) await device.setLedBrightness(msg.value);
       return reply(id, {});
-    case 'draw':
+    case 'draw': {
       if (!device.isOpen) return fail(id, 'NOT_OPEN');
-      await device.draw(msg.row, msg.col, msg.data);
-      return reply(id, {});
+      const res = await device.draw(msg.row, msg.col, msg.data, !!msg.force);
+      return reply(id, res || {});
+    }
     case 'clear':
       await device.clearScreen();
       return reply(id, {});
     case 'sleep':
-      return reply(id, { report: await device.sleep(msg.mode) });
+      return reply(id, { report: await device.sleep(msg.mode, !!msg.force) });
     case 'wake':
       await device.wake(msg.brightness, !!msg.force);
       return reply(id, {});
@@ -482,14 +425,9 @@ async function handle(msg) {
   }
 }
 
-// expose helpers for CLI probing / tests
 module.exports = { Device, buttonId, stripId, resolution, gamma, CANDIDATES, CMD, PACKET };
 
-// Only start the stdio RPC loop when run directly - otherwise requiring this
-// module (e.g. from a probe script) would hijack stdin and print stray events.
 if (require.main === module) {
-  // Always run the self-healing loop: it also covers the case where the very
-  // first open failed (device busy / not yet enumerated).
   device.startWatchdog();
 
   let buf = '';

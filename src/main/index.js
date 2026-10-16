@@ -39,6 +39,10 @@ let lastActivity = Date.now();
 let deviceAsleep = false;
 let lastWakeTime = 0;
 
+// Auto-profile switching state
+let autoSwitchedFromPageId = null;
+let autoSwitchedToPageId = null;
+let lastFgProcess = '';
 
 // ------------------------------------------------------------ device host rpc
 
@@ -109,10 +113,11 @@ function spawnHost() {
           broadcast('host:status', { ready: true, device: false, error: 'DEVICE_LOST' });
         } else if (msg.event === 'opened') {
           log('device reopened by watchdog:', msg.path, 'asleep=' + !!msg.asleep);
+          if (msg.path) NativeInput.setDevicePath(msg.path);
           hostError = null;
           deviceAsleep = !!msg.asleep;
           broadcast('host:status', { ready: true, device: true, error: null });
-          if (!deviceAsleep) repaintSoon();
+          if (!deviceAsleep) repaintSoon(true);
         } else if (msg.event === 'error') {
           broadcast('host:status', { ready: hostReady, error: msg.message });
         } else if (msg.id !== undefined) {
@@ -139,7 +144,9 @@ function rpc(cmd, args) {
 }
 
 function broadcast(channel, payload) {
-  if (win && win.webContents) win.webContents.send(channel, payload);
+  if (win && !win.isDestroyed() && win.webContents) {
+    win.webContents.send(channel, payload);
+  }
 }
 
 function notify(msg) {
@@ -151,17 +158,23 @@ async function safeRpc(cmd, args) {
   try { return await rpc(cmd, args); } catch (e) { return { ok: false, error: e.message }; }
 }
 
-// The renderer may still be loading (or mid-repaint) when we learn the device
-// is ready, so ask for a few repaints instead of just one.
-function repaintSoon() {
-  broadcast('device:repaint', {});
-  setTimeout(() => broadcast('device:repaint', {}), 1200);
-  setTimeout(() => broadcast('device:repaint', {}), 4000);
+/**
+ * Trigger a repaint on the renderer. With backgroundThrottling disabled and
+ * Frame Diff Cache in device-host, we only need an immediate repaint plus one
+ * fallback if the renderer is still loading its DOM.
+ */
+function repaintSoon(force = false) {
+  broadcast('device:repaint', { force: !!force });
+  if (win && !win.isDestroyed() && win.webContents && win.webContents.isLoading()) {
+    setTimeout(() => broadcast('device:repaint', { force: !!force }), 900);
+  }
 }
 
-async function doSleep() {
-  const r = await safeRpc('sleep', { mode: config.load().sleepMode || 'zeros-last' });
+async function doSleep(force = false) {
+  if (deviceAsleep && !force) return;
   deviceAsleep = true;
+  broadcast('device:sleep-state', { asleep: true });
+  const r = await safeRpc('sleep', { mode: config.load().sleepMode || 'zeros-last', force: !!force });
   log('sleep:', JSON.stringify((r && r.report) || r));
   return r;
 }
@@ -171,8 +184,9 @@ async function doWake() {
   deviceAsleep = false;
   lastWakeTime = Date.now();
   lastActivity = Date.now();
+  broadcast('device:sleep-state', { asleep: false });
   log('wake:', JSON.stringify(r));
-  repaintSoon();
+  repaintSoon(true);
   return r;
 }
 
@@ -184,18 +198,18 @@ async function prepareExitAndSleep() {
   log('prepareExitAndSleep: 正在关闭并休眠 AKP153 控制台硬件...');
   try {
     if (process.platform === 'win32') {
+      // 1. C# 原生直写作为终极托底 (仅耗时 2~5ms，即使后续进程被杀也已完成物理灭屏)
       try {
-        await NativeInput.shutdownBlock(mainHwndStr || 0, 'AKP153 控制台正在熄灭硬件屏幕...');
+        await NativeInput.blackoutHardware();
       } catch (e) {
-        log('NativeInput.shutdownBlock 失败:', e);
+        log('NativeInput.blackoutHardware 异常:', e);
       }
     }
 
     if (host && hostReady) {
-      // 退出/关机时强制采用彻底黑屏模式 (blackout)
-      await safeRpc('sleep', { mode: 'blackout' });
-      // 留出 150ms 让 USB 报文完全写入硬件控制器
-      await new Promise((r) => setTimeout(r, 150));
+      // 2. 双通道协同：device-host 进程也下发 blackout (强制执行)
+      await safeRpc('sleep', { mode: 'blackout', force: true });
+      await new Promise((r) => setTimeout(r, 60));
     }
   } catch (err) {
     log('prepareExitAndSleep 硬件休眠失败:', err);
@@ -211,7 +225,6 @@ async function prepareExitAndSleep() {
     app.exit(0);
   }
 }
-
 
 async function openDevice(hard) {
   const r = await safeRpc('open', {});
@@ -229,13 +242,12 @@ async function openDevice(hard) {
     broadcast('host:status', { ready: true, device: false, error: hostError });
     return false;
   }
+  if (r && r.info && r.info.path) {
+    NativeInput.setDevicePath(r.info.path);
+  }
   log('device opened OK' + (hard ? ' (hard reset)' : ''));
   const cfg = config.load();
-  // Force the wake sequence: a previous owner may have left the panel asleep,
-  // in which case writes land in LCD RAM but the screen stays dark.
   if (hard) {
-    // Re-plug can leave the panel powered up but blank - do a full sleep/wake
-    // cycle so the controller re-initialises its LCD pipeline.
     await safeRpc('reset', { brightness: cfg.brightness });
   } else {
     await safeRpc('wake', { brightness: cfg.brightness, force: true });
@@ -244,26 +256,18 @@ async function openDevice(hard) {
   hostError = null;
   deviceAsleep = false;
   broadcast('host:status', { ready: true, device: true, error: null });
-  repaintSoon();
+  repaintSoon(true);
   return true;
 }
 
 // -------------------------------------------------------------- key handling
 
-/** Sub pages grow an automatic back key in the bottom-right corner, so you can
- *  always leave a folder with the same muscle memory. Any key configured there
- *  is temporarily shadowed and comes back when you leave the sub page. */
 const BACK_ROW = 2, BACK_COL = 4;
 
 function pageById(id) {
   return config.load().pages.find((p) => p.id === id) || null;
 }
 
-/** Resolve a `{type:'page', mode}` action to a target page id, or null.
- *
- *  下一页 / 上一页 walk TOP-LEVEL pages only. Walking the whole depth-first
- *  tree would make "next page" dive into a folder, which is not what anyone
- *  means by page turning - sub pages are entered through their own key. */
 function resolvePageAction(spec, page) {
   const cfg = config.load();
   const tops = cfg.pages.filter((p) => !p.parent);
@@ -278,16 +282,20 @@ function resolvePageAction(spec, page) {
   }
 }
 
-async function goToPage(id, why) {
+async function goToPage(id, why, isAutoSwitch = false) {
   const cfg = config.load();
   if (!id) return false;
   const target = cfg.pages.find((p) => p.id === id);
   if (!target) return false;
+  if (!isAutoSwitch) {
+    // Manual page change clears auto-switch memory
+    autoSwitchedFromPageId = null;
+    autoSwitchedToPageId = null;
+  }
   if (cfg.currentPage === id) return true;
   cfg.currentPage = id;
   config.save(cfg);
   log(`page -> 「${target.name}」${target.parent ? ' (子页)' : ''}${why ? '  via ' + why : ''}`);
-  // The renderer owns drawing; it reloads config and repaints everything.
   broadcast('page:changed', { pageId: id });
   return true;
 }
@@ -296,10 +304,11 @@ async function onWakeByKey(row, col) {
   deviceAsleep = false;
   lastWakeTime = Date.now();
   lastActivity = Date.now();
+  broadcast('device:sleep-state', { asleep: false });
   broadcast('key:flash', { row, col });
   const cfg = config.load();
   await safeRpc('wake', { brightness: cfg.brightness, force: true });
-  repaintSoon();
+  repaintSoon(true);
   log(`device woke up by key r${row}c${col} (wake only, restored brightness=${cfg.brightness})`);
 }
 
@@ -307,16 +316,15 @@ async function onKeyDown(row, col) {
   const now = Date.now();
   lastActivity = now;
 
-  // Pressing a key while asleep should only light the panel back up, never execute actions.
-  // We also enforce a minimal cooldown window (50ms) to prevent rapid chatter/chatter double-triggering.
   const cfgNow = config.load();
   const cooldown = (cfgNow.keyDebounceMs !== undefined) ? cfgNow.keyDebounceMs : 50;
   if (deviceAsleep || (now - lastWakeTime < cooldown)) {
     if (deviceAsleep) {
       deviceAsleep = false;
       lastWakeTime = now;
+      broadcast('device:sleep-state', { asleep: false });
       await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
-      repaintSoon();
+      repaintSoon(true);
       broadcast('key:flash', { row, col });
       log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
     } else {
@@ -328,9 +336,6 @@ async function onKeyDown(row, col) {
   const page = config.currentPage();
   broadcast('key:flash', { row, col });
 
-
-  // automatic back key on sub pages - checked before the normal lookup so it
-  // cannot be shadowed by whatever the user parked in that corner
   if (page.parent && row === BACK_ROW && col === BACK_COL) {
     log(`key r${row}c${col} -> 返回上级 (from 「${page.name}」)`);
     await goToPage(page.parent, 'back key');
@@ -339,9 +344,6 @@ async function onKeyDown(row, col) {
 
   const spec = page.buttons[row + ',' + col];
 
-  // Page switching is handled here, not in runner.js: the runner runs things,
-  // it has no business knowing about pages. This must come before the
-  // "not configured" check - page actions carry no target on purpose.
   if (spec && spec.type === 'page') {
     const target = resolvePageAction(spec, page);
     if (!target) {
@@ -359,7 +361,6 @@ async function onKeyDown(row, col) {
   const isMedia = spec && (spec.type === 'media');
   if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
-    // Show it on the device too: the user is looking at the panel, not the PC.
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
     return;
@@ -367,10 +368,20 @@ async function onKeyDown(row, col) {
 
   let actionToRun = spec;
   if (spec.badgeToggle && (!isVolume || spec.toggleAction)) {
-    const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-    const hasAction2 = spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey || spec.action2.type === 'volume' || spec.action2.type === 'audio' || spec.action2.type === 'media');
+    // 若是 app 类型且未开始自定义非进程动作，优先先以真实进程状态校准当前态，防止“盲切误杀”
+    let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+    if (spec.type === 'app' && spec.target && spec.toggleAction) {
+      try {
+        const procName = await runner.processNameFor(probe.probeApp(spec.target));
+        if (procName) {
+          curState = runner.isRunning(procName) ? 1 : 0;
+        }
+      } catch (_) {}
+    }
+    const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target, args: spec.act2Args || '' } : null);
+    const hasAction2 = spec.toggleAction && act2 && (act2.target || act2.hotkey || act2.type === 'volume' || act2.type === 'audio' || act2.type === 'media');
     if (hasAction2 && curState === 1) {
-      actionToRun = spec.action2;
+      actionToRun = act2;
     }
     const nextState = (curState === 1 ? 0 : 1);
     spec._activeState = nextState;
@@ -401,26 +412,88 @@ async function onKeyDown(row, col) {
 }
 
 function resetIdleTimer() {
-  if (idleTimer) clearInterval(idleTimer);
+  if (idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
   const cfg = config.load();
   const minutes = Number(cfg.idleSleepMinutes || 0);
-  if (!minutes) return;
+  if (!minutes || minutes <= 0) return;
   idleTimer = setInterval(() => {
+    if (deviceAsleep) return;
     const idleMs = Date.now() - lastActivity;
     if (idleMs > minutes * 60 * 1000) {
       doSleep();
-      lastActivity = Date.now(); // avoid hammering
+      lastActivity = Date.now();
     }
-  }, 20000);
+  }, 15000);
+}
+
+/**
+ * 后台智能态势引擎：
+ * 1. 前台窗口感知自动切页 (Auto-Profile Switching)
+ * 2. 当前页应用程序真实进程存活状态同步（消除双态按钮盲切反相）
+ */
+async function pollForegroundAndProcessState() {
+  if (deviceAsleep) return;
+  const cfg = config.load();
+  if (!cfg || !Array.isArray(cfg.pages)) return;
+
+  // 1. 前台窗口感知自动切页
+  if (cfg.autoSwitchPage !== false && cfg.pages.some((p) => p.autoApp && p.autoApp.trim())) {
+    try {
+      const fg = await NativeInput.getForegroundWindow();
+      const proc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
+      // 忽略控制台自身窗口与系统外壳
+      const isSelfOrShell = !proc || proc === 'electron' || proc === 'akp153 控制台' || proc === 'akp-input' || proc === 'searchhost' || proc === 'shellexperiencehost';
+      if (!isSelfOrShell && proc !== lastFgProcess) {
+        lastFgProcess = proc;
+        const matchedPage = cfg.pages.find((p) => {
+          if (!p.autoApp) return false;
+          const rules = p.autoApp.split(/[,;，；\s]+/).map((s) => s.trim().toLowerCase().replace(/\.exe$/i, '')).filter(Boolean);
+          return rules.some((r) => proc === r || proc.includes(r));
+        });
+
+        if (matchedPage) {
+          if (cfg.currentPage !== matchedPage.id) {
+            if (!autoSwitchedFromPageId) {
+              autoSwitchedFromPageId = cfg.currentPage;
+            }
+            autoSwitchedToPageId = matchedPage.id;
+            await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
+          }
+        } else if (autoSwitchedFromPageId && cfg.currentPage === autoSwitchedToPageId) {
+          const restoreId = autoSwitchedFromPageId;
+          autoSwitchedFromPageId = null;
+          autoSwitchedToPageId = null;
+          await goToPage(restoreId, `auto-restore (left ${proc})`, true);
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 2. 同步当前页面上绑定了进程双态角标的按键真实运行状态
+  try {
+    const page = config.currentPage();
+    if (!page || !page.buttons) return;
+    for (const [k, spec] of Object.entries(page.buttons)) {
+      if (!spec || spec.type !== 'app' || !spec.badgeToggle || !spec.target) continue;
+      const [row, col] = k.split(',').map(Number);
+      const procName = await runner.processNameFor(runner.probe.probeApp(spec.target));
+      if (!procName) continue;
+      const running = runner.isRunning(procName);
+      const realState = running ? 1 : 0;
+      const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+      if (realState !== curState) {
+        spec._activeState = realState;
+        broadcast('key:toggleState', { pageId: page.id, row, col, activeState: realState });
+      }
+    }
+  } catch (_) {}
 }
 
 // ------------------------------------------------------------------- window
 
-// ------------------------------------------------------------------- window
-
-/** The layout needs >=1000px: the device panel alone is 6 columns wide and the
- *  inspector must keep ~340px or it collapses into a sliver (that was the
- *  original "UI is unusable" bug - window was 900px, layout needed 1048px). */
 const WIN_DEFAULT = { width: 1160, height: 800 };
 const WIN_MIN = { width: 1000, height: 660 };
 
@@ -430,7 +503,6 @@ function restoreBounds() {
   if (saved && Number(saved.width) >= WIN_MIN.width && Number(saved.height) >= WIN_MIN.height) {
     b.width = Math.round(saved.width);
     b.height = Math.round(saved.height);
-    // Only restore x/y if the window would still be visible on some display.
     if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) {
       const vis = screen.getAllDisplays().some((d) => {
         const w = d.workArea;
@@ -457,6 +529,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // 严禁后台隐藏到托盘时节流定时器与 Canvas 重绘，保障静默启动和托盘态下时钟/监控/切页实时推图
+      backgroundThrottling: false,
     },
   }));
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -483,21 +557,19 @@ function createWindow() {
       if (handleBuf && handleBuf.length > 0) {
         mainHwndStr = handleBuf.length === 8 ? handleBuf.readBigInt64LE(0).toString() : handleBuf.readInt32LE(0).toString();
       }
-      // WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016
       win.hookWindowMessage(0x0011, async () => {
         log('收到 WM_QUERYENDSESSION 关机请求，执行 native shutdownBlock 并进入硬件灭屏...');
         await prepareExitAndSleep();
       });
-      win.hookWindowMessage(0x0016, () => {
-        log('收到 WM_ENDSESSION 关机确认，立即退出...');
-        prepareExitAndSleep();
+      win.hookWindowMessage(0x0016, async () => {
+        log('收到 WM_ENDSESSION 关机确认...');
+        await prepareExitAndSleep();
       });
     } catch (e) {
       log('hookWindowMessage 异常:', e);
     }
   }
 
-  // Removing the application menu also removed its Ctrl+Shift+I accelerator.
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') {
       win.webContents.toggleDevTools();
@@ -544,17 +616,24 @@ function showWindow() {
 // --------------------------------------------------------------------- ipc
 
 ipcMain.handle('config:load', () => config.load());
-ipcMain.handle('config:save', (e, cfg) => config.save(cfg));
+ipcMain.handle('config:save', (e, cfg) => {
+  const res = config.save(cfg);
+  resetIdleTimer();
+  return res;
+});
 ipcMain.handle('config:get', (e, key) => config.get(key));
 
-const drawStats = { ok: 0, fail: 0, lastError: null };
+const drawStats = { ok: 0, fail: 0, skipped: 0, lastError: null };
 
 ipcMain.handle('device:draw', async (e, a) => {
+  if (deviceAsleep) return { ok: true, drawn: false, skipped: true };
   const r = await safeRpc('draw', a);
   if (r && r.ok === false) {
     drawStats.fail++;
     drawStats.lastError = r.error;
     log(`draw FAILED r${a.row}c${a.col}: ${r.error}`);
+  } else if (r && r.skipped) {
+    drawStats.skipped++;
   } else {
     drawStats.ok++;
   }
@@ -726,7 +805,13 @@ async function extractIcon(targetPath) {
   const p = path.resolve(targetPath);
   const ext = path.extname(p).toLowerCase();
 
-  // 如果直接是图片/图标文件，优先用 nativeImage 原汁原味加载（超大图自动智能预降采样至 1440px 防卡顿）
+  if (ext === '.svg' && fs.existsSync(p)) {
+    try {
+      const svgRaw = fs.readFileSync(p, 'utf8');
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svgRaw);
+    } catch (_) {}
+  }
+
   if (['.ico', '.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext) && fs.existsSync(p)) {
     try {
       const nat = nativeImage.createFromPath(p);
@@ -735,7 +820,6 @@ async function extractIcon(targetPath) {
     } catch (_) {}
   }
 
-  // 1. 如果是快捷方式 .lnk，读取真实目标或快捷方式专属图标
   if (ext === '.lnk') {
     try {
       const details = shell.readShortcutLink(p);
@@ -774,7 +858,6 @@ async function extractIcon(targetPath) {
     }
   }
 
-  // 2. 如果是文件夹，检测是否被用户修改过图标（desktop.ini）
   try {
     const st = fs.statSync(p);
     if (st.isDirectory()) {
@@ -836,7 +919,6 @@ async function extractIcon(targetPath) {
     }
   } catch (_) {}
 
-  // 3. 原生 getFileIcon 兜底
   try {
     const img = await app.getFileIcon(p, { size: 'large' });
     if (img && !img.isEmpty()) return img.toDataURL();
@@ -894,7 +976,6 @@ ipcMain.handle('macro:stopAll', () => {
 ipcMain.handle('macro:activeLoops', () => {
   return Array.from(runner.activeLoops.keys());
 });
-
 
 const REG_RUN = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 function setStartupRegistry(enable) {
@@ -959,13 +1040,6 @@ ipcMain.handle('app:openExternal', (e, url) => {
   }
 });
 
-/**
- * 抓取指定网址的高清网站 Favicon 并转换为 96x96 PNG Base64
- * 三级容灾探测策略：
- * 1. 抓取站点 HTML，正则匹配 <link rel="apple-touch-icon" ...> 或 <link rel="icon" ...>
- * 2. 抓取站点根路径 /favicon.ico
- * 3. 备用降级调用高可用镜像 (iowen / duckduckgo / icon.horse)
- */
 async function fetchFaviconForUrl(inputUrl) {
   let target = String(inputUrl || '').trim();
   if (!target) return { ok: false, error: '网址不能为空' };
@@ -1022,7 +1096,6 @@ async function fetchFaviconForUrl(inputUrl) {
     }
   };
 
-  // 1. 第一级：抓取页面 HTML 寻找 <link rel="..."> 高清图标
   try {
     const htmlBuf = await fetchBuffer(target, 3500);
     if (htmlBuf) {
@@ -1047,19 +1120,17 @@ async function fetchFaviconForUrl(inputUrl) {
 
         const imgBuf = await fetchBuffer(absIconUrl, 3500);
         const dataUrl = bufferToDataUrl(imgBuf);
-        if (dataUrl) return { ok: true, dataUrl, source: 'html' };
+        if (dataUrl) return { ok: true, dataUrl, iconData: dataUrl, source: 'html' };
       }
     }
   } catch (_) {}
 
-  // 2. 第二级：站点根目录 /favicon.ico
   try {
     const rootIco = await fetchBuffer(`${origin}/favicon.ico`, 3000);
     const dataUrl = bufferToDataUrl(rootIco);
-    if (dataUrl) return { ok: true, dataUrl, source: 'root' };
+    if (dataUrl) return { ok: true, dataUrl, iconData: dataUrl, source: 'root' };
   } catch (_) {}
 
-  // 3. 第三级：高可用镜像解析源
   const mirrors = [
     `https://api.iowen.cn/favicon/${host}.png`,
     `https://icons.duckduckgo.com/ip3/${host}.ico`,
@@ -1069,7 +1140,7 @@ async function fetchFaviconForUrl(inputUrl) {
     try {
       const mirrorBuf = await fetchBuffer(mirrorUrl, 3000);
       const dataUrl = bufferToDataUrl(mirrorBuf);
-      if (dataUrl) return { ok: true, dataUrl, source: 'mirror' };
+      if (dataUrl) return { ok: true, dataUrl, iconData: dataUrl, source: 'mirror' };
     } catch (_) {}
   }
 
@@ -1113,9 +1184,10 @@ ipcMain.handle('config:import', async () => {
       return { ok: false, error: '该文件不包含有效的 AKP153 控制台配置！' };
     }
     config.save(parsed);
+    resetIdleTimer();
     log('config backup imported from', res.filePaths[0]);
     broadcast('config:external', parsed);
-    repaintSoon();
+    repaintSoon(true);
     return { ok: true, path: res.filePaths[0], data: parsed };
   } catch (err) {
     return { ok: false, error: '无法解析备份文件：' + err.message };
@@ -1143,8 +1215,9 @@ ipcMain.handle('config:reset', async () => {
     }];
     def.currentPage = 'p1';
     config.save(def);
+    resetIdleTimer();
     broadcast('config:external', def);
-    repaintSoon();
+    repaintSoon(true);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -1188,19 +1261,6 @@ ipcMain.handle('library:import', async () => {
 
 // --------------------------------------------------- config file watching
 
-/**
- * An agent (or you, in a text editor) may rewrite config.json directly.
- * Reload it and redraw, so the device follows along without a restart.
- *
- * Detection is by CONTENT, not by time: config.changedOnDisk() compares the file
- * against the text we last read/wrote.
- *
- * Do NOT go back to "ignore events that arrive soon after our own save" - that
- * heuristic silently broke: the 4s fallback poll would see the mtime our own
- * save() produced, find that >900ms had already passed, and fire a bogus reload
- * every time the user touched anything. Each bogus reload pushes all 18 key
- * images over HID, which makes the panel feel unresponsive for seconds.
- */
 function watchConfig() {
   const check = () => {
     let changed = false;
@@ -1209,10 +1269,11 @@ function watchConfig() {
     try {
       config.invalidate();
       const cfg = config.load();
+      resetIdleTimer();
       const page = config.currentPage();
       log(`config.json 被外部修改 -> 已重载（当前页「${page.name}」）`);
       broadcast('config:external', { pageId: cfg.currentPage });
-      broadcast('device:repaint', {});
+      broadcast('device:repaint', { force: true });
     } catch (e) {
       log('外部配置重载失败（文件可能只写了一半）:', e.message);
     }
@@ -1225,9 +1286,6 @@ function watchConfig() {
 
   try {
     fs.watch(config.FILE, { persistent: false }, debounce);
-    // fs.watch on Windows occasionally misses the rename save() performs, so
-    // poll as a safety net. Content comparison keeps this silent in the normal
-    // case, so polling every 4s costs nothing.
     setInterval(check, 4000);
   } catch (e) {
     log('无法监听 config.json：', e.message);
@@ -1243,27 +1301,26 @@ if (!gotLock) {
   app.on('second-instance', () => showWindow());
 
   app.whenReady().then(() => {
-    // Electron installs an English File/Edit/View/Window/Help menu bar by
-    // default, which looked wrong sitting on top of an otherwise Chinese UI.
-    // We only ever needed the tray menu, so drop the application menu entirely.
     Menu.setApplicationMenu(null);
 
     log('app ready, startup=' + STARTUP);
     createTray();
     createWindow();
-    if (!STARTUP) showWindow();   // autostart -> tray only, manual launch -> show UI
+    if (!STARTUP) showWindow();
     spawnHost();
     resetIdleTimer();
     watchConfig();
     if (config.load().openAtLogin) {
       setStartupRegistry(true);
     }
-    // draw the clock strip on a slow tick (cheap: one 80x80 image).
-    // Skipped while asleep - pushing image data at a sleeping panel can
-    // partially re-light the backlight.
     setInterval(() => {
       if (!deviceAsleep) broadcast('device:repaint-strips', {});
     }, 30000);
+
+    // 后台前台应用自动切页与进程运行状态同步轮询
+    setInterval(() => {
+      pollForegroundAndProcessState();
+    }, 2000);
 
     // 三重安全急停熔断快捷键
     try {
@@ -1280,12 +1337,11 @@ if (!gotLock) {
     } catch (_) {}
   });
 
-  // Windows 系统电源状态与待机联动
   if (powerMonitor) {
-    powerMonitor.on('shutdown', (e) => {
+    powerMonitor.on('shutdown', async (e) => {
       log('powerMonitor: 捕获到系统关机信号，正在进入休眠灭屏...');
       try { e.preventDefault(); } catch (_) {}
-      prepareExitAndSleep();
+      await prepareExitAndSleep();
     });
 
     powerMonitor.on('suspend', async () => {
@@ -1299,7 +1355,7 @@ if (!gotLock) {
     });
   }
 
-  app.on('window-all-closed', (e) => { e.preventDefault(); }); // tray app
+  app.on('window-all-closed', (e) => { e.preventDefault(); });
   app.on('before-quit', (e) => {
     if (!isQuitting && host && hostReady) {
       try { e.preventDefault(); } catch (_) {}

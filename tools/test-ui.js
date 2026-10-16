@@ -932,6 +932,33 @@ app.whenReady().then(async () => {
   await js('document.getElementById("ipClose").click()');
   await sleep2(150);
 
+  // (12) v0.6.0 深度修复与 UX 升级回归测试
+  check('副屏具备独立图形化仪表渲染器 (paintClockStrip & paintMetricStrip)',
+    await js('typeof paintClockStrip === "function" && typeof paintMetricStrip === "function"'));
+
+  await js('document.getElementById("pageGradientBtn").click()');
+  await sleep2(150);
+  check('页面设置包含前台应用自动切页 (Auto-Profile) 绑定输入框',
+    await js('!!document.getElementById("p-autoapp") && !!document.getElementById("p-autoapp-pick")'));
+
+  await js('document.getElementById("libExpand").click()');
+  await sleep2(200);
+  await js('document.querySelector("#libGrid .libcard").click()');
+  await sleep2(200);
+  check('Key Studio 字号滑块与主面板百分比对齐 (min=8, max=40)',
+    await js('document.getElementById("lkmFontSize").getAttribute("min") === "8" && document.getElementById("lkmFontSize").getAttribute("max") === "40"'));
+  await js('document.getElementById("lkmTabDual").click()');
+  await sleep2(100);
+  await js('document.getElementById("lkmToggleAction").click()');
+  await sleep2(100);
+  check('Key Studio 开启双态动作生成标准嵌套 action2 对象',
+    await js('!!currentLibModalSpec.action2 && typeof currentLibModalSpec.action2 === "object"'));
+  await js('document.getElementById("lkmTestBtn").click()');
+  await sleep2(100);
+  await js('document.getElementById("lkmClose").click()');
+  await sleep2(100);
+  await js('document.getElementById("libClose").click()');
+  await sleep2(100);
 
   put('--- UI smoke test ---');
   let failed = 0;

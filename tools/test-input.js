@@ -1,17 +1,14 @@
 'use strict';
 /**
- * Unit test for input decoding - no key pressing required.
+ * Unit test for input decoding & Frame Diff Cache - no physical hardware required.
  *
  *   node tools/test-input.js
  *
- * node-hid's HID object is an EventEmitter, so we can inject a synthetic input
- * report and check the events the host emits.
- *
- * Regression guard: the device sends ONE report per press with data[10] === 0.
- * Reading that byte as "0 = up" made every press a release and no action ever
- * ran, even though the device was reporting perfectly.
+ * Uses a real device if plugged in, or a synthetic EventEmitter HID mock when
+ * running headlessly / in CI without hardware.
  */
 const path = require('path');
+const { EventEmitter } = require('events');
 const { Device, buttonId } = require(path.join(__dirname, '..', 'host', 'device-host.js'));
 
 const captured = [];
@@ -30,7 +27,21 @@ function packet(id, state) {
 }
 
 const dev = new Device();
-dev.open();
+let writeCalls = 0;
+try {
+  dev.open();
+} catch (e) {
+  // No physical AKP153 connected: mount a synthetic HID EventEmitter
+  const mockHid = new EventEmitter();
+  mockHid.write = (buf) => {
+    writeCalls++;
+    return buf.length;
+  };
+  mockHid.close = () => {};
+  dev.hid = mockHid;
+  dev.broken = false;
+  dev.attach();
+}
 
 // silence the per-packet stderr trace for this test
 const realErr = process.stderr.write.bind(process.stderr);
@@ -95,10 +106,22 @@ for (const mode of Device.SLEEP_MODES) {
   lines.push(`${awakeOk ? 'PASS' : 'FAIL'}  sleep mode [${mode}]: subsequent press after wake emits down+up`);
 }
 
-process.stdout.write = realWrite;
-process.stderr.write = realErr;
-realWrite(lines.join('\n') + '\n' + (failed === 0 ? 'ALL PASS\n' : failed + ' FAILED\n'));
+// Frame Diff Cache 测试
+(async () => {
+  dev.asleep = false;
+  dev.lastFrames.clear();
+  const sampleB64 = Buffer.from('fake-jpeg-payload-12345').toString('base64');
+  const r1 = await dev.draw(0, 0, sampleB64, false);
+  const r2 = await dev.draw(0, 0, sampleB64, false);
+  const r3 = await dev.draw(0, 0, sampleB64, true);
+  const diffOk = r1 && r1.drawn === true && r2 && r2.skipped === true && r3 && r3.drawn === true;
+  if (!diffOk) failed++;
+  lines.push(`${diffOk ? 'PASS' : 'FAIL'}  Frame Diff Cache: identical frame skipped unless force=true`);
 
-dev.close();
+  process.stdout.write = realWrite;
+  process.stderr.write = realErr;
+  realWrite(lines.join('\n') + '\n' + (failed === 0 ? 'ALL PASS\n' : failed + ' FAILED\n'));
 
-process.exit(failed === 0 ? 0 : 1);
+  dev.close();
+  process.exit(failed === 0 ? 0 : 1);
+})();

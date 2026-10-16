@@ -122,12 +122,24 @@
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">拖入应用程序默认动作</span>
-                <span class="pref-desc">向格子拖入 .exe / .lnk 时是否自动创建启动与退出双态</span>
+                <span class="pref-desc">向格子拖入 .exe / .lnk 时的预设行为模式（双态支持真实进程状态自动同步）</span>
               </div>
               <select id="prefAppDropMode" class="pref-select">
                 <option value="dual">⚡ 启动/退出双态闭环 (默认)</option>
+                <option value="graceful">🛡️ 启动/优雅关闭双态 (WM_CLOSE)</option>
+                <option value="smart">🎯 智能任务栏模式 (启动/置顶/最小化切换)</option>
                 <option value="single">🟢 普通单一启动动作</option>
               </select>
+            </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">前台应用感知自动切页 (Auto-Profile)</span>
+                <span class="pref-desc">当页面设置了关联进程（如 Code.exe）时，切到该软件自动切换硬件页面</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="prefAutoSwitchPage" checked />
+                <span class="switch-slider"></span>
+              </label>
             </div>
           </div>
 
@@ -268,7 +280,7 @@
           <span class="logo">AJAZZ</span>
           <span class="model">AKP-153</span>
         </div>
-        <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变（一键铺满 15 键背景）">🌈 整板流光</button>
+        <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
       </div>
       <div id="grid" class="grid"></div>
     </div>
@@ -375,12 +387,15 @@
             <label class="lkm-label">动作类型</label>
             <select id="lkmActType" class="lkm-select">
               <option value="app">运行本地应用程序或文件</option>
+              <option value="folder">打开本地文件夹</option>
               <option value="url">在浏览器中打开网址</option>
               <option value="hotkey">模拟系统快捷键组合</option>
+              <option value="volume">🔊 音频与音量控制 (WASAPI)</option>
               <option value="command">执行控制台命令行 (cmd)</option>
               <option value="ps1">执行 PowerShell 脚本</option>
               <option value="page">页面跳转切换</option>
               <option value="multi">复合宏动作序列</option>
+              <option value="qr_decode">📷 屏幕/剪贴板二维码解码</option>
             </select>
           </div>
           <!-- 动作详细参数表单 -->
@@ -447,17 +462,17 @@
           </div>
           <div class="lkm-form-row">
             <div style="display:flex; justify-content:space-between;">
-              <label class="lkm-label">文字字号</label>
-              <span id="lkmFontSizeVal" style="font-size:11px; color:var(--muted);">12px</span>
+              <label class="lkm-label">文字字号比例</label>
+              <span id="lkmFontSizeVal" style="font-size:11px; color:var(--muted);">17%</span>
             </div>
-            <input type="range" id="lkmFontSize" min="10" max="24" step="1" value="12" />
+            <input type="range" id="lkmFontSize" min="8" max="40" step="1" value="17" />
           </div>
           <div class="lkm-form-row">
             <div style="display:flex; justify-content:space-between;">
               <label class="lkm-label">图标缩放</label>
-              <span id="lkmIconScaleVal" style="font-size:11px; color:var(--muted);">80%</span>
+              <span id="lkmIconScaleVal" style="font-size:11px; color:var(--muted);">62%</span>
             </div>
-            <input type="range" id="lkmIconScale" min="30" max="100" step="5" value="80" />
+            <input type="range" id="lkmIconScale" min="25" max="100" step="1" value="62" />
           </div>
           <div class="lkm-form-row">
             <label class="lkm-label">按键独立底色</label>
@@ -678,7 +693,6 @@
   <div class="cm-sep"></div>
   <button id="ipCmDelete" class="cm-item danger"><span class="cm-icon">🗑️</span> 从图标库删除</button>
 </div>
-
 
 <!-- 图片裁剪与压缩模态弹窗 -->
 <div id="cropperModal" class="modal-backdrop" hidden>

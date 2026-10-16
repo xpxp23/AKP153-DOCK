@@ -14,6 +14,7 @@ let ipContextTarget = null;
 const DEFAULT_CUSTOM_CATEGORIES = ['全部', '常用', '办公开发', '游戏娱乐', '影音多媒体', '系统工具'];
 const iconCache = new Map();
 const activeLoopKeyIds = new Set();
+let isDeviceAsleep = false;
 
 if (typeof api !== 'undefined' && api.on) {
   api.on('macro:loopState', (payload) => {
@@ -649,7 +650,7 @@ function toJpegUnder(canvas, maxBytes) {
 // render a sample layout so the UI can be inspected without the device.
 const DEMO = typeof api === 'undefined';
 
-async function pushKey(row, col) {
+async function pushKey(row, col, force = false) {
   if (!cfg || DEMO) return;
   const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
   const size = col === 5 ? 80 : 96;
@@ -657,7 +658,7 @@ async function pushKey(row, col) {
   const c = await paintKey(spec || blank, size, { row, col });
   const rotated = rotateCanvas(c, $('rotate').value);
   const dataUrl = toJpegUnder(rotated, 10240);
-  await api.deviceDraw({ row, col, data: dataUrl.split(',')[1] });
+  await api.deviceDraw({ row, col, data: dataUrl.split(',')[1], force: !!force });
 }
 
 /** 显示屏上的页码/页名。顶层页显示「第 N/M 页」，子页显示「子页 · 名字」。 */
@@ -765,11 +766,170 @@ function paintVolumeStrip(spec, size, row, vol, isMute) {
   return c;
 }
 
-async function pushStrip(row) {
+function fillStripBackground(ctx, spec, size, row, defaultTop = '#16222f', defaultBot = '#0b1118') {
+  const page = curPage();
+  const grad = page && page.gradient;
+  if (grad && grad.enabled && (!spec || !spec.customColor)) {
+    const master = getGlobalGradientCanvas(grad);
+    if (master) {
+      ctx.drawImage(master, 5 * 96, row * 96, 96, 96, 0, 0, size, size);
+      return;
+    }
+  }
+  if (spec && spec.color && spec.customColor) {
+    ctx.fillStyle = spec.color;
+    ctx.fillRect(0, 0, size, size);
+    return;
+  }
+  const g = ctx.createLinearGradient(0, 0, 0, size);
+  g.addColorStop(0, (spec && spec.color) || defaultTop);
+  g.addColorStop(1, defaultBot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+}
+
+function paintClockStrip(spec, size, row) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  fillStripBackground(ctx, spec, size, row, '#141e30', '#0c131f');
+
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+
+  ctx.save();
+  ctx.fillStyle = '#80deea';
+  ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`${mo}-${da} 周${wd}`, size / 2, 8);
+
+  const scalePct = Number(spec && spec.fontSize) || 26;
+  const timeFs = Math.max(16, Math.min(28, Math.round((size * scalePct) / 100) + 4));
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${timeFs}px "Segoe UI", Consolas, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${hh}:${mm}`, size / 2, size * 0.56);
+
+  ctx.strokeStyle = 'rgba(128, 222, 234, 0.22)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  ctx.restore();
+  return c;
+}
+
+function paintMetricStrip(spec, size, row, mode, stats) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  fillStripBackground(ctx, spec, size, row, '#14202e', '#0a1018');
+
+  const cpu = Math.max(0, Math.min(100, Number(stats && stats.cpu) || 0));
+  const mem = Math.max(0, Math.min(100, Number(stats && stats.mem) || 0));
+  const usedGb = (stats && stats.memUsedGb) ? `${stats.memUsedGb}G` : '';
+
+  const colorForLoad = (val, baseColor) => {
+    if (val >= 85) return '#ff5252';
+    if (val >= 65) return '#ffb74d';
+    return baseColor;
+  };
+
+  if (mode === 'sys') {
+    ctx.save();
+    ctx.fillStyle = '#90caf9';
+    ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('⚡ 系统态势', size / 2, 6);
+
+    const drawMiniBar = (label, val, yTop, baseCol) => {
+      const col = colorForLoad(val, baseCol);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = 'bold 11px "Segoe UI", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, 8, yTop);
+      ctx.fillStyle = col;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${val}%`, size - 8, yTop);
+
+      const bx = 8, by = yTop + 13, bw = size - 16, bh = 6;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 3);
+      else ctx.rect(bx, by, bw, bh);
+      ctx.fill();
+
+      if (val > 0) {
+        const fw = Math.max(bh, Math.round((bw * val) / 100));
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bx, by, fw, bh, 3);
+        else ctx.rect(bx, by, fw, bh);
+        ctx.fill();
+      }
+    };
+
+    drawMiniBar('CPU', cpu, 23, '#00e5ff');
+    drawMiniBar('MEM', mem, 50, '#00e676');
+
+    ctx.strokeStyle = 'rgba(144, 202, 249, 0.22)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+    ctx.restore();
+    return c;
+  }
+
+  const isCpu = mode === 'cpu';
+  const val = isCpu ? cpu : mem;
+  const accent = colorForLoad(val, isCpu ? '#00e5ff' : '#00e676');
+  const title = isCpu ? '💻 CPU 负载' : (usedGb ? `📊 内存 ${usedGb}` : '📊 内存占用');
+
+  ctx.save();
+  ctx.fillStyle = accent;
+  ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(title, size / 2, 7);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 23px "Segoe UI", sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${val}%`, size / 2, size * 0.45);
+
+  const barX = 10, barY = size - 16, barW = size - 20, barH = 7;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(barX, barY, barW, barH, 3.5);
+  else ctx.rect(barX, barY, barW, barH);
+  ctx.fill();
+
+  if (val > 0) {
+    const fillW = Math.max(barH, Math.min(barW, Math.round((barW * val) / 100)));
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(barX, barY, fillW, barH, 3.5);
+    else ctx.rect(barX, barY, fillW, barH);
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  ctx.restore();
+  return c;
+}
+
+async function pushStrip(row, force = false) {
   if (!cfg || DEMO) return;
   const spec = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const size = 80;
   let s = Object.assign({}, spec);
+  let c = null;
+
   if (s.type === 'volume') {
     let vol = lastAudioState ? lastAudioState.volume : 50;
     let isMute = lastAudioState ? lastAudioState.isMute : false;
@@ -782,56 +942,37 @@ async function pushStrip(row) {
         lastAudioState.isMute = isMute;
       }
     } catch (_) {}
-    const c = paintVolumeStrip(s, size, row, vol, isMute);
-    const rotated = rotateCanvas(c, $('rotate').value);
-    const dataUrl = toJpegUnder(rotated, 10240);
-    await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1] });
-    return;
+    c = paintVolumeStrip(s, size, row, vol, isMute);
   } else if (s.type === 'clock') {
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
-    s = Object.assign({}, s, { label: `${hh}:${mm}\n周${wd}` });
-  } else if (s.type === 'page') {
-    s = Object.assign({}, s, { label: pageStripLabel() });
-  } else if (s.type === 'cpu') {
-    let cpu = 0;
+    c = paintClockStrip(s, size, row);
+  } else if (s.type === 'cpu' || s.type === 'mem' || s.type === 'sys') {
+    let stats = { cpu: 0, mem: 0, memUsedGb: '' };
     try {
-      const stats = await api.systemStats();
-      if (stats && stats.cpu !== undefined) cpu = stats.cpu;
+      const st = await api.systemStats();
+      if (st) stats = st;
     } catch (_) {}
-    s = Object.assign({}, s, { label: `CPU\n${cpu}%` });
-  } else if (s.type === 'mem') {
-    let mem = 0, used = '';
-    try {
-      const stats = await api.systemStats();
-      if (stats) { mem = stats.mem; used = stats.memUsedGb; }
-    } catch (_) {}
-    s = Object.assign({}, s, { label: `内存 ${mem}%\n${used ? used + 'G' : ''}` });
-  } else if (s.type === 'sys') {
-    let cpu = 0, mem = 0;
-    try {
-      const stats = await api.systemStats();
-      if (stats) { cpu = stats.cpu; mem = stats.mem; }
-    } catch (_) {}
-    s = Object.assign({}, s, { label: `C:${cpu}%\nM:${mem}%` });
+    c = paintMetricStrip(s, size, row, s.type, stats);
+  } else {
+    if (s.type === 'page') {
+      s = Object.assign({}, s, { label: pageStripLabel() });
+    }
+    c = await paintKey(s, size, { row, col: 5 });
   }
-  const c = await paintKey(s, size, { row, col: 5 });
+
   const rotated = rotateCanvas(c, $('rotate').value);
   const dataUrl = toJpegUnder(rotated, 10240);
-  await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1] });
+  await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1], force: !!force });
 }
 
-async function repaintAllKeys() {
+async function repaintAllKeys(force = false) {
   for (let row = 0; row < ROWS; row++) {
-    for (let col = 0; col < KEY_COLS; col++) await pushKey(row, col);
+    for (let col = 0; col < KEY_COLS; col++) await pushKey(row, col, force);
   }
 }
 
-async function repaintAll() {
-  await repaintAllKeys();
-  for (let row = 0; row < ROWS; row++) await pushStrip(row);
+async function repaintAll(force = false) {
+  await repaintAllKeys(force);
+  for (let row = 0; row < ROWS; row++) await pushStrip(row, force);
 }
 
 /** Pressing an unconfigured key: flash "未配置" on that key of the device. */
@@ -1187,20 +1328,31 @@ function el(tag, cls, text) {
 
 function applyAppDualStateDefaults(spec, cls, targetPath) {
   if (!cls || cls.type !== 'app') return;
-  if (cfg && cfg.appDropMode === 'single') return;
+  const mode = (cfg && cfg.appDropMode) || 'dual';
+  if (mode === 'single') return;
   const rawTarget = targetPath || (spec && spec.target) || '';
   const procName = cls.processName || (rawTarget ? rawTarget.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '');
-  if (procName) {
-    spec.toggleAction = true;
-    spec.action2 = {
-      type: 'command',
-      target: `taskkill /F /IM ${procName}.exe`,
-      args: ''
-    };
+  if (!procName) return;
+
+  if (mode === 'smart') {
+    spec.smartToggle = true;
+    spec.toggleAction = false;
+    delete spec.action2;
     spec.badgeToggle = true;
     spec.badgeState1 = { text: '', bg: '#546e7a' };
     spec.badgeState2 = { text: '运行中', bg: '#107c41' };
+    return;
   }
+
+  spec.toggleAction = true;
+  spec.action2 = {
+    type: 'command',
+    target: mode === 'graceful' ? `wm_close:${procName}` : `taskkill /F /IM ${procName}.exe`,
+    args: ''
+  };
+  spec.badgeToggle = true;
+  spec.badgeState1 = { text: '', bg: '#546e7a' };
+  spec.badgeState2 = { text: '运行中', bg: '#107c41' };
 }
 
 async function onDrop(row, col, e) {
@@ -1993,18 +2145,22 @@ function renderActionCardHtml(act, idx, total) {
       </div>
     `;
   } else if (t === 'mouse_drag') {
+    const fxVal = act.fromX !== undefined ? act.fromX : (act.x1 !== undefined ? act.x1 : 0);
+    const fyVal = act.fromY !== undefined ? act.fromY : (act.y1 !== undefined ? act.y1 : 0);
+    const txVal = act.toX !== undefined ? act.toX : (act.x2 !== undefined ? act.x2 : 0);
+    const tyVal = act.toY !== undefined ? act.toY : (act.y2 !== undefined ? act.y2 : 0);
     bodyHtml = `
       <div class="macro-inline-row">
         <span style="font-size: 11px; color: var(--muted); min-width: 32px;">起点:</span>
-        <input type="number" class="m-field" data-field="x1" data-idx="${idx}" value="${act.x1 !== undefined ? act.x1 : 0}" placeholder="X1" style="flex: 1; min-width: 0;" />
-        <input type="number" class="m-field" data-field="y1" data-idx="${idx}" value="${act.y1 !== undefined ? act.y1 : 0}" placeholder="Y1" style="flex: 1; min-width: 0;" />
-        <button type="button" class="ghost tiny m-pick-coord" data-idx="${idx}" data-fields="x1,y1">🎯 拾取起点</button>
+        <input type="number" class="m-field" data-field="fromX" data-idx="${idx}" value="${fxVal}" placeholder="起点 X" style="flex: 1; min-width: 0;" />
+        <input type="number" class="m-field" data-field="fromY" data-idx="${idx}" value="${fyVal}" placeholder="起点 Y" style="flex: 1; min-width: 0;" />
+        <button type="button" class="ghost tiny m-pick-coord" data-idx="${idx}" data-fields="fromX,fromY">🎯 拾取起点</button>
       </div>
       <div class="macro-inline-row" style="margin-top: 4px;">
         <span style="font-size: 11px; color: var(--muted); min-width: 32px;">终点:</span>
-        <input type="number" class="m-field" data-field="x2" data-idx="${idx}" value="${act.x2 !== undefined ? act.x2 : 0}" placeholder="X2" style="flex: 1; min-width: 0;" />
-        <input type="number" class="m-field" data-field="y2" data-idx="${idx}" value="${act.y2 !== undefined ? act.y2 : 0}" placeholder="Y2" style="flex: 1; min-width: 0;" />
-        <button type="button" class="ghost tiny m-pick-coord" data-idx="${idx}" data-fields="x2,y2">🎯 拾取终点</button>
+        <input type="number" class="m-field" data-field="toX" data-idx="${idx}" value="${txVal}" placeholder="终点 X" style="flex: 1; min-width: 0;" />
+        <input type="number" class="m-field" data-field="toY" data-idx="${idx}" value="${tyVal}" placeholder="终点 Y" style="flex: 1; min-width: 0;" />
+        <button type="button" class="ghost tiny m-pick-coord" data-idx="${idx}" data-fields="toX,toY">🎯 拾取终点</button>
       </div>
       <div class="macro-inline-row" style="margin-top: 4px;">
         <label>拖拽耗时：</label>
@@ -2254,7 +2410,7 @@ function wireMacroEditor(box, spec) {
       else if (type === 'delay') newAct = { type: 'delay', ms: 500 };
       else if (type === 'mouse_click') newAct = { type: 'mouse_click', button: 'left', double: false };
       else if (type === 'mouse_move') newAct = { type: 'mouse_move', x: 0, y: 0, duration: 0 };
-      else if (type === 'mouse_drag') newAct = { type: 'mouse_drag', x1: 0, y1: 0, x2: 200, y2: 200, duration: 300 };
+      else if (type === 'mouse_drag') newAct = { type: 'mouse_drag', fromX: 0, fromY: 0, toX: 200, toY: 200, x1: 0, y1: 0, x2: 200, y2: 200, duration: 300 };
       else if (type === 'mouse_wheel') newAct = { type: 'mouse_wheel', delta: -120 };
       else if (type === 'hotkey') newAct = { type: 'hotkey', target: 'Ctrl+C' };
       else if (type === 'text') newAct = { type: 'text', text: '' };
@@ -2289,8 +2445,9 @@ function wireMacroEditor(box, spec) {
       const idx = Number(btn.dataset.idx);
       if (typeof api !== 'undefined' && api.dialogPick) {
         const r = await api.dialogPick({ properties: ['openFile'] });
-        if (r && r.filePaths && r.filePaths[0]) {
-          spec.actions[idx].target = r.filePaths[0];
+        const picked = typeof r === 'string' ? r : (r && r.filePaths && r.filePaths[0]);
+        if (picked && spec.actions[idx]) {
+          spec.actions[idx].target = picked;
           await commit(true);
           renderInspector();
         }
@@ -3102,7 +3259,7 @@ function renderInspector() {
       const mode = btn.dataset.mode;
       spec.mode = mode;
       if (mode === 'goto' && !spec.pageId) {
-        spec.pageId = state.config.pages[0]?.id || 'root';
+        spec.pageId = (cfg && cfg.pages && cfg.pages[0] && cfg.pages[0].id) || 'p1';
       }
       spec.label = (PAGE_MODE_INFOS.find((m) => m.id === mode) || {}).name || '翻页';
       await commit(true);
@@ -3877,6 +4034,22 @@ function renderPageInspector(box) {
       </div>
     </details>
 
+    <details class="sec" data-sec="page-autoapp" open>
+      <summary>前台应用自动切页 (Auto-Profile)</summary>
+      <div class="body">
+        <div class="row">
+          <label>关联应用程序进程名（多个用逗号分隔，切到该软件时自动切入本页）</label>
+          <div style="display:flex; gap:6px;">
+            <input id="p-autoapp" value="${escapeAttr(p.autoApp || '')}" placeholder="例如：Code.exe, photoshop.exe" style="flex:1;" />
+            <button type="button" class="ghost tiny" id="p-autoapp-pick" title="选择本地程序自动提取进程名">📁 选程序…</button>
+          </div>
+        </div>
+        <p class="muted" style="margin: 4px 0 0; font-size: 11px; line-height: 1.4;">
+          💡 当指定软件处于前台焦点时，AKP153 将自动切换到「${escapeHtml(p.name)}」；切回其他未绑定软件时自动恢复原页面。
+        </p>
+      </div>
+    </details>
+
     <div class="btnrow">
       <button class="ghost" id="g-repaint-all">重画全部 15 键</button>
     </div>
@@ -3964,7 +4137,39 @@ function renderPageInspector(box) {
     if (!DEMO) await repaintAllKeys();
   };
 
-  box.querySelector('#g-repaint-all').onclick = () => repaintAllKeys();
+  const autoAppInput = box.querySelector('#p-autoapp');
+  if (autoAppInput) {
+    autoAppInput.onchange = async () => {
+      p.autoApp = autoAppInput.value.trim();
+      await commit(false);
+      renderPageTabs();
+      toast(p.autoApp ? `已绑定自动切页进程：${p.autoApp}` : '已清除本页自动切页绑定');
+    };
+  }
+  const autoAppPick = box.querySelector('#p-autoapp-pick');
+  if (autoAppPick) {
+    autoAppPick.onclick = async () => {
+      if (DEMO || !window.api || !api.dialogPick) return;
+      const fp = await api.dialogPick({
+        properties: ['openFile'],
+        filters: [{ name: '可执行程序或快捷方式', extensions: ['exe', 'lnk'] }]
+      });
+      if (!fp) return;
+      const cls = await api.actionClassify(fp);
+      const proc = (cls && cls.processName) ? `${cls.processName}.exe` : fp.split(/[\\/]/).pop();
+      if (proc && autoAppInput) {
+        const existing = autoAppInput.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean);
+        if (!existing.includes(proc)) existing.push(proc);
+        p.autoApp = existing.join(', ');
+        autoAppInput.value = p.autoApp;
+        await commit(false);
+        renderPageTabs();
+        toast(`已关联自动切页进程：${p.autoApp}`);
+      }
+    };
+  }
+
+  box.querySelector('#g-repaint-all').onclick = () => repaintAllKeys(true);
 }
 
 function renderStripInspector(box) {
@@ -4383,7 +4588,9 @@ function updateLkmSwatch(previewState) {
   if (showLabel) {
     const lbl = document.createElement('span');
     lbl.textContent = showLabel;
-    lbl.style.fontSize = `${Math.max(9, Math.min(15, currentLibModalSpec.fontSize || 12))}px`;
+    const pct = Number(currentLibModalSpec.fontSize) || 17;
+    const previewPx = Math.max(9, Math.min(18, Math.round(58 * (pct / 100))));
+    lbl.style.fontSize = `${previewPx}px`;
     lbl.style.fontWeight = '600';
     lbl.style.whiteSpace = 'nowrap';
     lbl.style.overflow = 'hidden';
@@ -4510,13 +4717,15 @@ function updateLkmActionUI() {
 function updateLkmStyleUI() {
   if (!currentLibModalSpec) return;
   if ($('lkmLabelInput')) $('lkmLabelInput').value = currentLibModalSpec.label || '';
+  const fsPct = Number(currentLibModalSpec.fontSize) || 17;
   if ($('lkmFontSize')) {
-    $('lkmFontSize').value = currentLibModalSpec.fontSize || 12;
-    if ($('lkmFontSizeVal')) $('lkmFontSizeVal').textContent = (currentLibModalSpec.fontSize || 12) + 'px';
+    $('lkmFontSize').value = fsPct;
+    if ($('lkmFontSizeVal')) $('lkmFontSizeVal').textContent = fsPct + '%';
   }
+  const icScale = Number(currentLibModalSpec.iconScale) || 62;
   if ($('lkmIconScale')) {
-    $('lkmIconScale').value = currentLibModalSpec.iconScale || 80;
-    if ($('lkmIconScaleVal')) $('lkmIconScaleVal').textContent = (currentLibModalSpec.iconScale || 80) + '%';
+    $('lkmIconScale').value = icScale;
+    if ($('lkmIconScaleVal')) $('lkmIconScaleVal').textContent = icScale + '%';
   }
   if ($('lkmColorInput')) {
     $('lkmColorInput').value = currentLibModalSpec.color || '#37474f';
@@ -4526,11 +4735,22 @@ function updateLkmStyleUI() {
 
 function updateLkmDualUI() {
   if (!currentLibModalSpec) return;
+  if (currentLibModalSpec.toggleAction && !currentLibModalSpec.action2 && (currentLibModalSpec.act2Target || currentLibModalSpec.act2Type)) {
+    currentLibModalSpec.action2 = {
+      type: currentLibModalSpec.act2Type || 'command',
+      target: currentLibModalSpec.act2Target || '',
+      args: currentLibModalSpec.act2Args || '',
+    };
+    delete currentLibModalSpec.act2Type;
+    delete currentLibModalSpec.act2Target;
+    delete currentLibModalSpec.act2Args;
+  }
   const toggleAction = !!currentLibModalSpec.toggleAction;
+  const act2 = currentLibModalSpec.action2 || {};
   if ($('lkmToggleAction')) $('lkmToggleAction').checked = toggleAction;
   if ($('lkmDualActionWrap')) $('lkmDualActionWrap').hidden = !toggleAction;
-  if ($('lkmDualAct2Type')) $('lkmDualAct2Type').value = currentLibModalSpec.act2Type || 'command';
-  if ($('lkmDualAct2Target')) $('lkmDualAct2Target').value = currentLibModalSpec.act2Target || '';
+  if ($('lkmDualAct2Type')) $('lkmDualAct2Type').value = act2.type || 'command';
+  if ($('lkmDualAct2Target')) $('lkmDualAct2Target').value = act2.target || act2.hotkey || '';
 
   const isDualBadge = !!currentLibModalSpec.badgeToggle;
   const isStaticBadge = !isDualBadge && !!currentLibModalSpec.badge;
@@ -4653,15 +4873,29 @@ async function pickLocalIconForLib() {
   const r = await api.dialogPick({
     multiple: false,
     properties: ['openFile'],
-    filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg', 'ico'] }]
+    filters: [{ name: '图片与图标文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg', 'ico', 'exe', 'lnk'] }]
   });
-  if (!r || !r.paths || !r.paths.length) return;
-  const filePath = r.paths[0];
-  const imgRes = await api.readImage(filePath);
-  if (imgRes && imgRes.dataUrl && currentLibModalSpec) {
-    currentLibModalSpec.icon = imgRes.dataUrl;
+  const filePath = typeof r === 'string' ? r : (Array.isArray(r) ? r[0] : (r && r.paths && r.paths[0]));
+  if (!filePath || !currentLibModalSpec) return;
+  const iconDataUrl = await api.iconExtract(filePath);
+  if (!iconDataUrl) {
+    toast('无法从该文件中提取图标');
+    return;
+  }
+  const ext = filePath.split('.').pop().toLowerCase();
+  const isCropable = ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext);
+  if (isCropable) {
+    openCropper(iconDataUrl, (cropped) => {
+      if (currentLibModalSpec) {
+        currentLibModalSpec.icon = cropped;
+        updateLkmSwatch();
+        toast('已裁剪并导入本地图片');
+      }
+    });
+  } else {
+    currentLibModalSpec.icon = iconDataUrl;
     updateLkmSwatch();
-    toast('已导入本地图片');
+    toast('已导入本地图标');
   }
 }
 
@@ -4681,8 +4915,9 @@ async function fetchFaviconForLib() {
   toast('正在抓取网站高清图标…');
   try {
     const res = await api.fetchFavicon(url);
-    if (res && res.ok && res.iconData) {
-      currentLibModalSpec.icon = res.iconData;
+    const dataUrl = res && (res.dataUrl || res.iconData);
+    if (res && res.ok && dataUrl) {
+      currentLibModalSpec.icon = dataUrl;
       updateLkmSwatch();
       toast('已成功抓取网站图标！');
     } else {
@@ -5227,7 +5462,12 @@ function renderPageTabs() {
     t.appendChild(nameSpan);
     t.appendChild(countSpan);
 
-    t.title = (depth ? `子页「${page.name}」（返回键已自动生成）` : `顶层页「${page.name}」`) + ` · 已配置 ${count}/15 键 (支持拖拽排序，右键管理)`;
+    if (page.autoApp) {
+      nameSpan.textContent = (depth ? '↳ ' : '') + page.name + ' ⚡';
+    }
+    t.title = (depth ? `子页「${page.name}」（返回键已自动生成）` : `顶层页「${page.name}」`)
+      + (page.autoApp ? ` · 关联应用: ${page.autoApp}` : '')
+      + ` · 已配置 ${count}/15 键 (支持拖拽排序，右键管理)`;
     t.onclick = () => goToPage(page.id);
 
     // 右键上下文菜单
@@ -6597,7 +6837,23 @@ function bindShell() {
     dropModeSelect.addEventListener('change', async (e) => {
       cfg.appDropMode = e.target.value;
       if (!DEMO) await saveConfig();
-      toast(`应用拖拽策略已切换为：${e.target.value === 'dual' ? '启动/退出双态' : '单一启动'}`);
+      const modeNames = {
+        dual: '启动/强退双态闭环',
+        graceful: '启动/优雅关闭双态 (WM_CLOSE)',
+        smart: '智能任务栏模式 (启动/置顶/最小化切换)',
+        single: '普通单一启动'
+      };
+      toast(`应用拖拽策略已切换为：${modeNames[e.target.value] || e.target.value}`);
+    });
+  }
+
+  const autoSwitchBox = $('prefAutoSwitchPage');
+  if (autoSwitchBox) {
+    autoSwitchBox.checked = cfg.autoSwitchPage !== false;
+    autoSwitchBox.addEventListener('change', async (e) => {
+      cfg.autoSwitchPage = e.target.checked;
+      if (!DEMO) await saveConfig();
+      toast(e.target.checked ? '已开启前台应用感知自动切页' : '已关闭前台应用感知自动切页');
     });
   }
 
@@ -6862,7 +7118,7 @@ function bindShell() {
     $('lkmFontSize').oninput = (e) => {
       if (!currentLibModalSpec) return;
       currentLibModalSpec.fontSize = +e.target.value;
-      $('lkmFontSizeVal').textContent = e.target.value + 'px';
+      $('lkmFontSizeVal').textContent = e.target.value + '%';
       updateLkmSwatch();
     };
     $('lkmIconScale').oninput = (e) => {
@@ -6891,29 +7147,52 @@ function bindShell() {
     $('lkmToggleAction').onchange = (e) => {
       if (!currentLibModalSpec) return;
       currentLibModalSpec.toggleAction = e.target.checked;
-      if (currentLibModalSpec.toggleAction && !currentLibModalSpec.act2Target) {
-        currentLibModalSpec.act2Type = 'command';
-        currentLibModalSpec.act2Target = '';
+      if (currentLibModalSpec.toggleAction && !currentLibModalSpec.action2) {
+        let defaultKill = '';
+        if (currentLibModalSpec.target && currentLibModalSpec.type === 'app') {
+          const proc = currentLibModalSpec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+          if (proc) defaultKill = `taskkill /F /IM ${proc}.exe`;
+        }
+        currentLibModalSpec.action2 = {
+          type: 'command',
+          target: defaultKill,
+          args: '',
+        };
       }
       updateLkmDualUI();
     };
     $('lkmDualAct2Type').onchange = (e) => {
       if (!currentLibModalSpec) return;
-      currentLibModalSpec.act2Type = e.target.value;
+      if (!currentLibModalSpec.action2) currentLibModalSpec.action2 = { type: 'command', target: '', args: '' };
+      currentLibModalSpec.action2.type = e.target.value;
     };
     $('lkmDualAct2Target').oninput = (e) => {
       if (!currentLibModalSpec) return;
-      currentLibModalSpec.act2Target = e.target.value.trim();
+      if (!currentLibModalSpec.action2) currentLibModalSpec.action2 = { type: $('lkmDualAct2Type').value || 'command', target: '', args: '' };
+      currentLibModalSpec.action2.target = e.target.value.trim();
+      if (currentLibModalSpec.action2.type === 'hotkey') {
+        currentLibModalSpec.action2.hotkey = currentLibModalSpec.action2.target;
+      }
     };
     $('lkmSwapDualActionBtn').onclick = () => {
       if (!currentLibModalSpec) return;
-      const t1 = currentLibModalSpec.type, tgt1 = currentLibModalSpec.target, a1 = currentLibModalSpec.args;
-      currentLibModalSpec.type = currentLibModalSpec.act2Type || 'command';
-      currentLibModalSpec.target = currentLibModalSpec.act2Target || '';
-      currentLibModalSpec.args = currentLibModalSpec.act2Args || '';
-      currentLibModalSpec.act2Type = t1;
-      currentLibModalSpec.act2Target = tgt1;
-      currentLibModalSpec.act2Args = a1;
+      const s1 = {
+        type: currentLibModalSpec.type || 'app',
+        target: currentLibModalSpec.target || '',
+        args: currentLibModalSpec.args || '',
+        hotkey: currentLibModalSpec.hotkey || '',
+      };
+      const act2 = currentLibModalSpec.action2 || { type: 'command', target: '', args: '', hotkey: '' };
+      currentLibModalSpec.type = act2.type || 'command';
+      currentLibModalSpec.target = act2.target || '';
+      currentLibModalSpec.args = act2.args || '';
+      currentLibModalSpec.hotkey = act2.hotkey || (act2.type === 'hotkey' ? act2.target : '');
+      currentLibModalSpec.action2 = {
+        type: s1.type,
+        target: s1.target,
+        args: s1.args,
+        hotkey: s1.hotkey,
+      };
 
       const syncChk = $('lkmSwapSyncCheck');
       if (syncChk && syncChk.checked && currentLibModalSpec.badgeToggle) {
@@ -7048,10 +7327,14 @@ function bindShell() {
       renderLibrary();
       toast(`已从库中删除：「${name}」`);
     };
-    $('lkmTestBtn').onclick = () => {
+    $('lkmTestBtn').onclick = async () => {
       if (!currentLibModalSpec) return;
-      runAction(currentLibModalSpec);
-      toast(`已发送执行测试：「${$('lkmNameInput').value || '按键'}」`);
+      if (!DEMO && typeof api !== 'undefined' && api.actionRun) {
+        const res = await api.actionRun(currentLibModalSpec);
+        toast(res && res.ok ? `✅ 已测试执行：「${$('lkmNameInput').value || '按键'}」` : `执行失败：${(res && res.error) || '未知错误'}`);
+      } else {
+        toast(`已发送执行测试（预览模式）：「${$('lkmNameInput').value || '按键'}」`);
+      }
     };
   }
 
@@ -7261,14 +7544,17 @@ function bindDevice() {
     await api.setLogin(e.target.checked);
   });
 
-  $('reconnect').onclick = async () => { await api.deviceReconnect(); await repaintAll(); };
-  $('repaint').onclick = () => repaintAll();
+  $('reconnect').onclick = async () => { await api.deviceReconnect(); await repaintAll(true); };
+  $('repaint').onclick = () => repaintAll(true);
   $('sleep').onclick = () => api.deviceSleep();
-  $('wake').onclick = async () => { await api.deviceWake(); await repaintAll(); };
+  $('wake').onclick = async () => { await api.deviceWake(); await repaintAll(true); };
 
+  api.on('device:sleep-state', (payload) => {
+    isDeviceAsleep = !!(payload && payload.asleep);
+  });
   api.on('host:status', (s) => setStatus(s));
-  api.on('device:repaint', () => repaintAll());
-  api.on('device:repaint-strips', () => repaintStrips());
+  api.on('device:repaint', (opts) => { isDeviceAsleep = false; repaintAll(opts && opts.force); });
+  api.on('device:repaint-strips', () => { if (!isDeviceAsleep) repaintStrips(); });
   api.on('audio:state', (data) => updateVolumeState(data));
   api.on('toast', (t) => toast(t && t.message));
   api.on('key:flash', (k) => {
@@ -7433,7 +7719,7 @@ async function boot() {
 
   // 定期检测并刷新系统状态监控副屏（CPU / 内存 / 声学音量）
   setInterval(async () => {
-    if (DEMO || !cfg) return;
+    if (DEMO || !cfg || isDeviceAsleep) return;
     const strips = pageStrips();
     let hasSys = false;
     for (const row of [0, 1, 2]) {

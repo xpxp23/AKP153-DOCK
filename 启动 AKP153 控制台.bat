@@ -1,12 +1,13 @@
 @echo off
+chcp 65001 >nul
 set ELECTRON_RUN_AS_NODE=
 cd /d "%~dp0"
 
 tasklist /FI "IMAGENAME eq Companion.exe" 2>nul | find /I "Companion.exe" >nul
 if not errorlevel 1 (
   echo.
-  echo   [!] ¼ì²âµ½ Companion ÕıÔÚÔËĞĞ£¬Ëü»á¶ÀÕ¼ AKP153 µÄ USB Éè±¸¡£
-  echo       ÇëÏÈÔÚ Companion ÍĞÅÌÍ¼±êÉÏÓÒ¼ü ^-^> Quit£¬È»ºóÔÙÆô¶¯±¾¹¤¾ß¡£
+  echo   [!] æ£€æµ‹åˆ° Companion æ­£åœ¨è¿è¡Œï¼Œå®ƒä¼šç‹¬å  AKP153 çš„ USB è®¾å¤‡ã€‚
+  echo       è¯·å…ˆåœ¨ Companion æ‰˜ç›˜å›¾æ ‡ä¸Šå³é”® ^-^> Quitï¼Œç„¶åå†å¯åŠ¨æœ¬å·¥å…·ã€‚
   echo.
   pause
   exit /b 1
@@ -14,7 +15,7 @@ if not errorlevel 1 (
 
 if not exist "%~dp0node_modules\electron\dist\electron.exe" (
   echo.
-  echo   [!] Ã»ÕÒµ½ Electron¡£ÇëÔÚ±¾Ä¿Â¼Ö´ĞĞ£ºnpm install
+  echo   [!] æ²¡æ‰¾åˆ° Electronï¼Œè¯·åœ¨æœ¬ç›®å½•æ‰§è¡Œï¼šnpm install
   echo.
   pause
   exit /b 1

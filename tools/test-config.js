@@ -2,11 +2,12 @@
 //
 //   npm run test:config
 //
-// 重点守住两件事：
+// 重点守住：
 //   1. v1 扁平配置能迁移成页面树，按键一个不丢
 //   2. changedOnDisk() 必须能分清「我们自己写的」和「外部改的」
-//      —— 这条曾经写错（用时间窗猜），导致每次用户操作后 4 秒必然误报一次
-//      "配置已从文件重新导入"，并全屏重画把按键卡住几秒。
+//   3. 旧版 Key Studio 扁平双态字段 (act2Type/act2Target) 自动迁移为标准 action2 对象
+//   4. 旧版 library 中的整页快照 (kind:'page') 自动解耦迁移至 pageSnapshots
+//   5. CLI 支持 volume、auto-app、整板渐变与快照管理
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -25,7 +26,6 @@ function check(name, cond, extra) {
   put(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '   ' + extra : ''}`);
 }
 
-// 用一个全新的 config.js 实例（每次 require 都要清缓存）
 function freshModule() {
   delete require.cache[require.resolve('../src/main/config.js')];
   return require('../src/main/config.js');
@@ -39,12 +39,15 @@ const V1 = {
   sleepMode: 'nobright',
   openAtLogin: true,
   buttons: {
-    '0,0': { type: 'app', label: '记事本', target: 'C:\\Windows\\notepad.exe', args: '', icon: '', color: '#1565c0' },
+    '0,0': { type: 'app', label: '记事本', target: 'C:\\Windows\\notepad.exe', args: '', icon: '', color: '#1565c0', toggleAction: true, act2Type: 'command', act2Target: 'taskkill /F /IM notepad.exe' },
     '1,1': { type: 'folder', label: '下载', target: 'D:\\Downloads', args: '', icon: '', color: '#ef6c00' },
     '2,4': { type: 'url', label: 'B站', target: 'https://bilibili.com', args: '', icon: '', color: '#0277bd' },
   },
   strips: { '0': { type: 'clock', label: '', color: '#263238' } },
-  library: [{ id: 'L1', name: '旧条目', spec: { type: 'app', label: 'x', target: 'C:\\x.exe' } }],
+  library: [
+    { id: 'L1', name: '旧条目', spec: { type: 'app', label: 'x', target: 'C:\\x.exe', toggleAction: true, act2Type: 'hotkey', act2Target: 'Alt+F4' } },
+    { id: 'L_page1', name: '旧版整页', kind: 'page', page: { buttons: { '0,0': { type: 'url', target: 'https://example.com' } }, strips: {} } },
+  ],
 };
 fs.writeFileSync(FILE, JSON.stringify(V1, null, 2), 'utf8');
 
@@ -57,6 +60,12 @@ check('迁移后顶层 buttons 已移除', cfg.buttons === undefined && cfg.stri
 check('迁移保留原设置', cfg.brightness === 65 && cfg.sleepMode === 'nobright');
 check('currentPage 指向第一页', cfg.currentPage === cfg.pages[0].id);
 check('库里没有 tags 的旧条目补成空数组', Array.isArray(cfg.library[0].tags));
+check('页面按键的旧版 act2Type/act2Target 自动迁移为标准 action2 对象',
+  cfg.pages[0].buttons['0,0'].action2 && cfg.pages[0].buttons['0,0'].action2.target === 'taskkill /F /IM notepad.exe' && cfg.pages[0].buttons['0,0'].act2Target === undefined);
+check('按键库条目的旧版 act2Type/act2Target 自动迁移为标准 action2 对象',
+  cfg.library[0].spec.action2 && cfg.library[0].spec.action2.type === 'hotkey' && cfg.library[0].spec.action2.target === 'Alt+F4');
+check('旧版 library 中的整页快照自动解耦迁移至 pageSnapshots',
+  cfg.library.length === 1 && Array.isArray(cfg.pageSnapshots) && cfg.pageSnapshots.length === 1 && cfg.pageSnapshots[0].name === '旧版整页');
 check('老配置里的 page 动作会补默认 mode',
   (() => {
     const c = config.load();
@@ -72,7 +81,6 @@ cfg = config.load();
 config.save(cfg);
 check('自己 save() 之后 changedOnDisk() 为 false', config.changedOnDisk() === false);
 
-// 模拟外部改动（例如 Agent 跑 config-cli）
 const ext = JSON.parse(fs.readFileSync(FILE, 'utf8'));
 ext.pages[0].name = '被外部改过的名字';
 fs.writeFileSync(FILE, JSON.stringify(ext, null, 2), 'utf8');
@@ -83,16 +91,14 @@ const reloaded = config.load();
 check('重载后拿到外部改动', reloaded.pages[0].name === '被外部改过的名字');
 check('重载之后 changedOnDisk() 回到 false', config.changedOnDisk() === false);
 
-// 外部原样重写（内容没变）不该被当成改动
 const same = fs.readFileSync(FILE, 'utf8');
 fs.writeFileSync(FILE, same, 'utf8');
 check('外部原样重写 -> 仍然 false（不触发无意义重画）', config.changedOnDisk() === false);
 
-// 时间窗守卫的老 bug 回归：save 之后等一会儿再检查，仍然必须是 false
 config.save(config.load());
 const t0 = Date.now();
 while (Date.now() - t0 < 1200) { /* 故意等过原来的 900ms 时间窗 */ }
-check('save 之后等 1.2 秒，changedOnDisk() 仍为 false（旧的时间窗守卫会在这里误报）',
+check('save 之后等 1.2 秒，changedOnDisk() 仍为 false',
   config.changedOnDisk() === false);
 
 // -------------------------------------------------- 3) 页面树上/下层级 ----
@@ -113,17 +119,35 @@ check('childPages 找出子页', config.childPages(p1.id).length === 1);
 check('save 是原子写（不留 .tmp）', !fs.existsSync(FILE + '.tmp'));
 const json = JSON.parse(fs.readFileSync(FILE, 'utf8'));
 check('落盘的是 v2 结构', json.version === 2 && Array.isArray(json.pages));
-check('页面自动补全整板渐变默认值', json.pages[0].gradient && json.pages[0].gradient.enabled === false);
+check('页面自动补全整板渐变默认值与 autoApp 字段',
+  json.pages[0].gradient && json.pages[0].gradient.enabled === false && typeof json.pages[0].autoApp === 'string');
 
-// -------------------------------------------------- 5) set-gradient CLI ---
+// -------------------------------------------------- 5) CLI 回归测试 ---
 const cli = path.join(__dirname, 'config-cli.js');
-const ret = spawnSync(process.execPath, [cli, 'set-gradient', '--from', '#112233', '--to', '#445566', '--angle', '90'], {
+const runCli = (args) => spawnSync(process.execPath, [cli, ...args], {
   env: Object.assign({}, process.env, { AKP153_CONFIG: FILE }),
   encoding: 'utf8',
 });
-const updated = freshModule().load();
+
+runCli(['set-gradient', '--from', '#112233', '--to', '#445566', '--angle', '90', '--auto-app', 'Code.exe']);
+let updated = freshModule().load();
 const g = updated.pages[0].gradient;
-check('cli set-gradient 正常落盘', g && g.enabled === true && g.from === '#112233' && g.to === '#445566' && g.angle === 90);
+check('cli set-gradient 与 --auto-app 正常落盘',
+  g && g.enabled === true && g.from === '#112233' && g.to === '#445566' && g.angle === 90 && updated.pages[0].autoApp === 'Code.exe');
+
+runCli(['set', 'r1c2', '--type', 'volume', '--action', 'up', '--step', '8']);
+updated = freshModule().load();
+const volBtn = updated.pages[0].buttons['1,2'];
+check('cli 支持配置 volume 音量按键', volBtn && volBtn.type === 'volume' && volBtn.action === 'up' && volBtn.step === 8);
+
+runCli(['strip', '2', '--type', 'volume']);
+updated = freshModule().load();
+check('cli 支持配置 volume 声学监听副屏', updated.pages[0].strips['2'].type === 'volume');
+
+runCli(['lib-page', '被外部改过的名字', '--name', 'CLI测试快照']);
+updated = freshModule().load();
+check('cli lib-page 写入独立 pageSnapshots 数组',
+  updated.pageSnapshots.some((s) => s.name === 'CLI测试快照'));
 
 // ------------------------------------------------------------- 收尾 ------
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
