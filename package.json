@@ -19,7 +19,8 @@
     "cfg": "node tools/config-cli.js",
     "test:config": "node tools/test-config.js",
     "test:sleep": "node tools/test-sleep.js",
-    "build:portable": "node tools/build-portable.js"
+    "build:portable": "node tools/build-portable.js",
+    "release": "node tools/publish-release.js"
   },
   "dependencies": {
     "jpeg-js": "^0.4.4",
