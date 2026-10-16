@@ -3,7 +3,7 @@
  * AKP153 二维码智能解码引擎
  * 支持：剪贴板优先秒解 -> 交互式半透明屏幕框选 -> 全屏扫描 -> 自动回写剪贴板并触发硬件反馈
  */
-const { clipboard, desktopCapturer, screen, BrowserWindow, ipcMain } = require('electron');
+const { clipboard, desktopCapturer, screen, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const jsQR = require('jsqr');
 
@@ -102,10 +102,10 @@ async function interactiveSnip() {
     const onSelected = (e, { x, y, width, height }) => {
       if (!fullScreenshot) return finish(null);
       try {
-        const cropX = Math.max(0, Math.round(x * scale));
-        const cropY = Math.max(0, Math.round(y * scale));
-        const cropW = Math.min(captureW - cropX, Math.round(width * scale));
-        const cropH = Math.min(captureH - cropY, Math.round(height * scale));
+        const cropX = Math.max(0, Math.min(captureW - 1, Math.round(x * scale)));
+        const cropY = Math.max(0, Math.min(captureH - 1, Math.round(y * scale)));
+        const cropW = Math.max(1, Math.min(captureW - cropX, Math.round(width * scale)));
+        const cropH = Math.max(1, Math.min(captureH - cropY, Math.round(height * scale)));
         const cropped = fullScreenshot.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
         const text = decodeNativeImage(cropped);
         finish(text);
@@ -157,10 +157,16 @@ async function interactiveSnip() {
 
 function playBeep(success) {
   try {
+    if (success && shell && typeof shell.beep === 'function') {
+      shell.beep();
+      return;
+    }
     const snd = success ? '[System.Media.SystemSounds]::Beep.Play()' : '[System.Media.SystemSounds]::Asterisk.Play()';
-    require('child_process').spawn('powershell.exe',
+    const child = require('child_process').spawn('powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', snd],
-      { windowsHide: true });
+      { windowsHide: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
   } catch (_) {}
 }
 

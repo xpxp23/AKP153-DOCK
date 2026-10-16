@@ -101,7 +101,7 @@
                 <option value="light">仅调低亮度（保留显存画面）</option>
               </select>
             </label>
-            <div class="card-hint muted">💡 休眠时按任意键即可唤醒并点亮屏幕；自动具备 100ms 防误触唤醒保护。</div>
+            <div class="card-hint muted">💡 休眠时按任意键即可唤醒并点亮屏幕；自动具备防误触唤醒保护。</div>
           </div>
 
           <div class="settings-card">
@@ -222,7 +222,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.5.1 (独立便携免安装版)</span>
+                <span class="about-v">v0.6.0 (独立便携免安装版)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -391,6 +391,7 @@
               <option value="url">在浏览器中打开网址</option>
               <option value="hotkey">模拟系统快捷键组合</option>
               <option value="volume">🔊 音频与音量控制 (WASAPI)</option>
+              <option value="media">⏯️ 多媒体播放控制</option>
               <option value="command">执行控制台命令行 (cmd)</option>
               <option value="ps1">执行 PowerShell 脚本</option>
               <option value="page">页面跳转切换</option>
@@ -406,6 +407,29 @@
               <button type="button" id="lkmPickAppBtn" class="ghost tiny" title="选择本地可执行程序">浏览…</button>
               <button type="button" id="lkmFaviconBtn" class="ghost tiny" title="从网址抓取高清网站图标" hidden>抓图标</button>
             </div>
+          </div>
+          <div id="lkmVolumeWrap" class="lkm-form-row" hidden>
+            <label class="lkm-label">音量控制动作与步长</label>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <select id="lkmVolAction" class="lkm-select" style="flex:1;">
+                <option value="up">🔊 增大音量 (+)</option>
+                <option value="down">🔉 减小音量 (-)</option>
+                <option value="mute">🔇 静音切换</option>
+                <option value="set">🎚️ 设为指定音量 (%)</option>
+                <option value="switch_device">🎧 切换输出声卡</option>
+              </select>
+              <input id="lkmVolStep" type="number" min="1" max="100" value="5" class="lkm-input" style="width:76px;" title="步长或目标音量百分比" />
+            </div>
+          </div>
+          <div id="lkmPageWrap" class="lkm-form-row" hidden>
+            <label class="lkm-label">切页模式</label>
+            <select id="lkmPageMode" class="lkm-select">
+              <option value="next">⏭️ 下一页</option>
+              <option value="prev">⏮️ 上一页</option>
+              <option value="up">⤴️ 返回上级</option>
+              <option value="home">🏠 回到主页面</option>
+              <option value="goto">🎯 跳到指定页</option>
+            </select>
           </div>
           <div id="lkmArgsWrap" class="lkm-form-row">
             <label class="lkm-label">启动参数 / 命令行参数 (可选)</label>
@@ -512,11 +536,15 @@
               <div class="lkm-subcard">
                 <span class="lkm-subcard-title">形态 2 执行动作</span>
                 <div style="display:flex; gap:6px; margin-top:4px;">
-                  <select id="lkmDualAct2Type" class="lkm-select" style="width:100px;">
+                  <select id="lkmDualAct2Type" class="lkm-select" style="width:110px;">
                     <option value="command">命令行</option>
                     <option value="app">应用程序</option>
                     <option value="hotkey">快捷键</option>
                     <option value="url">网址</option>
+                    <option value="volume">音量控制</option>
+                    <option value="media">多媒体</option>
+                    <option value="ps1">PS1 脚本</option>
+                    <option value="folder">文件夹</option>
                   </select>
                   <input id="lkmDualAct2Target" class="lkm-input" style="flex:1;" placeholder="形态 2 目标" />
                 </div>

@@ -13,8 +13,11 @@ let currentCustomSubCategory = '全部';
 let ipContextTarget = null;
 const DEFAULT_CUSTOM_CATEGORIES = ['全部', '常用', '办公开发', '游戏娱乐', '影音多媒体', '系统工具'];
 const iconCache = new Map();
+const MAX_ICON_CACHE = 200;
 const activeLoopKeyIds = new Set();
 let isDeviceAsleep = false;
+let repaintGen = 0;
+let lastSysStats = { cpu: 0, mem: 0, memUsedGb: '' };
 
 if (typeof api !== 'undefined' && api.on) {
   api.on('macro:loopState', (payload) => {
@@ -226,10 +229,22 @@ function drawBase(ctx, size, spec) {
 }
 
 async function loadImage(src) {
-  if (iconCache.has(src)) return iconCache.get(src);
+  if (iconCache.has(src)) {
+    const cached = iconCache.get(src);
+    iconCache.delete(src);
+    iconCache.set(src, cached);
+    return cached;
+  }
   return new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => { iconCache.set(src, img); resolve(img); };
+    img.onload = () => {
+      if (iconCache.size >= MAX_ICON_CACHE) {
+        const oldestKey = iconCache.keys().next().value;
+        if (oldestKey !== undefined) iconCache.delete(oldestKey);
+      }
+      iconCache.set(src, img);
+      resolve(img);
+    };
     img.onerror = () => resolve(null);
     img.src = src;
   });
@@ -383,9 +398,10 @@ async function updateVolumeState(state) {
   // 1. 同步刷新副屏声学监听表 (80x80 Strip)
   if (cfg && !DEMO) {
     const strips = pageStrips();
+    const preStats = { volume: lastAudioState.volume, isMute: lastAudioState.isMute };
     for (let row = 0; row < ROWS; row++) {
       const s = strips[String(row)];
-      if (s && s.type === 'volume') await pushStrip(row);
+      if (s && s.type === 'volume') await pushStrip(row, false, preStats);
     }
     // 2. 同步刷新主按键硬件屏幕（实时微标/静音态）
     const buttons = pageButtons();
@@ -505,7 +521,7 @@ async function paintKey(spec, size, keyPos) {
 
   let iconTop = size * 0.07;
   if (!label) iconTop = (size - iconBox) / 2;
-  else if (pos === 'top') iconTop = size * 0.08 + fs * 1.25;
+  else if (pos === 'top') iconTop = Math.min(size - iconBox - size * 0.06, size * 0.14 + fs * 1.35);
   else if (pos === 'center') iconTop = size * 0.03;
 
   if (spec.icon) {
@@ -606,7 +622,7 @@ async function paintKey(spec, size, keyPos) {
     const lh = fittedFs * 1.15;
     if (pos === 'top') {
       ctx.textBaseline = 'top';
-      lines.forEach((ln, i) => ctx.fillText(ln, size / 2, size * 0.08 + (i + 1) * lh));
+      lines.forEach((ln, i) => ctx.fillText(ln, size / 2, size * 0.08 + i * lh));
     } else if (pos === 'center') {
       ctx.textBaseline = 'middle';
       const total = lines.length * lh;
@@ -923,7 +939,7 @@ function paintMetricStrip(spec, size, row, mode, stats) {
   return c;
 }
 
-async function pushStrip(row, force = false) {
+async function pushStrip(row, force = false, preStats = null) {
   if (!cfg || DEMO) return;
   const spec = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const size = 80;
@@ -934,23 +950,31 @@ async function pushStrip(row, force = false) {
     let vol = lastAudioState ? lastAudioState.volume : 50;
     let isMute = lastAudioState ? lastAudioState.isMute : false;
     try {
-      const stats = await api.systemStats();
-      if (stats && stats.volume !== undefined) {
-        vol = stats.volume;
-        isMute = !!stats.isMute;
-        lastAudioState.volume = vol;
-        lastAudioState.isMute = isMute;
+      const stats = preStats || await api.systemStats();
+      if (stats) {
+        lastSysStats = Object.assign({}, lastSysStats, stats);
+        if (stats.volume !== undefined) {
+          vol = stats.volume;
+          isMute = !!stats.isMute;
+          lastAudioState.volume = vol;
+          lastAudioState.isMute = isMute;
+        }
       }
     } catch (_) {}
     c = paintVolumeStrip(s, size, row, vol, isMute);
   } else if (s.type === 'clock') {
     c = paintClockStrip(s, size, row);
   } else if (s.type === 'cpu' || s.type === 'mem' || s.type === 'sys') {
-    let stats = { cpu: 0, mem: 0, memUsedGb: '' };
-    try {
-      const st = await api.systemStats();
-      if (st) stats = st;
-    } catch (_) {}
+    let stats = preStats || lastSysStats || { cpu: 0, mem: 0, memUsedGb: '' };
+    if (!preStats) {
+      try {
+        const st = await api.systemStats();
+        if (st) {
+          stats = st;
+          lastSysStats = Object.assign({}, lastSysStats, st);
+        }
+      } catch (_) {}
+    }
     c = paintMetricStrip(s, size, row, s.type, stats);
   } else {
     if (s.type === 'page') {
@@ -964,15 +988,53 @@ async function pushStrip(row, force = false) {
   await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1], force: !!force });
 }
 
-async function repaintAllKeys(force = false) {
+async function repaintAllKeys(force = false, gen = null) {
+  if (!cfg || DEMO) return;
+  const myGen = gen !== null ? gen : ++repaintGen;
+  const rotMode = $('rotate') ? $('rotate').value : 'cw';
+  const blank = { color: '#20262e', label: '' };
+  const jobs = [];
   for (let row = 0; row < ROWS; row++) {
-    for (let col = 0; col < KEY_COLS; col++) await pushKey(row, col, force);
+    for (let col = 0; col < KEY_COLS; col++) {
+      const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
+      jobs.push(
+        paintKey(spec || blank, 96, { row, col }).then((c) => {
+          const rotated = rotateCanvas(c, rotMode);
+          const dataUrl = toJpegUnder(rotated, 10240);
+          return { row, col, data: dataUrl.split(',')[1], force: !!force };
+        })
+      );
+    }
+  }
+  const items = await Promise.all(jobs);
+  if (myGen !== repaintGen) return;
+  for (const item of items) {
+    if (myGen !== repaintGen) return;
+    await api.deviceDraw(item);
   }
 }
 
 async function repaintAll(force = false) {
-  await repaintAllKeys(force);
-  for (let row = 0; row < ROWS; row++) await pushStrip(row, force);
+  if (!cfg || DEMO) return;
+  const myGen = ++repaintGen;
+  await repaintAllKeys(force, myGen);
+  if (myGen !== repaintGen) return;
+  let sharedStats = null;
+  const strips = pageStrips();
+  const needsStats = [0, 1, 2].some((r) => {
+    const st = strips[String(r)];
+    return st && ['cpu', 'mem', 'sys', 'volume'].includes(st.type);
+  });
+  if (needsStats && api.systemStats) {
+    try {
+      sharedStats = await api.systemStats();
+      if (sharedStats) lastSysStats = Object.assign({}, lastSysStats, sharedStats);
+    } catch (_) {}
+  }
+  for (let row = 0; row < ROWS; row++) {
+    if (myGen !== repaintGen) return;
+    await pushStrip(row, force, sharedStats);
+  }
 }
 
 /** Pressing an unconfigured key: flash "未配置" on that key of the device. */
@@ -1134,8 +1196,10 @@ async function handleDrop(row, col, e) {
 
   if (fromLib) {
     if (col === 5) { toast('显示屏不能放按键'); return; }
+    if (isBackCell(row, col)) { toast('子页自动返回键不可覆盖'); return; }
     const entry = (cfg.library || []).find((x) => x.id === fromLib);
     if (!entry) return;
+    await stopKeyMacroIfNeeded(row, col);
     pageButtons()[row + ',' + col] = clone(entry.spec);
     await saveConfig();
     select(row, col);
@@ -1167,6 +1231,95 @@ async function swapCells(a, b) {
   await pushKey(b.row, b.col);
 }
 
+function renderStripCellContent(cell, row, page, grad) {
+  const s = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
+  const cpuVal = Math.max(0, Math.min(100, Number(lastSysStats && lastSysStats.cpu) || 0));
+  const memVal = Math.max(0, Math.min(100, Number(lastSysStats && lastSysStats.mem) || 0));
+  const volVal = lastAudioState ? lastAudioState.volume : 50;
+  const isMute = !!(lastAudioState && lastAudioState.isMute);
+
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const txt = s.type === 'clock' ? `时钟 ${hhmm}`
+    : s.type === 'page' ? pageStripLabel().replace('\n', ' · ')
+    : s.type === 'cpu' ? `CPU ${cpuVal}%`
+    : s.type === 'mem' ? `内存 ${memVal}%`
+    : s.type === 'sys' ? `CPU ${cpuVal}% · 内存 ${memVal}%`
+    : s.type === 'volume' ? (isMute ? '🔇 已静音' : `🔊 音量 ${volVal}%`)
+    : (s.label || '（空）');
+  const gl = s.type === 'cpu' ? '💻'
+    : s.type === 'mem' ? '📊'
+    : s.type === 'sys' ? '📈'
+    : s.type === 'clock' ? '⏰'
+    : s.type === 'volume' ? (isMute ? '🔇' : '🔊')
+    : '▢';
+
+  cell.classList.add('display');
+  cell.classList.remove('filled', 'pos-top', 'pos-center');
+
+  const isStripGrad = grad && grad.enabled && !s.customColor;
+  cell.classList.toggle('grad-cell', !!isStripGrad);
+
+  if (isStripGrad) {
+    cell.style.backgroundImage = `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`;
+    cell.style.backgroundSize = '600% 300%';
+    cell.style.backgroundPosition = `${5 * 20}% ${row * 50}%`;
+    cell.style.backgroundColor = '';
+    cell.style.color = sampleGradientContrast(grad, row, 5);
+  } else {
+    cell.style.backgroundImage = '';
+    cell.style.backgroundSize = '';
+    cell.style.backgroundPosition = '';
+    cell.style.background = s.color || '#263238';
+    cell.style.color = contrast(s.color);
+  }
+
+  cell.appendChild(el('span', 'glyph', gl));
+  const capEl = el('span', 'cap', String(txt).replace(/\n/g, '/'));
+  if (s.fontSize) {
+    const fsPx = Math.max(9, Math.min(20, Math.round(76 * (Number(s.fontSize) / 100) * 0.65)));
+    capEl.style.fontSize = `${fsPx}px`;
+  }
+  cell.appendChild(capEl);
+  cell.appendChild(el('span', 'badge', `屏 ${row + 1}`));
+
+  if (['cpu', 'mem', 'sys', 'volume'].includes(s.type)) {
+    const meter = document.createElement('div');
+    meter.className = 'strip-meter';
+    const fill = document.createElement('div');
+    fill.className = 'strip-meter-fill';
+    let pct = 0;
+    if (s.type === 'cpu') pct = cpuVal;
+    else if (s.type === 'mem') pct = memVal;
+    else if (s.type === 'sys') pct = Math.round((cpuVal + memVal) / 2);
+    else if (s.type === 'volume') pct = isMute ? 0 : volVal;
+    fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    if (s.type === 'volume' && isMute) {
+      fill.style.background = '#ff5252';
+    } else if (pct >= 85) {
+      fill.style.background = 'linear-gradient(90deg, #ff9800, #ff5252)';
+    }
+    meter.appendChild(fill);
+    cell.appendChild(meter);
+  }
+}
+
+function refreshStripCells(stats) {
+  if (stats) lastSysStats = Object.assign({}, lastSysStats, stats);
+  const page = curPage();
+  const grad = page.gradient;
+  document.querySelectorAll('#grid .cell.display').forEach((cell) => {
+    const row = +cell.dataset.row;
+    const isSel = !!selected && selected.row === row && selected.col === 5;
+    cell.classList.toggle('selected', isSel);
+    cell.innerHTML = '';
+    cell.style.background = '';
+    cell.style.color = '';
+    renderStripCellContent(cell, row, page, grad);
+  });
+}
+
 function refreshGrid() {
   const page = curPage();
   const grad = page.gradient;
@@ -1181,50 +1334,13 @@ function refreshGrid() {
 
     // 副屏 (Col 5)
     if (col === 5) {
-      const s = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
-      const txt = s.type === 'clock' ? '时钟'
-        : s.type === 'page' ? pageStripLabel().replace('\n', ' · ')
-        : s.type === 'cpu' ? '💻 CPU 监控'
-        : s.type === 'mem' ? '📊 内存监控'
-        : s.type === 'sys' ? '📈 态势仪表'
-        : s.type === 'volume' ? (lastAudioState && lastAudioState.isMute ? '🔇 已静音' : `🔊 音量 ${lastAudioState ? lastAudioState.volume : 50}%`)
-        : (s.label || '（空）');
-      const gl = s.type === 'cpu' ? '💻'
-        : s.type === 'mem' ? '📊'
-        : s.type === 'sys' ? '📈'
-        : s.type === 'clock' ? '⏰'
-        : s.type === 'volume' ? (lastAudioState && lastAudioState.isMute ? '🔇' : '🔊')
-        : '▢';
-      cell.classList.add('display');
-      cell.classList.remove('filled');
-
-      // 若整板渐变开启且未自定义单色，无缝切片第 6 列
-      const isStripGrad = grad && grad.enabled && !s.customColor;
-      cell.classList.toggle('grad-cell', !!isStripGrad);
-
-      if (isStripGrad) {
-        cell.style.backgroundImage = `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`;
-        cell.style.backgroundSize = '600% 300%';
-        cell.style.backgroundPosition = `${col * 20}% ${row * 50}%`;
-        cell.style.backgroundColor = '';
-        cell.style.color = sampleGradientContrast(grad, row, col);
-      } else {
-        cell.style.backgroundImage = '';
-        cell.style.backgroundSize = '';
-        cell.style.backgroundPosition = '';
-        cell.style.background = s.color || '#263238';
-        cell.style.color = contrast(s.color);
-      }
-
-      cell.appendChild(el('span', 'glyph', gl));
-      cell.appendChild(el('span', 'cap', String(txt).replace(/\n/g, '/')));
-      cell.appendChild(el('span', 'badge', `屏 ${row + 1}`));
+      renderStripCellContent(cell, row, page, grad);
       return;
     }
 
     // 子页自动返回键
     if (isBackCell(row, col)) {
-      cell.classList.remove('filled');
+      cell.classList.remove('filled', 'pos-top', 'pos-center');
       cell.classList.add('back');
       cell.style.background = '#37474f';
       cell.style.color = '#ffffff';
@@ -1240,6 +1356,9 @@ function refreshGrid() {
 
     cell.classList.toggle('filled', !!spec);
     cell.classList.toggle('grad-cell', !!isGrad);
+    const pos = (spec && spec.labelPos) || 'bottom';
+    cell.classList.toggle('pos-top', !!spec && pos === 'top');
+    cell.classList.toggle('pos-center', !!spec && pos === 'center');
 
     if (isGrad) {
       cell.style.backgroundImage = `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`;
@@ -1273,14 +1392,23 @@ function refreshGrid() {
       cell.style.color = contrast(spec.color);
     }
 
-    // 图标或默认类型字形
+    const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
+    const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
+
+    // 图标或默认类型字形 (支持实时 WYSIWYG 缩放预览)
     if (spec.icon) {
       const img = document.createElement('img');
       img.className = 'thumb';
       img.src = spec.icon;
+      const thumbPx = Math.max(20, Math.min(76, Math.round(78 * (iconScalePct / 100))));
+      img.style.width = `${thumbPx}px`;
+      img.style.height = `${thumbPx}px`;
       cell.appendChild(img);
     } else {
-      cell.appendChild(el('span', 'glyph', glyphFor(spec.type)));
+      const glSpan = el('span', 'glyph', glyphFor(spec.type));
+      const glPx = Math.max(14, Math.min(44, Math.round(24 * (iconScalePct / 62))));
+      glSpan.style.fontSize = `${glPx}px`;
+      cell.appendChild(glSpan);
     }
 
     // 角标微标 (Badge Overlay，静态或动态双态)
@@ -1305,7 +1433,11 @@ function refreshGrid() {
       cell.appendChild(runTag);
     }
 
-    cell.appendChild(el('span', 'cap', spec.label || ''));
+    const capEl = el('span', 'cap', spec.label || '');
+    const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
+    capEl.style.fontSize = `${capPx}px`;
+    if (!spec.label) capEl.style.display = 'none';
+    cell.appendChild(capEl);
     cell.appendChild(el('span', 'tag', `r${row}c${col}`));
     if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
 
@@ -1399,6 +1531,7 @@ async function onDrop(row, col, e) {
     applyAppDualStateDefaults(spec, cls, abs);
   }
 
+  await stopKeyMacroIfNeeded(row, col);
   pageButtons()[row + ',' + col] = spec;
   await saveConfig();
   select(row, col);
@@ -1548,7 +1681,30 @@ function askConfirm(title, body) {
   });
 }
 
+async function stopKeyMacroIfNeeded(row, col, pageId) {
+  const pid = pageId || (curPage() && curPage().id);
+  const k1 = `${row},${col}`;
+  const k2 = pid ? `${pid}:${row},${col}` : k1;
+  activeLoopKeyIds.delete(k1);
+  activeLoopKeyIds.delete(k2);
+  if (!DEMO && typeof api !== 'undefined' && api.macroStopKey) {
+    try { await api.macroStopKey(pid, row, col); } catch (_) {}
+  }
+}
+
+async function stopPageMacrosIfNeeded(pageId) {
+  const pid = pageId || (curPage() && curPage().id);
+  if (!pid) return;
+  for (const k of Array.from(activeLoopKeyIds)) {
+    if (k.startsWith(`${pid}:`)) activeLoopKeyIds.delete(k);
+  }
+  if (!DEMO && typeof api !== 'undefined' && api.macroStopPage) {
+    try { await api.macroStopPage(pid); } catch (_) {}
+  }
+}
+
 async function removeKey(row, col) {
+  await stopKeyMacroIfNeeded(row, col);
   delete pageButtons()[row + ',' + col];
   await saveConfig();
   if (selected && selected.row === row && selected.col === col) selected = null;
@@ -1577,7 +1733,7 @@ function saveConfig() {
   return api.configSave(cfg);
 }
 
-async function commit(repaint) {
+function syncSelectedToggleBadge() {
   if (selected && selected.col !== 5) {
     const s = pageButtons()[selected.row + ',' + selected.col];
     if (s && s.badgeToggle) {
@@ -1589,8 +1745,32 @@ async function commit(repaint) {
       }
     }
   }
-  await saveConfig();
+}
+
+let _debouncedSaveTimer = null;
+let _debouncedRepaintTimer = null;
+
+function scheduleDebouncedCommit(repaint = true) {
+  syncSelectedToggleBadge();
   refreshGrid();
+  clearTimeout(_debouncedSaveTimer);
+  _debouncedSaveTimer = setTimeout(() => {
+    saveConfig();
+  }, 220);
+  if (repaint) {
+    clearTimeout(_debouncedRepaintTimer);
+    _debouncedRepaintTimer = setTimeout(() => {
+      repaintSelected();
+    }, 120);
+  }
+}
+
+async function commit(repaint) {
+  clearTimeout(_debouncedSaveTimer);
+  clearTimeout(_debouncedRepaintTimer);
+  syncSelectedToggleBadge();
+  refreshGrid();
+  await saveConfig();
   if (repaint) await repaintSelected();
 }
 
@@ -2748,6 +2928,52 @@ function wireVolumeEditor(box, spec) {
 
 let lastSwapSyncBadges = false;
 
+const ACTION_PAYLOAD_KEYS = ['type', 'target', 'args', 'hotkey', 'action', 'step', 'cmd', 'mode', 'pageId', 'actions', 'loop'];
+
+function extractActionPayload(src) {
+  if (!src) return { type: 'command', target: '', args: '', hotkey: '' };
+  const out = {
+    type: src.type || 'app',
+    target: src.target || '',
+    args: src.args || '',
+    hotkey: src.hotkey || (src.type === 'hotkey' ? (src.target || '') : ''),
+  };
+  if (src.action !== undefined) out.action = src.action;
+  if (src.step !== undefined) out.step = src.step;
+  if (src.cmd !== undefined) out.cmd = src.cmd;
+  if (src.mode !== undefined) out.mode = src.mode;
+  if (src.pageId !== undefined) out.pageId = src.pageId;
+  if (Array.isArray(src.actions)) out.actions = clone(src.actions);
+  if (src.loop) out.loop = clone(src.loop);
+  return out;
+}
+
+function applyActionPayload(dst, payload) {
+  if (!dst || !payload) return dst;
+  for (const k of ACTION_PAYLOAD_KEYS) {
+    delete dst[k];
+  }
+  dst.type = payload.type || 'app';
+  dst.target = payload.target || '';
+  dst.args = payload.args || '';
+  if (payload.hotkey) dst.hotkey = payload.hotkey;
+  if (payload.action !== undefined) dst.action = payload.action;
+  if (payload.step !== undefined) dst.step = payload.step;
+  if (payload.cmd !== undefined) dst.cmd = payload.cmd;
+  if (payload.mode !== undefined) dst.mode = payload.mode;
+  if (payload.pageId !== undefined) dst.pageId = payload.pageId;
+  if (Array.isArray(payload.actions)) dst.actions = clone(payload.actions);
+  if (payload.loop) dst.loop = clone(payload.loop);
+  return dst;
+}
+
+function isActionConfigured(act) {
+  if (!act || !act.type) return false;
+  if (['volume', 'audio', 'media', 'page', 'qr_decode', 'qr'].includes(act.type)) return true;
+  if ((act.type === 'multi' || act.type === 'macro') && Array.isArray(act.actions) && act.actions.length > 0) return true;
+  return !!(act.target || act.hotkey);
+}
+
 function renderInspector() {
   stopCurrentHkRecorder(null);
   const box = $('inspector');
@@ -2786,20 +3012,16 @@ function renderInspector() {
   if (!spec) {
     if (inspTabs) inspTabs.hidden = true;
     box.className = 'inspector empty';
-    box.innerHTML = `<p class="muted">r${selected.row}c${selected.col} 还是空的 —— 拖个文件进来，或者：</p>
-      <div class="btnrow">
-        <button class="ghost" id="i-pickapp">选择程序 / 文件…</button>
-        <button class="ghost" id="i-pickdir">选择文件夹…</button>
-      </div>
-      <div class="btnrow">
-        <button class="ghost" id="i-quickurl">填网址…</button>
-        <button class="ghost" id="i-quickcmd">填命令…</button>
-      </div>
-      <div class="btnrow">
+    box.innerHTML = `<p class="muted">r${selected.row}c${selected.col} 还是空的 —— 拖入文件/快捷方式，或一键选择动作类型：</p>
+      <div class="quick-switch-grid">
+        <button class="ghost" id="i-pickapp">🚀 选择程序…</button>
+        <button class="ghost" id="i-pickdir">📁 选择文件夹…</button>
+        <button class="ghost" id="i-quickurl">🌐 填网址…</button>
+        <button class="ghost" id="i-quickcmd">⌘ 填命令…</button>
         <button class="ghost" id="i-quickmacro">🎛️ 设为复合宏…</button>
-        <button class="ghost" id="i-quickhotkey">设为快捷键…</button>
+        <button class="ghost" id="i-quickhotkey">⌨️ 设为快捷键…</button>
         <button class="ghost" id="i-quickvol">🔊 设为音量…</button>
-        <button class="ghost" id="i-page">设为翻页键…</button>
+        <button class="ghost" id="i-page">↦ 设为翻页键…</button>
       </div>`;
     $('i-pickapp').onclick = () => pickInto({ properties: ['openFile'] });
     $('i-pickdir').onclick = () => pickInto({ properties: ['openDirectory'] });
@@ -2868,19 +3090,15 @@ function renderInspector() {
                 ${ACTION_TEMPLATES.map((t) => `<option value="${t.id}">${t.name}</option>`).join('')}
               </select>
             </div>
-            <div class="btnrow">
-              <button class="ghost" id="i-pickapp">选择程序…</button>
-              <button class="ghost" id="i-pickdir">选择文件夹…</button>
-            </div>
-            <div class="btnrow">
-              <button class="ghost" id="i-pickurl">设为网址</button>
-              <button class="ghost" id="i-pickcmd">设为命令</button>
-            </div>
-            <div class="btnrow">
-              <button class="ghost" id="i-pickmacro">设为复合宏</button>
-              <button class="ghost" id="i-pickhotkey">设为快捷键</button>
+            <div class="quick-switch-grid">
+              <button class="ghost" id="i-pickapp">🚀 选择程序…</button>
+              <button class="ghost" id="i-pickdir">📁 选择文件夹…</button>
+              <button class="ghost" id="i-pickurl">🌐 设为网址</button>
+              <button class="ghost" id="i-pickcmd">⌘ 设为命令</button>
+              <button class="ghost" id="i-pickmacro">🎛️ 设为复合宏</button>
+              <button class="ghost" id="i-pickhotkey">⌨️ 设为快捷键</button>
               <button class="ghost" id="i-pickvol">🔊 设为音量…</button>
-              <button class="ghost" id="i-page">${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
+              <button class="ghost" id="i-page">↦ ${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
             </div>
             ${spec.type === 'hotkey' ? `
               <div class="row">
@@ -2976,22 +3194,31 @@ function renderInspector() {
               ` : ''}
               <div class="row" style="margin-top: 6px;"><label style="font-size: 11px;">形态 1 类型</label>
                 <select id="i-type">
-                  <option value="app" ${spec.type === 'app' ? 'selected' : ''}>应用程序 / 路径 (App)</option>
-                  <option value="hotkey" ${spec.type === 'hotkey' ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
-                  <option value="volume" ${spec.type === 'volume' ? 'selected' : ''}>🔊 音频/音量 (Volume)</option>
-                  <option value="command" ${spec.type === 'command' ? 'selected' : ''}>命令行 (CMD)</option>
-                  <option value="url" ${spec.type === 'url' ? 'selected' : ''}>打开网址 (URL)</option>
-                  <option value="folder" ${spec.type === 'folder' ? 'selected' : ''}>打开文件夹</option>
-                  <option value="multi" ${spec.type === 'multi' ? 'selected' : ''}>复合宏动作</option>
+                  ${Object.keys(TYPE_NAMES).map((x) =>
+                    `<option value="${x}" ${spec.type === x ? 'selected' : ''}>${TYPE_NAMES[x]}</option>`).join('')}
                 </select>
               </div>
-              ${spec.type === 'multi' ? `
+              ${spec.type === 'multi' || spec.type === 'macro' ? `
                 <div id="i-macro-editor-container">
                   ${renderMacroEditorHtml(spec)}
                 </div>
-              ` : spec.type === 'volume' ? `
+              ` : spec.type === 'volume' || spec.type === 'audio' ? `
                 <div id="i-volume-editor-container">
                   ${renderVolumeEditorHtml(spec)}
+                </div>
+              ` : spec.type === 'page' ? `
+                <div class="page-inspector-card" style="margin-top: 6px;">
+                  <div class="page-insp-head">
+                    <span class="page-insp-label">${(PAGE_MODE_INFOS.find(m => m.id === (spec.mode || 'next')) || {}).icon || '📄'} ${escapeHtml(pageActionLabel(spec))}</span>
+                    <span class="page-insp-badge">模式: ${escapeHtml(spec.mode || 'next')}</span>
+                  </div>
+                  <div class="page-mode-pills">
+                    ${PAGE_MODE_INFOS.map((m) => `
+                      <button type="button" class="page-pill ${(spec.mode || 'next') === m.id ? 'active' : ''}" data-mode="${m.id}">
+                        ${m.icon} ${m.name}
+                      </button>
+                    `).join('')}
+                  </div>
                 </div>
               ` : spec.type !== 'hotkey' ? `
                 <div class="row">
@@ -3018,8 +3245,8 @@ function renderInspector() {
               </div>
               <div class="dual-swap-sub-row">
                 <label class="swap-mini-switch-wrap" id="i-swap-sync-wrap" title="互换动作时，是否同步互换角标形态 1 与形态 2 的文字与色彩">
-                  <input type="checkbox" id="i-swap-sync-badges" hidden />
-                  <span class="mini-switch-track" id="i-swap-sync-track"><span class="mini-switch-thumb"></span></span>
+                  <input type="checkbox" id="i-swap-sync-badges" hidden ${lastSwapSyncBadges ? 'checked' : ''} />
+                  <span class="mini-switch-track ${lastSwapSyncBadges ? 'on' : ''}" id="i-swap-sync-track"><span class="mini-switch-thumb"></span></span>
                   <span class="swap-switch-text">同时对调角标</span>
                 </label>
               </div>
@@ -3043,20 +3270,45 @@ function renderInspector() {
               <div class="row" style="margin-top: 6px;">
                 <label style="font-size: 11px;">形态 2 动作类型</label>
                 <select id="i-toggle-action2-type">
-                  <option value="command" ${((spec.action2 && spec.action2.type) === 'command' || (!spec.action2 && spec.type === 'app')) ? 'selected' : ''}>命令行 (CMD / taskkill)</option>
+                  <option value="command" ${((spec.action2 && spec.action2.type) === 'command' || (!spec.action2 && spec.type === 'app')) ? 'selected' : ''}>命令行 (CMD / taskkill / wm_close)</option>
                   <option value="hotkey" ${(spec.action2 && spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
-                  <option value="volume" ${(spec.action2 && spec.action2.type === 'volume') ? 'selected' : ''}>🔊 音量控制 (Volume)</option>
-                  <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 路径 (App)</option>
+                  <option value="volume" ${(spec.action2 && spec.action2.type === 'volume') ? 'selected' : ''}>🔊 音频与音量控制 (Volume)</option>
+                  <option value="app" ${(spec.action2 && spec.action2.type === 'app') ? 'selected' : ''}>应用程序 / 快捷方式 (App)</option>
+                  <option value="folder" ${(spec.action2 && spec.action2.type === 'folder') ? 'selected' : ''}>打开文件夹 (Folder)</option>
+                  <option value="file" ${(spec.action2 && spec.action2.type === 'file') ? 'selected' : ''}>打开文件 (File)</option>
                   <option value="url" ${(spec.action2 && spec.action2.type === 'url') ? 'selected' : ''}>打开网址 (URL)</option>
+                  <option value="ps1" ${(spec.action2 && spec.action2.type === 'ps1') ? 'selected' : ''}>PowerShell 脚本 (.ps1)</option>
+                  <option value="media" ${(spec.action2 && spec.action2.type === 'media') ? 'selected' : ''}>⏯️ 多媒体控制 (Media)</option>
+                  <option value="page" ${(spec.action2 && spec.action2.type === 'page') ? 'selected' : ''}>↦ 切换页面 (Page)</option>
+                  <option value="multi" ${(spec.action2 && spec.action2.type === 'multi') ? 'selected' : ''}>🎛️ 复合动作宏 (Macro)</option>
+                  <option value="qr_decode" ${(spec.action2 && spec.action2.type === 'qr_decode') ? 'selected' : ''}>📷 屏幕二维码解码 (QR)</option>
                 </select>
               </div>
               <div class="row" id="i-toggle-action2-hotkey-row" style="${(spec.action2 && spec.action2.type === 'hotkey') ? '' : 'display: none;'}">
                 <label style="font-size: 11px;">形态 2 快捷键组合</label>
                 ${renderHotkeyBuilderHtml('i-toggle-action2-hk', (spec.action2 && (spec.action2.hotkey || spec.action2.target)) || '')}
               </div>
-              <div class="row" id="i-toggle-action2-target-row" style="${(spec.action2 && spec.action2.type === 'hotkey') ? 'display: none;' : ''}">
+              ${(spec.action2 && (spec.action2.type === 'volume' || spec.action2.type === 'audio')) ? `
+                <div class="row" style="margin-top: 6px;">
+                  <label style="font-size: 11px;">形态 2 声学操作模式</label>
+                  <select id="i-act2-vol-action">
+                    <option value="up" ${((spec.action2 && spec.action2.action) || 'up') === 'up' ? 'selected' : ''}>🔊 增大音量</option>
+                    <option value="down" ${(spec.action2 && spec.action2.action) === 'down' ? 'selected' : ''}>🔉 减小音量</option>
+                    <option value="mute" ${(spec.action2 && spec.action2.action) === 'mute' ? 'selected' : ''}>🔇 静音 / 恢复切换</option>
+                    <option value="set" ${(spec.action2 && spec.action2.action) === 'set' ? 'selected' : ''}>🎚️ 设为指定音量 (%)</option>
+                    <option value="switch_device" ${(spec.action2 && spec.action2.action) === 'switch_device' ? 'selected' : ''}>🎧 切换输出声卡</option>
+                  </select>
+                </div>
+              ` : ''}
+              ${(spec.action2 && spec.action2.type === 'page') ? `
+                <div class="row" style="margin-top: 6px;">
+                  <label style="font-size: 11px;">形态 2 翻页模式 (${escapeHtml(pageActionLabel(spec.action2))})</label>
+                  <button type="button" class="ghost tiny" id="i-act2-page-cfg" style="width: 100%; margin-top: 4px;">⚙️ 选择形态 2 翻页模式与目标页…</button>
+                </div>
+              ` : ''}
+              <div class="row" id="i-toggle-action2-target-row" style="${(spec.action2 && ['hotkey', 'page', 'multi', 'qr_decode'].includes(spec.action2.type)) ? 'display: none;' : ''}">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <label style="font-size: 11px; margin: 0;">形态 2 目标（命令行 / 程序 / 网址）</label>
+                  <label style="font-size: 11px; margin: 0;">${(spec.action2 && spec.action2.type === 'volume') ? '形态 2 音量参数（目标百分比或声卡名，可留空）' : '形态 2 目标（命令行 / 程序 / 网址）'}</label>
                   ${(spec.action2 && spec.action2.type === 'url') ? `
                     <button type="button" id="i-act2-fetch-favicon" class="icon-fetch-btn" title="联网探测并抓取该网址的网站图标 (Favicon)">
                       <span>🌐</span> 抓取网站图标
@@ -3065,7 +3317,7 @@ function renderInspector() {
                 </div>
                 <textarea id="i-toggle-action2-target" style="min-height: 48px;">${escapeHtml((spec.action2 && spec.action2.target) || '')}</textarea>
               </div>
-              <div class="row" id="i-toggle-action2-args-row" style="${(spec.action2 && spec.action2.type === 'app') ? '' : 'display: none;'}">
+              <div class="row" id="i-toggle-action2-args-row" style="${(spec.action2 && ['app', 'command', 'ps1'].includes(spec.action2.type)) ? '' : 'display: none;'}">
                 <label style="font-size: 11px;">形态 2 参数（可留空）</label>
                 <input id="i-toggle-action2-args" value="${escapeAttr((spec.action2 && spec.action2.args) || '')}" />
               </div>
@@ -3461,22 +3713,24 @@ function renderInspector() {
     };
   });
 
-  // 状态 1 / 状态 2 文字与色彩输入
+  // 状态 1 / 状态 2 文字与色彩输入（防抖写盘 + 实时 0ms 预览）
   const s1Text = $('i-toggle-s1-text');
   if (s1Text) {
     s1Text.addEventListener('input', () => {
       if (!spec.badgeState1) spec.badgeState1 = {};
       spec.badgeState1.text = s1Text.value.trim();
-      commit(true);
+      scheduleDebouncedCommit(true);
     });
+    s1Text.addEventListener('change', () => commit(true));
   }
   const s1Bg = $('i-toggle-s1-bg');
   if (s1Bg) {
     s1Bg.addEventListener('input', () => {
       if (!spec.badgeState1) spec.badgeState1 = {};
       spec.badgeState1.bg = s1Bg.value;
-      commit(true);
+      scheduleDebouncedCommit(true);
     });
+    s1Bg.addEventListener('change', () => commit(true));
   }
 
   const s2Text = $('i-toggle-s2-text');
@@ -3484,16 +3738,18 @@ function renderInspector() {
     s2Text.addEventListener('input', () => {
       if (!spec.badgeState2) spec.badgeState2 = {};
       spec.badgeState2.text = s2Text.value.trim();
-      commit(true);
+      scheduleDebouncedCommit(true);
     });
+    s2Text.addEventListener('change', () => commit(true));
   }
   const s2Bg = $('i-toggle-s2-bg');
   if (s2Bg) {
     s2Bg.addEventListener('input', () => {
       if (!spec.badgeState2) spec.badgeState2 = {};
       spec.badgeState2.bg = s2Bg.value;
-      commit(true);
+      scheduleDebouncedCommit(true);
     });
+    s2Bg.addEventListener('change', () => commit(true));
   }
 
   // 动态角标试切按钮
@@ -3567,38 +3823,16 @@ function renderInspector() {
   const syncSwapTrack = $('i-swap-sync-track');
   if (syncSwapCheck && syncSwapTrack) {
     syncSwapCheck.onchange = () => {
+      lastSwapSyncBadges = !!syncSwapCheck.checked;
       syncSwapTrack.classList.toggle('on', syncSwapCheck.checked);
     };
   }
   if (btnSwap) {
     btnSwap.onclick = async () => {
-      const s1 = {
-        type: spec.type || 'app',
-        target: spec.target || '',
-        args: spec.args || '',
-        hotkey: spec.hotkey || ''
-      };
-      const s2 = spec.action2 ? {
-        type: spec.action2.type || 'command',
-        target: spec.action2.target || '',
-        args: spec.action2.args || '',
-        hotkey: spec.action2.hotkey || ''
-      } : {
-        type: 'command',
-        target: '',
-        args: '',
-        hotkey: ''
-      };
-      spec.type = s2.type;
-      spec.target = s2.target;
-      spec.args = s2.args;
-      spec.hotkey = s2.hotkey;
-      spec.action2 = {
-        type: s1.type,
-        target: s1.target,
-        args: s1.args,
-        hotkey: s1.hotkey
-      };
+      const s1 = extractActionPayload(spec);
+      const s2 = extractActionPayload(spec.action2 || { type: 'command', target: '', args: '', hotkey: '' });
+      applyActionPayload(spec, s2);
+      spec.action2 = applyActionPayload({}, s1);
 
       if (syncSwapCheck && syncSwapCheck.checked) {
         const b1 = spec.badgeState1 || { text: 'ON', bg: '#107c41', color: '#ffffff' };
@@ -3721,25 +3955,57 @@ function renderInspector() {
     selAct2Type.onchange = async () => {
       if (!spec.action2) spec.action2 = {};
       spec.action2.type = selAct2Type.value;
+      if (spec.action2.type === 'volume') {
+        spec.action2.action = spec.action2.action || 'mute';
+        spec.action2.step = spec.action2.step || 5;
+      } else if (spec.action2.type === 'page') {
+        spec.action2.mode = spec.action2.mode || 'next';
+      } else if (spec.action2.type === 'media') {
+        spec.action2.cmd = spec.action2.cmd || 'play_pause';
+        spec.action2.target = spec.action2.target || 'play_pause';
+      }
+      await commit(false);
+      renderInspector();
+    };
+  }
+  const act2VolSel = $('i-act2-vol-action');
+  if (act2VolSel) {
+    act2VolSel.onchange = async () => {
+      if (!spec.action2) spec.action2 = { type: 'volume' };
+      spec.action2.action = act2VolSel.value;
+      await commit(false);
+      renderInspector();
+    };
+  }
+  const act2PageBtn = $('i-act2-page-cfg');
+  if (act2PageBtn) {
+    act2PageBtn.onclick = async () => {
+      const r = await askPageAction(spec.action2);
+      if (!r) return;
+      if (!spec.action2) spec.action2 = { type: 'page' };
+      spec.action2.mode = r.mode;
+      spec.action2.pageId = r.pageId;
       await commit(false);
       renderInspector();
     };
   }
   const iptAct2Target = $('i-toggle-action2-target');
   if (iptAct2Target) {
-    iptAct2Target.addEventListener('input', async () => {
+    iptAct2Target.addEventListener('input', () => {
       if (!spec.action2) spec.action2 = {};
       spec.action2.target = iptAct2Target.value;
-      await commit(false);
+      scheduleDebouncedCommit(false);
     });
+    iptAct2Target.addEventListener('change', () => commit(false));
   }
   const iptAct2Args = $('i-toggle-action2-args');
   if (iptAct2Args) {
-    iptAct2Args.addEventListener('input', async () => {
+    iptAct2Args.addEventListener('input', () => {
       if (!spec.action2) spec.action2 = {};
       spec.action2.args = iptAct2Args.value;
-      await commit(false);
+      scheduleDebouncedCommit(false);
     });
+    iptAct2Args.addEventListener('change', () => commit(false));
   }
   const iptAct2Hk = $('i-toggle-action2-hk');
   if (iptAct2Hk) {
@@ -3797,10 +4063,31 @@ function renderInspector() {
     });
   };
   bind('i-label', 'label', 'change');
+  const iptLabelLive = $('i-label');
+  if (iptLabelLive) {
+    iptLabelLive.addEventListener('input', () => {
+      spec.label = iptLabelLive.value;
+      scheduleDebouncedCommit(true);
+    });
+  }
   bind('i-target', 'target', 'change');
   bind('i-args', 'args', 'change');
   bind('i-color', 'color', 'change');
+  const iptColorLive = $('i-color');
+  if (iptColorLive) {
+    iptColorLive.addEventListener('input', () => {
+      spec.color = iptColorLive.value;
+      scheduleDebouncedCommit(true);
+    });
+  }
   bind('i-color2', 'color2', 'change');
+  const iptColor2Live = $('i-color2');
+  if (iptColor2Live) {
+    iptColor2Live.addEventListener('input', () => {
+      spec.color2 = iptColor2Live.value;
+      scheduleDebouncedCommit(true);
+    });
+  }
   bind('i-labelpos', 'labelPos', 'change');
 
   $('i-type').addEventListener('change', async () => {
@@ -3844,7 +4131,12 @@ function renderInspector() {
 
   const slider = (id, field, out) => {
     const elm = $(id);
-    elm.addEventListener('input', () => { spec[field] = Number(elm.value); $(out).textContent = elm.value; });
+    if (!elm) return;
+    elm.addEventListener('input', () => {
+      spec[field] = Number(elm.value);
+      if ($(out)) $(out).textContent = elm.value;
+      scheduleDebouncedCommit(true);
+    });
     elm.addEventListener('change', () => commit(true));
   };
   slider('i-fontsize', 'fontSize', 'v-font');
@@ -3924,7 +4216,7 @@ function renderInspector() {
     let act = spec;
     if (spec.badgeToggle) {
       const cur = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-      if (spec.toggleAction && spec.action2 && (spec.action2.target || spec.action2.hotkey) && cur === 1) {
+      if (spec.toggleAction && spec.action2 && isActionConfigured(spec.action2) && cur === 1) {
         act = spec.action2;
       }
       spec._activeState = (cur === 1 ? 0 : 1);
@@ -4275,9 +4567,15 @@ function renderStripInspector(box) {
     pageStrips()[String(row)] = Object.assign({}, s, { color: el('s-color').value });
     await commit(true);
   });
-  el('s-fontsize').addEventListener('input', () => { el('v-sfont').textContent = el('s-fontsize').value; });
+  el('s-fontsize').addEventListener('input', () => {
+    el('v-sfont').textContent = el('s-fontsize').value;
+    s.fontSize = Number(el('s-fontsize').value);
+    pageStrips()[String(row)] = s;
+    scheduleDebouncedCommit(true);
+  });
   el('s-fontsize').addEventListener('change', async () => {
-    pageStrips()[String(row)] = Object.assign({}, s, { fontSize: Number(el('s-fontsize').value) });
+    s.fontSize = Number(el('s-fontsize').value);
+    pageStrips()[String(row)] = s;
     await commit(true);
   });
   el('s-push').onclick = () => pushStrip(row);
@@ -4286,7 +4584,7 @@ function renderStripInspector(box) {
 
 /** Pick a file/folder into the currently selected cell (creating the spec). */
 async function pickInto(opts) {
-  if (!selected || selected.col === 5) return;
+  if (!selected || selected.col === 5 || isBackCell(selected.row, selected.col)) return;
   const p = await api.dialogPick(opts);
   if (!p) return;
   const cls = await api.actionClassify(p);
@@ -4296,6 +4594,7 @@ async function pickInto(opts) {
     args: '', icon: icon || '', color: colorFor(cls.type),
   };
   applyAppDualStateDefaults(spec, cls, p);
+  await stopKeyMacroIfNeeded(selected.row, selected.col);
   pageButtons()[selected.row + ',' + selected.col] = spec;
   await commit(true);
   renderInspector();
@@ -4329,7 +4628,7 @@ function askText(title, value, placeholder) {
 }
 
 async function quickSet(kind) {
-  if (!selected || selected.col === 5) return;
+  if (!selected || selected.col === 5 || isBackCell(selected.row, selected.col)) return;
   const key = selected.row + ',' + selected.col;
   const existing = pageButtons()[key];
   const seed = existing && existing.type === kind ? existing.target : '';
@@ -4651,19 +4950,51 @@ function updateLkmSwatch(previewState) {
   }
 }
 
+function formatSpecSummaryText(s) {
+  if (!s) return '(未设置)';
+  const t = s.type || 'app';
+  if (t === 'volume' || t === 'audio') {
+    const act = s.action || 'up';
+    if (act === 'up') return `增大音量 (+${s.step || 5}%)`;
+    if (act === 'down') return `减小音量 (-${s.step || 5}%)`;
+    if (act === 'mute') return '静音 / 恢复切换';
+    if (act === 'set') return `设为指定音量 (${s.target || 50}%)`;
+    if (act === 'switch_device') return `切换输出声卡 (${s.target || '智能轮换'})`;
+    return `音量控制 (${act})`;
+  }
+  if (t === 'page') return pageActionLabel(s);
+  if (t === 'multi' || t === 'macro') return `复合宏 (${(s.actions || []).length} 步)`;
+  if (t === 'media') return `多媒体控制 (${s.cmd || s.target || 'play_pause'})`;
+  if (t === 'qr_decode' || t === 'qr') return '屏幕/剪贴板二维码智能解码';
+  return s.target || s.hotkey || '(未设置)';
+}
+
 function updateLkmActionUI() {
   if (!currentLibModalSpec) return;
   const type = currentLibModalSpec.type || 'app';
   if ($('lkmActType')) $('lkmActType').value = type;
   if ($('lkmTypeBadge')) $('lkmTypeBadge').textContent = TYPE_SHORT[type] || type || '未配置';
 
+  const isVolume = (type === 'volume' || type === 'audio');
+  const isPage = (type === 'page');
+  const isMulti = (type === 'multi' || type === 'macro');
+  const isQr = (type === 'qr_decode' || type === 'qr');
+  const hideTargetInput = isVolume || isPage || isMulti || isQr;
+
+  const targetWrap = $('lkmTargetWrap');
+  if (targetWrap) targetWrap.hidden = hideTargetInput;
+
   const tInput = $('lkmTargetInput');
-  if (tInput) tInput.value = (type === 'hotkey' ? (currentLibModalSpec.hotkey || currentLibModalSpec.target || '') : (currentLibModalSpec.target || ''));
+  if (tInput && !hideTargetInput) {
+    if (type === 'hotkey') tInput.value = currentLibModalSpec.hotkey || currentLibModalSpec.target || '';
+    else if (type === 'media') tInput.value = currentLibModalSpec.cmd || currentLibModalSpec.target || 'play_pause';
+    else tInput.value = currentLibModalSpec.target || '';
+  }
   const aInput = $('lkmArgsInput');
   if (aInput) aInput.value = currentLibModalSpec.args || '';
 
   const pickBtn = $('lkmPickAppBtn');
-  if (pickBtn) pickBtn.hidden = (type !== 'app');
+  if (pickBtn) pickBtn.hidden = !['app', 'file', 'folder', 'ps1'].includes(type);
   const favBtn = $('lkmFaviconBtn');
   if (favBtn) favBtn.hidden = (type !== 'url');
   const hkBuilder = $('lkmHotkeyBuilder');
@@ -4671,14 +5002,56 @@ function updateLkmActionUI() {
   const argsWrap = $('lkmArgsWrap');
   if (argsWrap) argsWrap.hidden = !['app', 'command', 'ps1'].includes(type);
 
+  // 专属音量配置面板同步
+  const volWrap = $('lkmVolumeWrap');
+  if (volWrap) {
+    volWrap.hidden = !isVolume;
+    if (isVolume) {
+      const act = currentLibModalSpec.action || 'up';
+      const step = Number(currentLibModalSpec.step) || 5;
+      volWrap.querySelectorAll('.lkm-vol-pill').forEach((b) => {
+        b.classList.toggle('active', b.dataset.act === act);
+      });
+      if ($('lkmVolStepWrap')) $('lkmVolStepWrap').hidden = !(act === 'up' || act === 'down');
+      if ($('lkmVolStepRange')) $('lkmVolStepRange').value = step;
+      if ($('lkmVolStepVal')) $('lkmVolStepVal').textContent = `${step}%`;
+      if ($('lkmVolTargetWrap')) $('lkmVolTargetWrap').hidden = (act !== 'set');
+      if ($('lkmVolTargetRange')) $('lkmVolTargetRange').value = Number(currentLibModalSpec.target) || 50;
+      if ($('lkmVolTargetVal')) $('lkmVolTargetVal').textContent = `${Number(currentLibModalSpec.target) || 50}%`;
+      if ($('lkmVolDeviceWrap')) $('lkmVolDeviceWrap').hidden = (act !== 'switch_device');
+      if ($('lkmVolDeviceInput')) $('lkmVolDeviceInput').value = currentLibModalSpec.target || '';
+    }
+  }
+
+  // 专属翻页配置面板同步
+  const pageWrap = $('lkmPageWrap');
+  if (pageWrap) {
+    pageWrap.hidden = !isPage;
+    if (isPage) {
+      const mode = currentLibModalSpec.mode || 'next';
+      pageWrap.querySelectorAll('.lkm-page-pill').forEach((b) => {
+        b.classList.toggle('active', b.dataset.mode === mode);
+      });
+      if ($('lkmPageTargetWrap')) $('lkmPageTargetWrap').hidden = (mode !== 'goto');
+      const sel = $('lkmPageTargetSelect');
+      if (sel) {
+        sel.innerHTML = pageTree().map(({ page, depth }) =>
+          `<option value="${page.id}" ${currentLibModalSpec.pageId === page.id ? 'selected' : ''}>${'　'.repeat(depth)}${depth ? '↳ ' : ''}${escapeHtml(page.name)}</option>`
+        ).join('');
+      }
+    }
+  }
+
   const tLabel = $('lkmTargetLabel');
   if (tLabel) {
     if (type === 'app') tLabel.textContent = '应用程序或文件路径 (.exe / .lnk / .bat)';
+    else if (type === 'folder') tLabel.textContent = '文件夹路径';
+    else if (type === 'file') tLabel.textContent = '文件路径（用系统默认关联程序打开）';
     else if (type === 'url') tLabel.textContent = '网页网址 URL (http:// 或 https://)';
     else if (type === 'hotkey') tLabel.textContent = '系统热键组合 (例如 Ctrl+Shift+Esc)';
     else if (type === 'command') tLabel.textContent = '控制台终端命令行';
-    else if (type === 'ps1') tLabel.textContent = 'PowerShell 脚本文件';
-    else if (type === 'page') tLabel.textContent = '页面操作模式';
+    else if (type === 'ps1') tLabel.textContent = 'PowerShell 脚本文件路径';
+    else if (type === 'media') tLabel.textContent = '多媒体控制指令 (play_pause / next / prev / mute)';
     else tLabel.textContent = '执行目标';
   }
 
@@ -4688,6 +5061,12 @@ function updateLkmActionUI() {
     if (type === 'app') {
       desc.textContent = '运行本地应用程序或文件';
       detail.textContent = currentLibModalSpec.target ? `${currentLibModalSpec.target}${currentLibModalSpec.args ? ' ' + currentLibModalSpec.args : ''}` : '(未设置目标路径)';
+    } else if (type === 'folder') {
+      desc.textContent = '在资源管理器中打开文件夹';
+      detail.textContent = currentLibModalSpec.target || '(未设置文件夹路径)';
+    } else if (type === 'file') {
+      desc.textContent = '用系统默认程序打开文件';
+      detail.textContent = currentLibModalSpec.target || '(未设置文件路径)';
     } else if (type === 'url') {
       desc.textContent = '在浏览器中打开网址';
       detail.textContent = currentLibModalSpec.target || '(未设置网址)';
@@ -4697,21 +5076,33 @@ function updateLkmActionUI() {
     } else if (type === 'command') {
       desc.textContent = '执行控制台终端命令行';
       detail.textContent = currentLibModalSpec.target || '(未设置命令)';
-    } else if (type === 'multi' || type === 'macro') {
+    } else if (type === 'ps1') {
+      desc.textContent = '运行 PowerShell 脚本';
+      detail.textContent = currentLibModalSpec.target || '(未设置脚本路径)';
+    } else if (isVolume) {
+      desc.textContent = 'WASAPI 底层极速声学与音量控制';
+      detail.textContent = formatSpecSummaryText(currentLibModalSpec);
+    } else if (type === 'media') {
+      desc.textContent = '系统多媒体播放控制';
+      detail.textContent = formatSpecSummaryText(currentLibModalSpec);
+    } else if (isQr) {
+      desc.textContent = '一键屏幕/剪贴板二维码智能解码';
+      detail.textContent = '自动截取剪贴板或全屏画面识别二维码并复制结果';
+    } else if (isMulti) {
       const count = (currentLibModalSpec.actions || []).length;
-      desc.textContent = `复合动作宏 (${count} 步执行)`;
-      detail.textContent = (currentLibModalSpec.actions || []).map((a, i) => `${i + 1}. [${TYPE_SHORT[a.type] || a.type}] ${a.target || a.hotkey || ''}`).join('  ▶  ') || '(宏动作序列为空)';
-    } else if (type === 'page') {
+      desc.textContent = `复合动作宏 (${count} 步执行 · 可放置到面板后在右侧编辑详细步骤)`;
+      detail.textContent = (currentLibModalSpec.actions || []).map((a, i) => `${i + 1}. [${TYPE_SHORT[a.type] || a.type}] ${a.target || a.hotkey || a.text || (a.ms ? a.ms + 'ms' : '')}`).join('  ▶  ') || '(宏动作序列为空)';
+    } else if (isPage) {
       desc.textContent = '页面切换跳转';
       detail.textContent = pageActionLabel(currentLibModalSpec);
     } else {
       desc.textContent = '按键执行动作';
-      detail.textContent = currentLibModalSpec.target || '(未设置目标)';
+      detail.textContent = formatSpecSummaryText(currentLibModalSpec);
     }
   }
 
   const d1Text = $('lkmDualAct1Text');
-  if (d1Text) d1Text.textContent = `[${TYPE_SHORT[type] || type}] ${currentLibModalSpec.target || currentLibModalSpec.hotkey || '(未设置)'}`;
+  if (d1Text) d1Text.textContent = `[${TYPE_SHORT[type] || type}] ${formatSpecSummaryText(currentLibModalSpec)}`;
 }
 
 function updateLkmStyleUI() {
@@ -4799,12 +5190,12 @@ function openLibKeyModal(entry) {
 
   const slotTag = $('lkmCurrentSlotTag');
   const applyBtn = $('lkmApplyToSlot');
-  if (selected && selected.col < 5) {
+  if (selected && selected.col < 5 && !isBackCell(selected.row, selected.col)) {
     slotTag.textContent = `r${selected.row}c${selected.col}`;
     applyBtn.disabled = false;
     applyBtn.style.opacity = '1';
   } else {
-    slotTag.textContent = '未选格子';
+    slotTag.textContent = (selected && isBackCell(selected.row, selected.col)) ? '返回键不可覆盖' : '未选格子';
     applyBtn.disabled = true;
     applyBtn.style.opacity = '0.6';
   }
@@ -5045,6 +5436,7 @@ async function applyPageSnapshot(snap, mode) {
   }
   if (how === 'overwrite') {
     const p = curPage();
+    await stopPageMacrosIfNeeded(p.id);
     p.buttons = clone(pageData.buttons || {});
     p.strips = clone(pageData.strips || {});
     selected = null;
@@ -5254,7 +5646,7 @@ function openLibPanel(open) {
 // ------------------------------------------------------------------ library ops
 
 function libraryAdd(spec) {
-  if (!spec || (!spec.target && spec.type !== 'page' && spec.type !== 'multi' && spec.type !== 'macro' && !spec.label && !spec.icon)) {
+  if (!spec || (! isActionConfigured(spec) && !spec.label && !spec.icon)) {
     toast('这个键还没配任何内容，无法存入库'); return;
   }
   const name = String(spec.label || (spec.type === 'page' ? pageActionLabel(spec) : TYPE_SHORT[spec.type]) || '按键')
@@ -5273,6 +5665,8 @@ function libraryAdd(spec) {
 
 async function libraryApply(entry) {
   if (!selected || selected.col === 5) { toast('先在左边点一个格子，再点库里的条目'); return; }
+  if (isBackCell(selected.row, selected.col)) { toast('子页右下角的自动返回键不可覆盖'); return; }
+  await stopKeyMacroIfNeeded(selected.row, selected.col);
   pageButtons()[selected.row + ',' + selected.col] = clone(entry.spec);
   await commit(true);
   renderInspector();
@@ -5333,6 +5727,7 @@ async function libraryApplyPage(entry, mode) {
   }
   if (how === 'overwrite') {
     const p = curPage();
+    await stopPageMacrosIfNeeded(p.id);
     p.buttons = clone(snap.buttons || {});
     p.strips = clone(snap.strips || {});
     selected = null;
@@ -5676,6 +6071,9 @@ async function pageDelete(targetId) {
     : `会删掉「${p.name}」以及里面的所有按键，不能撤销。`;
   if (!(await askConfirm('删除页面', msg))) return;
   const doomed = new Set([p.id, ...kids.map((k) => k.id)]);
+  for (const pid of doomed) {
+    await stopPageMacrosIfNeeded(pid);
+  }
   cfg.pages = cfg.pages.filter((x) => !doomed.has(x.id));
   if (doomed.has(cfg.currentPage)) {
     cfg.currentPage = (p.parent && pageById(p.parent)) ? p.parent : cfg.pages[0].id;
@@ -5744,6 +6142,7 @@ function initContextMenu() {
     if (!cmTarget || cmTarget.col === 5 || !clipboardKey) return;
     const { row, col } = cmTarget;
     if (isBackCell(row, col)) return;
+    await stopKeyMacroIfNeeded(row, col);
     pageButtons()[row + ',' + col] = clone(clipboardKey);
     await commit(true);
     select(row, col);
@@ -5787,8 +6186,9 @@ function getCustomSubCategories() {
 }
 
 function openIconPicker() {
-  if (!selected || selected.col === 5) {
-    toast('先点选一个按键格子');
+  iconPickerTarget = null;
+  if (!selected || selected.col === 5 || isBackCell(selected.row, selected.col)) {
+    toast('先点选一个可编辑的按键格子');
     return;
   }
   const modal = $('iconPickerModal');
@@ -6753,6 +7153,7 @@ function initKeyboardShortcuts() {
     if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
       if (!selected || selected.col === 5 || !clipboardKey) return;
       if (isBackCell(selected.row, selected.col)) return;
+      await stopKeyMacroIfNeeded(selected.row, selected.col);
       pageButtons()[selected.row + ',' + selected.col] = clone(clipboardKey);
       await commit(true);
       renderInspector();
@@ -6862,10 +7263,13 @@ function bindShell() {
   if (debounceInput) {
     debounceInput.value = cfg.keyDebounceMs || 100;
     if (debounceVal) debounceVal.textContent = cfg.keyDebounceMs || 100;
-    debounceInput.addEventListener('input', async (e) => {
+    debounceInput.addEventListener('input', (e) => {
       const v = +e.target.value;
       if (debounceVal) debounceVal.textContent = v;
       cfg.keyDebounceMs = v;
+      scheduleDebouncedCommit(false);
+    });
+    debounceInput.addEventListener('change', async () => {
       if (!DEMO) await saveConfig();
     });
   }
@@ -6937,15 +7341,18 @@ function bindShell() {
         toast('演示模式');
         return;
       }
-      if (!confirm('确定要将控制台全部重置为出厂设置吗？当前所有自定义按键和页面将被清空！')) return;
+      if (!(await askConfirm('恢复出厂设置', '确定要将控制台全部重置为出厂设置吗？当前所有自定义按键和页面将被清空！'))) return;
       const res = await api.configReset();
       if (res && res.ok) {
+        activeLoopKeyIds.clear();
         cfg = await api.configLoad();
         selected = null;
         applyTheme();
         renderPageTabs();
         buildGrid();
         renderInspector();
+        renderLibrary();
+        renderLibPanel();
         await repaintAll();
         toast('已恢复出厂设置！');
       }
@@ -7049,17 +7456,100 @@ function bindShell() {
     // Tab 1: 动作与快捷事件
     $('lkmActType').onchange = (e) => {
       if (!currentLibModalSpec) return;
-      currentLibModalSpec.type = e.target.value;
+      const nextType = e.target.value;
+      currentLibModalSpec.type = nextType;
+      if (nextType === 'volume') {
+        currentLibModalSpec.action = currentLibModalSpec.action || 'up';
+        currentLibModalSpec.step = currentLibModalSpec.step || 5;
+      } else if (nextType === 'page') {
+        currentLibModalSpec.mode = currentLibModalSpec.mode || 'next';
+        if (currentLibModalSpec.mode === 'goto' && !currentLibModalSpec.pageId) {
+          currentLibModalSpec.pageId = (cfg && cfg.pages && cfg.pages[0] && cfg.pages[0].id) || 'p1';
+        }
+      } else if (nextType === 'media') {
+        currentLibModalSpec.cmd = currentLibModalSpec.cmd || 'play_pause';
+      } else if (nextType === 'multi') {
+        currentLibModalSpec.actions = Array.isArray(currentLibModalSpec.actions) ? currentLibModalSpec.actions : [];
+        currentLibModalSpec.loop = currentLibModalSpec.loop || { mode: 'once', interval: 50 };
+      } else if (nextType === 'qr_decode') {
+        currentLibModalSpec.target = 'qr_decode';
+      }
       updateLkmActionUI();
       updateLkmSwatch();
     };
     $('lkmTargetInput').oninput = (e) => {
       if (!currentLibModalSpec) return;
-      if (currentLibModalSpec.type === 'hotkey') currentLibModalSpec.hotkey = e.target.value;
-      else currentLibModalSpec.target = e.target.value;
+      if (currentLibModalSpec.type === 'hotkey') {
+        currentLibModalSpec.hotkey = e.target.value;
+        currentLibModalSpec.target = e.target.value;
+      } else if (currentLibModalSpec.type === 'media') {
+        currentLibModalSpec.cmd = e.target.value;
+        currentLibModalSpec.target = e.target.value;
+      } else {
+        currentLibModalSpec.target = e.target.value;
+      }
       updateLkmActionUI();
       updateLkmSwatch();
     };
+
+    // 专属音量控制绑定 (Key Studio Modal)
+    document.querySelectorAll('.lkm-vol-pill').forEach((btn) => {
+      btn.onclick = () => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.action = btn.dataset.act;
+        if (btn.dataset.act === 'up' || btn.dataset.act === 'down') {
+          currentLibModalSpec.step = currentLibModalSpec.step || 5;
+        } else if (btn.dataset.act === 'set' && (!currentLibModalSpec.target || isNaN(Number(currentLibModalSpec.target)))) {
+          currentLibModalSpec.target = '50';
+        }
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    });
+    if ($('lkmVolStepRange')) {
+      $('lkmVolStepRange').oninput = (e) => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.step = Number(e.target.value) || 5;
+        if ($('lkmVolStepVal')) $('lkmVolStepVal').textContent = `${currentLibModalSpec.step}%`;
+        updateLkmActionUI();
+      };
+    }
+    if ($('lkmVolTargetRange')) {
+      $('lkmVolTargetRange').oninput = (e) => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.target = String(e.target.value);
+        if ($('lkmVolTargetVal')) $('lkmVolTargetVal').textContent = `${e.target.value}%`;
+        updateLkmActionUI();
+      };
+    }
+    if ($('lkmVolDeviceInput')) {
+      $('lkmVolDeviceInput').oninput = (e) => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.target = e.target.value.trim();
+        updateLkmActionUI();
+      };
+    }
+
+    // 专属翻页动作绑定 (Key Studio Modal)
+    document.querySelectorAll('.lkm-page-pill').forEach((btn) => {
+      btn.onclick = () => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.mode = btn.dataset.mode;
+        if (currentLibModalSpec.mode === 'goto' && !currentLibModalSpec.pageId) {
+          currentLibModalSpec.pageId = (cfg && cfg.pages && cfg.pages[0] && cfg.pages[0].id) || 'p1';
+        }
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    });
+    if ($('lkmPageTargetSelect')) {
+      $('lkmPageTargetSelect').onchange = (e) => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.pageId = e.target.value;
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    }
     $('lkmArgsInput').oninput = (e) => {
       if (!currentLibModalSpec) return;
       currentLibModalSpec.args = e.target.value;
@@ -7176,23 +7666,10 @@ function bindShell() {
     };
     $('lkmSwapDualActionBtn').onclick = () => {
       if (!currentLibModalSpec) return;
-      const s1 = {
-        type: currentLibModalSpec.type || 'app',
-        target: currentLibModalSpec.target || '',
-        args: currentLibModalSpec.args || '',
-        hotkey: currentLibModalSpec.hotkey || '',
-      };
-      const act2 = currentLibModalSpec.action2 || { type: 'command', target: '', args: '', hotkey: '' };
-      currentLibModalSpec.type = act2.type || 'command';
-      currentLibModalSpec.target = act2.target || '';
-      currentLibModalSpec.args = act2.args || '';
-      currentLibModalSpec.hotkey = act2.hotkey || (act2.type === 'hotkey' ? act2.target : '');
-      currentLibModalSpec.action2 = {
-        type: s1.type,
-        target: s1.target,
-        args: s1.args,
-        hotkey: s1.hotkey,
-      };
+      const s1 = extractActionPayload(currentLibModalSpec);
+      const s2 = extractActionPayload(currentLibModalSpec.action2 || { type: 'command', target: '', args: '', hotkey: '' });
+      applyActionPayload(currentLibModalSpec, s2);
+      currentLibModalSpec.action2 = applyActionPayload({}, s1);
 
       const syncChk = $('lkmSwapSyncCheck');
       if (syncChk && syncChk.checked && currentLibModalSpec.badgeToggle) {
@@ -7288,10 +7765,11 @@ function bindShell() {
     // 底栏操作
     $('lkmApplyToSlot').onclick = async () => {
       if (!currentLibModalEntry || !currentLibModalSpec) return;
-      if (!selected || selected.col === 5) {
-        toast('请先在主控面板点选一个按键格子');
+      if (!selected || selected.col === 5 || isBackCell(selected.row, selected.col)) {
+        toast('请先在主控面板点选一个可编辑的按键格子');
         return;
       }
+      await stopKeyMacroIfNeeded(selected.row, selected.col);
       pageButtons()[selected.row + ',' + selected.col] = clone(currentLibModalSpec);
       await commit(true);
       renderInspector();
@@ -7427,19 +7905,16 @@ function applyTheme() {
 function showHelp() {
   const wrap = document.createElement('div');
   wrap.className = 'modal';
-  wrap.innerHTML = `<div class="modalbox">
-    <h3>怎么用</h3>
-    <ol style="margin:0 0 14px 18px;padding:0;font-size:13px;line-height:1.9">
-      <li>把 <b>文件 / 文件夹 / 快捷方式 / 网址</b> 拖进任意格子</li>
-      <li>点格子 → 右侧改名称、目标、<b>外观</b>（底色、渐变、字号、图标、文字位置）</li>
-      <li>格子之间可以<b>互拖交换位置</b>；拖到空格子就是移动</li>
-      <li>调好的键点「<b>存进按键库</b>」，之后能拖回任意格子和任意页</li>
-      <li><b>页面</b>：上面一排页签，或按设备上的切页键翻页。<b>子页</b>＝文件夹，
-          进去之后右下角会自动出现「返回」，出来自动恢复</li>
-      <li>右列 3 块是<b>显示屏</b>，按不动，可设成时钟、自定义文字或<b>页码</b></li>
-      <li>设备设置（亮度、休眠、方向、自启）在右上角 <b>⚙</b></li>
+  wrap.innerHTML = `<div class="modalbox" style="width: 520px; max-width: 92vw;">
+    <h3>📖 AKP153 控制台快速上手指南</h3>
+    <ol style="margin:0 0 14px 18px;padding:0;font-size:13px;line-height:1.85">
+      <li><b>极速拖拽配置</b>：把文件、程序、快捷方式、文件夹或网址直接拖进中央 15 键网格，系统会自动提取高清图标并根据策略配置<b>双态启动/切换</b>。</li>
+      <li><b>所见即所得精修</b>：点击任意格子，在右侧属性检查器切换<b>「⚡ 动作」</b>与<b>「🎨 外观」</b>标签页，支持复合宏编排、WASAPI 毫秒级音量调节、免冲突快捷键点选、双态角标与实时字号/图标缩放。</li>
+      <li><b>左侧页面树与自动切页</b>：左侧边栏管理多层级页面与子页（进入子页右下角自动生成返回键）；点击画布空白处可设置<b>整板无缝流光渐变</b>与<b>前台软件感知自动切页 (Auto-Profile)</b>。</li>
+      <li><b>右侧 3 块状态副屏</b>：最右列 3 块 LCD 副屏可设为实时时钟、页码指示、CPU/内存负载仪表或声学音量监听表。</li>
+      <li><b>底部按键库与页面快照</b>：调好的按键可一键「⭐ 入库」或拖入底部抽屉永久复用；点击「📸 页面快照」可备份或还原整页 18 格布局。</li>
     </ol>
-    <div class="btnrow"><button class="primary" id="_helpOk">知道了</button></div>
+    <div class="btnrow" style="justify-content: flex-end;"><button class="primary" id="_helpOk">知道了</button></div>
   </div>`;
   document.body.appendChild(wrap);
   const done = () => wrap.remove();
@@ -7521,12 +7996,16 @@ function bindDevice() {
   $('login').checked = !!cfg.openAtLogin;
   $('sleepMode').value = cfg.sleepMode || 'zeros-last';
 
-  $('brightness').addEventListener('input', async (e) => {
+  let _brightTimer = null;
+  $('brightness').addEventListener('input', (e) => {
     const v = +e.target.value;
     $('brightVal').textContent = v;
     cfg.brightness = v;
-    await saveConfig();
-    await api.deviceBrightness(v);
+    clearTimeout(_brightTimer);
+    _brightTimer = setTimeout(async () => {
+      await saveConfig();
+      await api.deviceBrightness(v);
+    }, 60);
   });
   $('idle').addEventListener('change', async (e) => {
     cfg.idleSleepMinutes = +e.target.value;
@@ -7717,19 +8196,36 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // 定期检测并刷新系统状态监控副屏（CPU / 内存 / 声学音量）
+  // 定期检测并刷新系统状态监控副屏（单次合并采样，避免并发冲掉 CPU 差值与全量 DOM 重建）
   setInterval(async () => {
     if (DEMO || !cfg || isDeviceAsleep) return;
     const strips = pageStrips();
-    let hasSys = false;
-    for (const row of [0, 1, 2]) {
+    const activeRows = [0, 1, 2].filter((row) => {
+      const s = strips[String(row)];
+      return s && ['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type);
+    });
+    if (!activeRows.length) return;
+    let sharedStats = null;
+    const needsStats = activeRows.some((r) => ['cpu', 'mem', 'sys', 'volume'].includes(strips[String(r)].type));
+    if (needsStats && api.systemStats) {
+      try {
+        sharedStats = await api.systemStats();
+        if (sharedStats) {
+          lastSysStats = Object.assign({}, lastSysStats, sharedStats);
+          if (sharedStats.volume !== undefined) {
+            lastAudioState.volume = sharedStats.volume;
+            lastAudioState.isMute = !!sharedStats.isMute;
+          }
+        }
+      } catch (_) {}
+    }
+    for (const row of activeRows) {
       const s = strips[String(row)];
       if (s && ['cpu', 'mem', 'sys', 'volume'].includes(s.type)) {
-        hasSys = true;
-        await pushStrip(row);
+        await pushStrip(row, false, sharedStats);
       }
     }
-    if (hasSys) refreshGrid();
+    refreshStripCells(sharedStats);
   }, 3000);
 
   if (DEMO) {

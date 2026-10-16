@@ -31,7 +31,7 @@ npm run build:portable
 ```
 将自动输出：
 - `dist/AKP153-Dock/`：绿色解压即用目录，内含独立的 `AKP153 控制台.exe`，免安装 Node.js 与环境；
-- `dist/AKP153-Dock-v0.6.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
+- `dist/AKP153-Dock-v0.7.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
 
 ## USB 热插拔自愈
 

@@ -14,18 +14,18 @@ function getGitHubToken() {
 
 const PKG = require(path.resolve(__dirname, '..', 'package.json'));
 const TAG = `v${PKG.version}`;
-const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (全量P0~P2修复 + 关机硬件彻底黑屏 + 休眠防闪 + 前台应用自动切页 + 帧差分缓存 + 副屏仪表盘)`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (全架构深度优化 + 管道指令关联时序加固 + 批量绘图性能加速)`;
 const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
 const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version}
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
-此版本包含全量 P0~P2 级 Bug 修复、独立供电拓展坞关机硬件彻底黑屏守护、休眠防闪、前台应用自动感知切页、HID 帧差分缓存及副屏图形态势仪表盘等重大架构演进。
+此版本包含全架构深度优化、管道请求关联时序加固、HID批量绘图性能加速与全量稳定性增强。
 
 ---
 
-## 🌟 v0.6.0 核心更新与架构升级
+## 🌟 v0.7.0 深度优化与架构演进
 
 ### 🛡️ 1. 独立供电拓展坞关机硬件彻底灭屏 + 定时休眠防频闪
 - **C# STA 关机灭屏守护**：新增独立 STA 消息泵窗口拦截系统 \`WM_QUERYENDSESSION\` (0x0011) 与 \`WM_ENDSESSION\` (0x0016)，通过 Win32 SetupAPI 直写 6 步硬件休眠指令，即使主机插在独立供电拓展坞上也能在关机瞬间彻底黑屏断流，杜绝电脑关机控制台常亮；

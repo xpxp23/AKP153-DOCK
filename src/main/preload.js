@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
   deviceDraw: (a) => ipcRenderer.invoke('device:draw', a),
+  deviceBatchDraw: (items) => ipcRenderer.invoke('device:batchDraw', items),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
   deviceSleep: () => ipcRenderer.invoke('device:sleep'),
   deviceWake: () => ipcRenderer.invoke('device:wake'),
@@ -59,6 +60,8 @@ contextBridge.exposeInMainWorld('api', {
 
   macroGetCursor: () => ipcRenderer.invoke('macro:getCursor'),
   macroStopAll: () => ipcRenderer.invoke('macro:stopAll'),
+  macroStopKey: (a) => ipcRenderer.invoke('macro:stopKey', a),
+  macroStopPage: (pageId) => ipcRenderer.invoke('macro:stopPage', pageId),
   macroActiveLoops: () => ipcRenderer.invoke('macro:activeLoops'),
 
   on: (channel, cb) => {

@@ -65,31 +65,32 @@ function newPageId() {
   return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 }
 
-function load() {
-  if (cache) return cache;
-  const raw = readRaw();
-  lastRaw = raw;
-  let saved = {};
-  try {
-    saved = raw ? JSON.parse(raw) : {};
-  } catch (e) { /* first run, or a half-written file */ }
+function normalizeTags(v) {
+  if (Array.isArray(v)) return v.map((t) => String(t).trim()).filter(Boolean);
+  if (typeof v === 'string') return v.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean);
+  return [];
+}
 
-  cache = Object.assign({}, DEFAULTS, saved);
+/**
+ * Normalize & migrate any raw config object (v1 or v2) into a valid v2 config structure.
+ */
+function normalize(rawObj) {
+  const target = Object.assign({}, DEFAULTS, (rawObj && typeof rawObj === 'object') ? rawObj : {});
 
   // --- migrate the flat single-page layout (v1: top-level buttons/strips) ---
-  if (!Array.isArray(cache.pages) || !cache.pages.length) {
-    cache.pages = [{
+  if (!Array.isArray(target.pages) || !target.pages.length) {
+    target.pages = [{
       id: 'p1',
       name: '主页面',
       parent: null,
-      buttons: cache.buttons || {},
-      strips: cache.strips || clone(DEFAULT_STRIPS),
+      buttons: target.buttons || {},
+      strips: target.strips || clone(DEFAULT_STRIPS),
     }];
   }
-  delete cache.buttons;
-  delete cache.strips;
+  delete target.buttons;
+  delete target.strips;
 
-  for (const p of cache.pages) {
+  for (const p of target.pages) {
     if (!p.id) p.id = newPageId();
     if (!p.name) p.name = '未命名页';
     if (p.parent === undefined) p.parent = null;
@@ -117,26 +118,26 @@ function load() {
     }
   }
   // a page whose parent vanished becomes a top-level page
-  const ids = new Set(cache.pages.map((p) => p.id));
-  for (const p of cache.pages) if (p.parent && !ids.has(p.parent)) p.parent = null;
+  const ids = new Set(target.pages.map((p) => p.id));
+  for (const p of target.pages) if (p.parent && !ids.has(p.parent)) p.parent = null;
 
-  if (!cache.pages.some((p) => p.id === cache.currentPage)) {
-    cache.currentPage = cache.pages[0].id;
+  if (!target.pages.some((p) => p.id === target.currentPage)) {
+    target.currentPage = target.pages[0].id;
   }
-  if (!Array.isArray(cache.pageSnapshots)) cache.pageSnapshots = [];
-  if (!Array.isArray(cache.library)) cache.library = [];
+  if (!Array.isArray(target.pageSnapshots)) target.pageSnapshots = [];
+  if (!Array.isArray(target.library)) target.library = [];
 
   // Normalize library entries & migrate any legacy page snapshots into pageSnapshots
   const cleanLib = [];
-  for (const e of cache.library) {
+  for (const e of target.library) {
     if (!e) continue;
     if (!e.id) e.id = 'L' + Math.random().toString(36).slice(2, 10);
     if (!Array.isArray(e.tags)) e.tags = normalizeTags(e.tags || e.tag);
     if (typeof e.name !== 'string') e.name = (e.spec && e.spec.label) || '未命名';
     if (e.kind === 'page' || (!e.spec && e.page)) {
       const snapId = e.id.startsWith('PS_') ? e.id : ('PS_' + e.id.replace(/^L/, ''));
-      if (!cache.pageSnapshots.some((s) => s.id === snapId)) {
-        cache.pageSnapshots.push({
+      if (!target.pageSnapshots.some((s) => s.id === snapId)) {
+        target.pageSnapshots.push({
           id: snapId,
           name: e.name || '整页快照',
           tags: e.tags,
@@ -158,15 +159,22 @@ function load() {
       cleanLib.push(e);
     }
   }
-  cache.library = cleanLib;
-  cache.version = DEFAULTS.version;
-  return cache;
+  target.library = cleanLib;
+  target.version = DEFAULTS.version;
+  return target;
 }
 
-function normalizeTags(v) {
-  if (Array.isArray(v)) return v.map((t) => String(t).trim()).filter(Boolean);
-  if (typeof v === 'string') return v.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean);
-  return [];
+function load() {
+  if (cache) return cache;
+  const raw = readRaw();
+  lastRaw = raw;
+  let saved = {};
+  try {
+    saved = raw ? JSON.parse(raw) : {};
+  } catch (e) { /* first run, or a half-written file */ }
+
+  cache = normalize(saved);
+  return cache;
 }
 
 /** Drop the in-memory copy so the next load() re-reads the file. */
@@ -210,8 +218,9 @@ function pageTree() {
 }
 
 function save(cfg) {
-  cache = cfg;
-  const text = JSON.stringify(cfg, (key, value) => key.startsWith('_') ? undefined : value, 2);
+  const normalized = normalize(cfg);
+  cache = normalized;
+  const text = JSON.stringify(normalized, (key, value) => key.startsWith('_') ? undefined : value, 2);
   const tmp = FILE + '.tmp';
   fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, FILE);
@@ -232,7 +241,7 @@ function set(key, value) {
 }
 
 module.exports = {
-  load, save, get, set, DEFAULTS, FILE,
+  load, save, get, set, normalize, DEFAULTS, FILE,
   currentPage, childPages, pageTree, newPageId, DEFAULT_STRIPS, DEFAULT_GRADIENT,
   invalidate, changedOnDisk, normalizeTags, readRaw,
 };

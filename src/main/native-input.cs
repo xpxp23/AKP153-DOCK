@@ -143,6 +143,16 @@ namespace AkpInput
         static extern int PropVariantClear(ref PROPVARIANT pvar);
 
         private static IntPtr _guardHwnd = IntPtr.Zero;
+        private static readonly object _outLock = new object();
+
+        static void WriteOut(string prefix, string text)
+        {
+            lock (_outLock)
+            {
+                Console.WriteLine(string.IsNullOrEmpty(prefix) ? text : (prefix + text));
+                Console.Out.Flush();
+            }
+        }
 
         class ShutdownGuardForm : Form
         {
@@ -849,6 +859,53 @@ namespace AkpInput
             return procName + "|" + pid + "|" + title.Replace("\r", "").Replace("\n", " ");
         }
 
+        public static string CheckRunningProcesses(string csvNames)
+        {
+            if (string.IsNullOrWhiteSpace(csvNames)) return "";
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in csvNames.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string clean = raw.Trim();
+                if (clean.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    clean = clean.Substring(0, clean.Length - 4);
+                }
+                if (!string.IsNullOrEmpty(clean)) targets.Add(clean);
+            }
+            if (targets.Count == 0) return "";
+
+            var found = new List<string>();
+            Process[] procs = Process.GetProcesses();
+            try
+            {
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        string pName = p.ProcessName;
+                        if (!string.IsNullOrEmpty(pName) && targets.Contains(pName))
+                        {
+                            found.Add(pName.ToLowerInvariant());
+                            targets.Remove(pName);
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs)
+                {
+                    try { p.Dispose(); } catch { }
+                }
+            }
+            return string.Join(",", found);
+        }
+
         public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
         {
             if (string.IsNullOrWhiteSpace(procName)) return "ERR EMPTY";
@@ -1130,10 +1187,14 @@ namespace AkpInput
         {
             newLevel = 0;
             isMute = false;
-            if (!AudioGetVolume(out newLevel, out isMute)) return false;
-            newLevel = Math.Max(0, Math.Min(100, newLevel + delta));
-            AudioSetVolume(newLevel);
-            if (isMute && delta > 0)
+            int curLevel;
+            bool wasMute;
+            if (!AudioGetVolume(out curLevel, out wasMute)) return false;
+
+            newLevel = Math.Max(0, Math.Min(100, curLevel + delta));
+            isMute = wasMute;
+
+            if (wasMute && delta > 0)
             {
                 try
                 {
@@ -1147,10 +1208,26 @@ namespace AkpInput
                 }
                 catch { }
             }
-            if (triggerOsd)
+
+            // 先直接通过 WASAPI 设定精准目标音量
+            AudioSetVolume(newLevel);
+
+            if (triggerOsd && !isMute)
             {
+                int targetLvl = newLevel;
                 SendMedia(delta >= 0 ? "vol_up" : "vol_down");
-                AudioSetVolume(newLevel);
+                AudioSetVolume(targetLvl);
+                // Windows Shell (explorer.exe) 异步处理 VK_VOLUME_UP/DOWN 会附加 ±2% 偏移，
+                // 在后台线程延迟 28ms 二次校准，既唤出原生 OSD 弹窗又确保音量精确无回弹跳变
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        Thread.Sleep(28);
+                        AudioSetVolume(targetLvl);
+                    }
+                    catch { }
+                });
             }
             return true;
         }
@@ -1283,10 +1360,24 @@ namespace AkpInput
             y = p.Y;
         }
 
-        static void ExecuteCommand(string line)
+        static void ExecuteCommand(string rawLine, bool allowAsync = false)
         {
-            if (string.IsNullOrWhiteSpace(line)) return;
-            string[] parts = line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (string.IsNullOrWhiteSpace(rawLine)) return;
+            string line = rawLine.Trim();
+            string reqPrefix = "";
+
+            // 支持可选的 @<id> 异步请求流水号前缀，彻底消除耗时鼠标动画对后续查询指令的队头阻塞
+            if (line.StartsWith("@"))
+            {
+                int spIdx = line.IndexOf(' ');
+                if (spIdx > 1)
+                {
+                    reqPrefix = line.Substring(0, spIdx + 1);
+                    line = line.Substring(spIdx + 1).Trim();
+                }
+            }
+
+            string[] parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 0) return;
 
             string op = parts[0].ToLowerInvariant();
@@ -1297,71 +1388,116 @@ namespace AkpInput
                     case "get_cursor":
                         int cx, cy;
                         GetCursor(out cx, out cy);
-                        Console.WriteLine("OK " + cx + "," + cy);
+                        WriteOut(reqPrefix, "OK " + cx + "," + cy);
                         break;
 
                     case "mouse_click":
-                        string btn = parts.Length > 1 ? parts[1] : "left";
-                        int mx = parts.Length > 3 ? int.Parse(parts[2]) : -1;
-                        int my = parts.Length > 3 ? int.Parse(parts[3]) : -1;
-                        MouseClick(btn, mx, my);
-                        Console.WriteLine("OK");
+                        {
+                            string btn = parts.Length > 1 ? parts[1] : "left";
+                            int mx = parts.Length > 3 ? int.Parse(parts[2]) : -1;
+                            int my = parts.Length > 3 ? int.Parse(parts[3]) : -1;
+                            if (allowAsync)
+                            {
+                                ThreadPool.QueueUserWorkItem(_ =>
+                                {
+                                    try { MouseClick(btn, mx, my); WriteOut(reqPrefix, "OK"); }
+                                    catch (Exception ex) { WriteOut(reqPrefix, "ERR " + ex.Message); }
+                                });
+                            }
+                            else
+                            {
+                                MouseClick(btn, mx, my);
+                                WriteOut(reqPrefix, "OK");
+                            }
+                        }
                         break;
 
                     case "mouse_move":
-                        int posX = int.Parse(parts[1]);
-                        int posY = int.Parse(parts[2]);
-                        bool rel = parts.Length > 3 && parts[3].ToLowerInvariant() == "rel";
-                        int moveDur = parts.Length > 4 ? int.Parse(parts[4]) : 0;
-                        MouseMove(posX, posY, rel, moveDur);
-                        Console.WriteLine("OK");
+                        {
+                            int posX = int.Parse(parts[1]);
+                            int posY = int.Parse(parts[2]);
+                            bool rel = parts.Length > 3 && parts[3].ToLowerInvariant() == "rel";
+                            int moveDur = parts.Length > 4 ? int.Parse(parts[4]) : 0;
+                            if (allowAsync && moveDur > 15)
+                            {
+                                ThreadPool.QueueUserWorkItem(_ =>
+                                {
+                                    try { MouseMove(posX, posY, rel, moveDur); WriteOut(reqPrefix, "OK"); }
+                                    catch (Exception ex) { WriteOut(reqPrefix, "ERR " + ex.Message); }
+                                });
+                            }
+                            else
+                            {
+                                MouseMove(posX, posY, rel, moveDur);
+                                WriteOut(reqPrefix, "OK");
+                            }
+                        }
                         break;
 
                     case "mouse_drag":
-                        int fx = int.Parse(parts[1]);
-                        int fy = int.Parse(parts[2]);
-                        int tx = int.Parse(parts[3]);
-                        int ty = int.Parse(parts[4]);
-                        int dragDur = parts.Length > 5 ? int.Parse(parts[5]) : 150;
-                        MouseDrag(fx, fy, tx, ty, dragDur);
-                        Console.WriteLine("OK");
+                        {
+                            int fx = int.Parse(parts[1]);
+                            int fy = int.Parse(parts[2]);
+                            int tx = int.Parse(parts[3]);
+                            int ty = int.Parse(parts[4]);
+                            int dragDur = parts.Length > 5 ? int.Parse(parts[5]) : 150;
+                            if (allowAsync)
+                            {
+                                ThreadPool.QueueUserWorkItem(_ =>
+                                {
+                                    try { MouseDrag(fx, fy, tx, ty, dragDur); WriteOut(reqPrefix, "OK"); }
+                                    catch (Exception ex) { WriteOut(reqPrefix, "ERR " + ex.Message); }
+                                });
+                            }
+                            else
+                            {
+                                MouseDrag(fx, fy, tx, ty, dragDur);
+                                WriteOut(reqPrefix, "OK");
+                            }
+                        }
                         break;
 
                     case "mouse_wheel":
                         int delta = int.Parse(parts[1]);
                         MouseWheel(delta);
-                        Console.WriteLine("OK");
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "text":
                         int textStart = line.IndexOf(parts[0]) + parts[0].Length;
-                        string textContent = line.Substring(textStart).Trim();
+                        string textContent = (textStart < line.Length) ? line.Substring(textStart) : "";
+                        if (textContent.StartsWith(" ")) textContent = textContent.Substring(1);
                         SendUnicodeText(textContent);
-                        Console.WriteLine("OK");
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "hotkey":
                         int hkStart = line.IndexOf(parts[0]) + parts[0].Length;
                         string hkCombo = line.Substring(hkStart).Trim();
                         bool hkOk = SendHotkey(hkCombo);
-                        Console.WriteLine(hkOk ? "OK" : "ERR INVALID_HOTKEY");
+                        WriteOut(reqPrefix, hkOk ? "OK" : "ERR INVALID_HOTKEY");
                         break;
 
                     case "fg_window":
-                        Console.WriteLine("OK " + GetForegroundProcessInfo());
+                        WriteOut(reqPrefix, "OK " + GetForegroundProcessInfo());
+                        break;
+
+                    case "check_procs":
+                        string queryCsv = parts.Length > 1 ? string.Join("", parts, 1, parts.Length - 1) : "";
+                        WriteOut(reqPrefix, "OK " + CheckRunningProcesses(queryCsv));
                         break;
 
                     case "win_activate":
                         string actTarget = parts.Length > 1 ? parts[1] : "";
                         bool toggleMin = parts.Length > 2 && parts[2] == "1";
                         string actRes = ActivateOrToggleWindow(actTarget, toggleMin);
-                        Console.WriteLine("OK " + actRes);
+                        WriteOut(reqPrefix, "OK " + actRes);
                         break;
 
                     case "win_close":
                         string clsTarget = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1) : "";
                         bool closed = GracefulCloseProcess(clsTarget);
-                        Console.WriteLine(closed ? "OK CLOSED" : "ERR NOT_FOUND");
+                        WriteOut(reqPrefix, closed ? "OK CLOSED" : "ERR NOT_FOUND");
                         break;
 
                     case "window_rect":
@@ -1371,24 +1507,24 @@ namespace AkpInput
                         int wh = int.Parse(parts[4]);
                         string wtarget = parts.Length > 5 ? string.Join(" ", parts, 5, parts.Length - 5) : null;
                         SetWindowBounds(wx, wy, ww, wh, wtarget);
-                        Console.WriteLine("OK");
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "media":
                         string mcmd = parts.Length > 1 ? parts[1] : "";
                         SendMedia(mcmd);
-                        Console.WriteLine("OK");
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "vol_get":
                         int vLvl; bool vMute;
                         if (AudioGetVolume(out vLvl, out vMute))
                         {
-                            Console.WriteLine(string.Format("OK {0} MUTE:{1}", vLvl, vMute ? 1 : 0));
+                            WriteOut(reqPrefix, string.Format("OK {0} MUTE:{1}", vLvl, vMute ? 1 : 0));
                         }
                         else
                         {
-                            Console.WriteLine("ERR CANNOT_GET_VOLUME");
+                            WriteOut(reqPrefix, "ERR CANNOT_GET_VOLUME");
                         }
                         break;
 
@@ -1398,11 +1534,11 @@ namespace AkpInput
                         {
                             int curL; bool curM;
                             AudioGetVolume(out curL, out curM);
-                            Console.WriteLine(string.Format("OK {0} MUTE:{1}", curL, curM ? 1 : 0));
+                            WriteOut(reqPrefix, string.Format("OK {0} MUTE:{1}", curL, curM ? 1 : 0));
                         }
                         else
                         {
-                            Console.WriteLine("ERR CANNOT_SET_VOLUME");
+                            WriteOut(reqPrefix, "ERR CANNOT_SET_VOLUME");
                         }
                         break;
 
@@ -1412,11 +1548,11 @@ namespace AkpInput
                         int nLvl; bool nMute;
                         if (AudioStepVolume(volDelta, out nLvl, out nMute, triggerOsd))
                         {
-                            Console.WriteLine(string.Format("OK {0} MUTE:{1}", nLvl, nMute ? 1 : 0));
+                            WriteOut(reqPrefix, string.Format("OK {0} MUTE:{1}", nLvl, nMute ? 1 : 0));
                         }
                         else
                         {
-                            Console.WriteLine("ERR CANNOT_STEP_VOLUME");
+                            WriteOut(reqPrefix, "ERR CANNOT_STEP_VOLUME");
                         }
                         break;
 
@@ -1425,11 +1561,11 @@ namespace AkpInput
                         bool newMute; int curVol;
                         if (AudioToggleMute(out newMute, out curVol, muteOsd))
                         {
-                            Console.WriteLine(string.Format("OK MUTE:{0} {1}", newMute ? 1 : 0, curVol));
+                            WriteOut(reqPrefix, string.Format("OK MUTE:{0} {1}", newMute ? 1 : 0, curVol));
                         }
                         else
                         {
-                            Console.WriteLine("ERR CANNOT_TOGGLE_MUTE");
+                            WriteOut(reqPrefix, "ERR CANNOT_TOGGLE_MUTE");
                         }
                         break;
 
@@ -1443,7 +1579,7 @@ namespace AkpInput
                               .Append(devs[i].Name.Replace("|", "_").Replace(";", ",")).Append("|")
                               .Append(devs[i].IsDefault ? "1" : "0");
                         }
-                        Console.WriteLine("OK " + sb.ToString());
+                        WriteOut(reqPrefix, "OK " + sb.ToString());
                         break;
 
                     case "audio_switch":
@@ -1451,11 +1587,11 @@ namespace AkpInput
                         string resDev = AudioSwitchDevice(targetDev);
                         if (!string.IsNullOrEmpty(resDev) && !resDev.StartsWith("ERR"))
                         {
-                            Console.WriteLine("OK " + resDev);
+                            WriteOut(reqPrefix, "OK " + resDev);
                         }
                         else
                         {
-                            Console.WriteLine(resDev.StartsWith("ERR") ? resDev : "ERR SWITCH_FAILED");
+                            WriteOut(reqPrefix, resDev.StartsWith("ERR") ? resDev : "ERR SWITCH_FAILED");
                         }
                         break;
 
@@ -1474,7 +1610,7 @@ namespace AkpInput
                             }
                             string reason = parts.Length > startIdx ? string.Join(" ", parts, startIdx, parts.Length - startIdx) : "AKP153 控制台正在安全关闭并休眠屏幕...";
                             bool ok = BlockShutdown(hwnd, reason);
-                            Console.WriteLine(ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
+                            WriteOut(reqPrefix, ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
                         }
                         break;
 
@@ -1490,7 +1626,7 @@ namespace AkpInput
                                 }
                             }
                             bool ok = UnblockShutdown(hwnd);
-                            Console.WriteLine(ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
+                            WriteOut(reqPrefix, ok ? "OK" : "ERR " + Marshal.GetLastWin32Error());
                         }
                         break;
 
@@ -1498,33 +1634,33 @@ namespace AkpInput
                         if (parts.Length > 1)
                         {
                             SetDevicePath(string.Join(" ", parts, 1, parts.Length - 1));
-                            Console.WriteLine("OK");
+                            WriteOut(reqPrefix, "OK");
                         }
                         else
                         {
-                            Console.WriteLine("ERR MISSING_PATH");
+                            WriteOut(reqPrefix, "ERR MISSING_PATH");
                         }
                         break;
 
                     case "blackout_hardware":
                         {
                             bool ok = DirectHardwareBlackout();
-                            Console.WriteLine(ok ? "OK" : "ERR NO_DEVICE");
+                            WriteOut(reqPrefix, ok ? "OK" : "ERR NO_DEVICE");
                         }
                         break;
 
                     case "ping":
-                        Console.WriteLine("PONG");
+                        WriteOut(reqPrefix, "PONG");
                         break;
 
                     default:
-                        Console.WriteLine("ERR Unknown op: " + op);
+                        WriteOut(reqPrefix, "ERR Unknown op: " + op);
                         break;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("ERR " + ex.Message.Replace("\r", " ").Replace("\n", " "));
+                WriteOut(reqPrefix, "ERR " + ex.Message.Replace("\r", " ").Replace("\n", " "));
             }
         }
 
@@ -1544,7 +1680,7 @@ namespace AkpInput
                         while ((l = Console.ReadLine()) != null)
                         {
                             if (l == "exit" || l == "quit") break;
-                            ExecuteCommand(l);
+                            ExecuteCommand(l, true);
                         }
                     }
                     finally
@@ -1554,7 +1690,7 @@ namespace AkpInput
                     return;
                 }
 
-                ExecuteCommand(string.Join(" ", args));
+                ExecuteCommand(args.Length == 1 ? args[0] : string.Join(" ", args), false);
                 return;
             }
 
@@ -1564,7 +1700,7 @@ namespace AkpInput
                 string line;
                 while ((line = Console.ReadLine()) != null)
                 {
-                    ExecuteCommand(line);
+                    ExecuteCommand(line, true);
                 }
             }
             finally

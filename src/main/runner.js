@@ -4,7 +4,8 @@
  * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode
  */
 const { spawn, spawnSync } = require('child_process');
-const { shell } = require('electron');
+let shell = null;
+try { ({ shell } = require('electron')); } catch (_) {}
 const path = require('path');
 const probe = require('./probe');
 const NativeInput = require('./native-input');
@@ -18,6 +19,8 @@ const FOCUSABLE = new Set(['.exe', '.lnk']);
 
 const PS_TIMEOUT = 8000;
 const resolvedNameCache = new Map();   // target -> process name (no extension)
+const runningStateCache = new Map();   // lowerProcName -> { running: bool, ts: number }
+const RUNNING_CACHE_TTL = 600;         // 600ms 短期存活缓存，消除单次按键重复探测开销
 
 function looksLikeUrl(s) {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(String(s || '').trim());
@@ -131,18 +134,76 @@ Write-Output ('AKP_TARGET=' + $t)
   return name;
 }
 
-/** Is a process with this base name running? Cheap: tasklist, ~80ms, no shell. */
+/**
+ * 同步进程检测（仅作兜底与 CLI 诊断使用，优先命中 600ms 内存缓存）
+ */
 function isRunning(name) {
   if (!name) return false;
+  const clean = name.replace(/\.exe$/i, '').toLowerCase();
+  const cached = runningStateCache.get(clean);
+  if (cached && (Date.now() - cached.ts) < RUNNING_CACHE_TTL) {
+    return cached.running;
+  }
   try {
-    const clean = name.replace(/\.exe$/i, '');
     const r = spawnSync('tasklist',
       ['/FI', `IMAGENAME eq ${clean}.exe`, '/NH', '/FO', 'CSV'],
       { encoding: 'latin1', windowsHide: true, timeout: 4000 });
-    return String(r.stdout || '').toLowerCase().includes((clean + '.exe').toLowerCase());
+    const alive = String(r.stdout || '').toLowerCase().includes((clean + '.exe').toLowerCase());
+    runningStateCache.set(clean, { running: alive, ts: Date.now() });
+    return alive;
   } catch (e) {
     return false;
   }
+}
+
+/**
+ * 零阻塞异步进程存活检测：优先走 0.5ms C# 守护进程管道，不阻塞 Electron 主线程
+ */
+async function isRunningAsync(name) {
+  if (!name) return false;
+  const clean = name.replace(/\.exe$/i, '').toLowerCase();
+  const cached = runningStateCache.get(clean);
+  if (cached && (Date.now() - cached.ts) < RUNNING_CACHE_TTL) {
+    return cached.running;
+  }
+  try {
+    const set = await NativeInput.checkProcesses([clean]);
+    if (set !== null) {
+      const alive = set.has(clean);
+      runningStateCache.set(clean, { running: alive, ts: Date.now() });
+      return alive;
+    }
+  } catch (_) {}
+  return isRunning(clean);
+}
+
+/**
+ * 批量异步检测多个进程名是否正在运行（供后台 2s 状态同步引擎使用，单次耗时 < 1ms）
+ */
+async function checkProcessesRunning(names) {
+  const list = Array.from(new Set(
+    (Array.isArray(names) ? names : [])
+      .map((n) => String(n || '').replace(/\.exe$/i, '').toLowerCase())
+      .filter(Boolean)
+  ));
+  if (list.length === 0) return new Set();
+  try {
+    const set = await NativeInput.checkProcesses(list);
+    if (set !== null) {
+      const now = Date.now();
+      for (const n of list) {
+        runningStateCache.set(n, { running: set.has(n), ts: now });
+      }
+      return set;
+    }
+  } catch (_) {}
+
+  // 降级：仅当 C# 守护进程不支持 check_procs 时逐个检查
+  const fallbackSet = new Set();
+  for (const n of list) {
+    if (isRunning(n)) fallbackSet.add(n);
+  }
+  return fallbackSet;
 }
 
 /**
@@ -152,11 +213,18 @@ function isRunning(name) {
 async function activateWindow(name, allowMinimize = false) {
   if (!name) return null;
 
-  // 1. Try 0.5ms native C# daemon first
+  // 1. Try 0.5ms native C# daemon first (also checks if process/window exists)
   try {
     const nat = await NativeInput.activateOrToggleWindow(name, allowMinimize);
     if (nat && nat.ok) {
+      const clean = name.replace(/\.exe$/i, '').toLowerCase();
+      runningStateCache.set(clean, { running: true, ts: Date.now() });
       return nat.state === 'MINIMIZED' ? 'minimized' : 'focused';
+    }
+    if (nat && nat.state === 'NOWINDOW') {
+      // 如果 C# 守护进程明确告知无窗口且进程未运行，直接快速返回，免去启动 PowerShell
+      const alive = await isRunningAsync(name);
+      if (!alive) return null;
     }
   } catch (_) {}
 
@@ -216,7 +284,7 @@ if ($ok) { Write-Output 'AKP_RESULT=focused' } else { Write-Output 'AKP_RESULT=n
 async function focusExisting(target, allowMinimize = false) {
   try {
     const name = await processNameFor(target);
-    if (!name || !isRunning(name)) return null;
+    if (!name || !(await isRunningAsync(name))) return null;
     return await activateWindow(name, allowMinimize);
   } catch (e) {
     return null;
@@ -237,7 +305,7 @@ function runShell(line) {
   return child;
 }
 
-const activeLoops = new Map(); // keyId -> { stop: false }
+const activeLoops = new Map(); // keyId -> { stop: false, context }
 const busyKeys = new Set();
 let onLoopStateCallback = null;
 
@@ -248,9 +316,36 @@ function setLoopStateListener(fn) {
 function stopAllMacros() {
   for (const [k, token] of activeLoops.entries()) {
     token.stop = true;
-    if (onLoopStateCallback) onLoopStateCallback(k, false);
+    if (onLoopStateCallback) onLoopStateCallback(k, false, token.context);
   }
   activeLoops.clear();
+}
+
+function stopMacroForKey(pageId, row, col) {
+  const targetKey = `${pageId || ''}:${row},${col}`;
+  const shortKey = `${row},${col}`;
+  let stopped = false;
+  for (const [k, token] of activeLoops.entries()) {
+    if (k === targetKey || k === shortKey || k.endsWith(`:${shortKey}`)) {
+      token.stop = true;
+      activeLoops.delete(k);
+      if (onLoopStateCallback) onLoopStateCallback(k, false, token.context || { pageId, row, col });
+      stopped = true;
+    }
+  }
+  return stopped;
+}
+
+function stopMacrosForPage(pageId) {
+  if (!pageId) return;
+  const prefix = `${pageId}:`;
+  for (const [k, token] of activeLoops.entries()) {
+    if (k.startsWith(prefix)) {
+      token.stop = true;
+      activeLoops.delete(k);
+      if (onLoopStateCallback) onLoopStateCallback(k, false, token.context);
+    }
+  }
 }
 
 async function runSingleAction(action) {
@@ -382,7 +477,7 @@ async function runMacro(spec, context) {
   }
 
   if (isLoopToggle && keyId) {
-    const token = { stop: false };
+    const token = { stop: false, context };
     activeLoops.set(keyId, token);
     if (onLoopStateCallback) onLoopStateCallback(keyId, true, context);
 
@@ -776,14 +871,15 @@ async function diagnose(target) {
   const t = String(target || '');
   const ext = path.extname(t).toLowerCase();
   const name = await processNameFor(t);
+  const alive = await isRunningAsync(name);
   return {
     target: t,
     ext: ext,
     exists: exists(t),
     focusable: FOCUSABLE.has(ext),
     processName: name ? name + '.exe' : '(无法解析)',
-    running: isRunning(name),
-    willDo: FOCUSABLE.has(ext) && isRunning(name) ? '唤起或切换已在运行的窗口' : '启动它',
+    running: alive,
+    willDo: FOCUSABLE.has(ext) && alive ? '唤起或切换已在运行的窗口' : '启动它',
   };
 }
 
@@ -791,6 +887,8 @@ module.exports = {
   run,
   runSingleAction,
   stopAllMacros,
+  stopMacroForKey,
+  stopMacrosForPage,
   setLoopStateListener,
   activeLoops,
   NativeInput,
@@ -799,5 +897,8 @@ module.exports = {
   looksLikeUrl,
   diagnose,
   isRunning,
+  isRunningAsync,
+  checkProcessesRunning,
   processNameFor,
+  focusExisting,
 };

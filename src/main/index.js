@@ -1,10 +1,11 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, globalShortcut, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const os = require('os');
 
 const config = require('./config.js');
+const probe = require('./probe.js');
 const runner = require('./runner.js');
 const NativeInput = require('./native-input.js');
 
@@ -13,16 +14,44 @@ runner.setLoopStateListener((keyId, isRunning, context) => {
   broadcast('device:repaint', {});
 });
 
-// Anything that would otherwise vanish into nowhere gets written here.
+// Anything that would otherwise vanish into nowhere gets written here (with 2MB rotation & async buffering).
 const LOG_DIR = path.join(__dirname, '..', '..', 'logs');
-try { require('fs').mkdirSync(LOG_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 const LOG_FILE = path.join(LOG_DIR, 'main.log');
+const MAX_LOG_BYTES = 2 * 1024 * 1024;
+let logBuffer = '';
+let logFlushTimer = null;
+
+function flushLogsSync() {
+  if (!logBuffer) return;
+  const toWrite = logBuffer;
+  logBuffer = '';
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      const st = fs.statSync(LOG_FILE);
+      if (st.size > MAX_LOG_BYTES) {
+        try { fs.renameSync(LOG_FILE, LOG_FILE + '.old'); } catch (_) {}
+      }
+    }
+    fs.appendFileSync(LOG_FILE, toWrite, 'utf8');
+  } catch (e) { /* ignore */ }
+}
+
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.map((a) => (a && a.stack) || String(a)).join(' ')}\n`;
-  try { require('fs').appendFileSync(LOG_FILE, line, 'utf8'); } catch (e) { /* ignore */ }
+  logBuffer += line;
+  if (!logFlushTimer) {
+    logFlushTimer = setTimeout(() => {
+      logFlushTimer = null;
+      const chunk = logBuffer;
+      logBuffer = '';
+      if (!chunk) return;
+      fs.appendFile(LOG_FILE, chunk, 'utf8', () => {});
+    }, 150);
+  }
 }
-process.on('uncaughtException', (e) => log('UNCAUGHT', e));
-process.on('unhandledRejection', (e) => log('UNHANDLED', e));
+process.on('uncaughtException', (e) => { log('UNCAUGHT', e); flushLogsSync(); });
+process.on('unhandledRejection', (e) => { log('UNHANDLED', e); });
 
 // Launched with --startup (autologin): boot straight to the tray, no window.
 const STARTUP = process.argv.includes('--startup');
@@ -195,7 +224,9 @@ let mainHwndStr = null;
 async function prepareExitAndSleep() {
   if (isQuitting) return;
   isQuitting = true;
+  runner.stopAllMacros();
   log('prepareExitAndSleep: 正在关闭并休眠 AKP153 控制台硬件...');
+  flushLogsSync();
   try {
     if (process.platform === 'win32') {
       // 1. C# 原生直写作为终极托底 (仅耗时 2~5ms，即使后续进程被杀也已完成物理灭屏)
@@ -214,6 +245,7 @@ async function prepareExitAndSleep() {
   } catch (err) {
     log('prepareExitAndSleep 硬件休眠失败:', err);
   } finally {
+    flushLogsSync();
     if (process.platform === 'win32') {
       try { await NativeInput.shutdownUnblock(mainHwndStr || 0); } catch (_) {}
     }
@@ -344,22 +376,12 @@ async function onKeyDown(row, col) {
 
   const spec = page.buttons[row + ',' + col];
 
-  if (spec && spec.type === 'page') {
-    const target = resolvePageAction(spec, page);
-    if (!target) {
-      log(`key r${row}c${col} -> page ${spec.mode} 无可用目标`);
-      notify('这个切页键现在没有可去的页面');
-      return;
-    }
-    await goToPage(target, `key r${row}c${col} (${spec.mode})`);
-    return;
-  }
-
   const isMulti = spec && (spec.type === 'multi' || spec.type === 'macro');
   const isQr = spec && (spec.type === 'qr_decode' || spec.type === 'qr');
   const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio');
   const isMedia = spec && (spec.type === 'media');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia)) {
+  const isPage = spec && (spec.type === 'page');
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
@@ -368,24 +390,40 @@ async function onKeyDown(row, col) {
 
   let actionToRun = spec;
   if (spec.badgeToggle && (!isVolume || spec.toggleAction)) {
-    // 若是 app 类型且未开始自定义非进程动作，优先先以真实进程状态校准当前态，防止“盲切误杀”
+    // 若是 app 类型且启用了双态，优先通过 0.5ms 异步进程探测校准真实运行态，防止“盲切误杀”
     let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
     if (spec.type === 'app' && spec.target && spec.toggleAction) {
       try {
         const procName = await runner.processNameFor(probe.probeApp(spec.target));
         if (procName) {
-          curState = runner.isRunning(procName) ? 1 : 0;
+          curState = (await runner.isRunningAsync(procName)) ? 1 : 0;
         }
       } catch (_) {}
     }
     const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target, args: spec.act2Args || '' } : null);
-    const hasAction2 = spec.toggleAction && act2 && (act2.target || act2.hotkey || act2.type === 'volume' || act2.type === 'audio' || act2.type === 'media');
+    const hasAction2 = spec.toggleAction && act2 && (
+      act2.target || act2.hotkey ||
+      act2.type === 'volume' || act2.type === 'audio' ||
+      act2.type === 'media' || act2.type === 'multi' ||
+      act2.type === 'macro' || act2.type === 'qr_decode' || act2.type === 'page'
+    );
     if (hasAction2 && curState === 1) {
       actionToRun = act2;
     }
     const nextState = (curState === 1 ? 0 : 1);
     spec._activeState = nextState;
     broadcast('key:toggleState', { pageId: page.id, row, col, activeState: nextState });
+  }
+
+  if (actionToRun && actionToRun.type === 'page') {
+    const target = resolvePageAction(actionToRun, page);
+    if (!target) {
+      log(`key r${row}c${col} -> page ${actionToRun.mode} 无可用目标`);
+      notify('这个切页键现在没有可去的页面');
+      return;
+    }
+    await goToPage(target, `key r${row}c${col} (${actionToRun.mode})`);
+    return;
   }
 
   const actMulti = actionToRun && (actionToRun.type === 'multi' || actionToRun.type === 'macro');
@@ -397,7 +435,7 @@ async function onKeyDown(row, col) {
     broadcast('device:repaint-strips', {});
     broadcast('audio:state', res);
   }
-  if (isQr) {
+  if (isQr || (actionToRun && (actionToRun.type === 'qr_decode' || actionToRun.type === 'qr'))) {
     if (res.error !== 'CANCELLED') {
       broadcast('key:result', { row, col, success: !!res.ok, text: res.text || '' });
       if (res.ok) {
@@ -432,64 +470,76 @@ function resetIdleTimer() {
 /**
  * 后台智能态势引擎：
  * 1. 前台窗口感知自动切页 (Auto-Profile Switching)
- * 2. 当前页应用程序真实进程存活状态同步（消除双态按钮盲切反相）
+ * 2. 当前页应用程序真实进程存活状态同步（单次批量管道查询耗时 < 1ms，零阻塞）
  */
+let isPollingState = false;
 async function pollForegroundAndProcessState() {
-  if (deviceAsleep) return;
-  const cfg = config.load();
-  if (!cfg || !Array.isArray(cfg.pages)) return;
+  if (deviceAsleep || isPollingState) return;
+  isPollingState = true;
+  try {
+    const cfg = config.load();
+    if (!cfg || !Array.isArray(cfg.pages)) return;
 
-  // 1. 前台窗口感知自动切页
-  if (cfg.autoSwitchPage !== false && cfg.pages.some((p) => p.autoApp && p.autoApp.trim())) {
-    try {
-      const fg = await NativeInput.getForegroundWindow();
-      const proc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
-      // 忽略控制台自身窗口与系统外壳
-      const isSelfOrShell = !proc || proc === 'electron' || proc === 'akp153 控制台' || proc === 'akp-input' || proc === 'searchhost' || proc === 'shellexperiencehost';
-      if (!isSelfOrShell && proc !== lastFgProcess) {
-        lastFgProcess = proc;
-        const matchedPage = cfg.pages.find((p) => {
-          if (!p.autoApp) return false;
-          const rules = p.autoApp.split(/[,;，；\s]+/).map((s) => s.trim().toLowerCase().replace(/\.exe$/i, '')).filter(Boolean);
-          return rules.some((r) => proc === r || proc.includes(r));
-        });
+    // 1. 前台窗口感知自动切页
+    if (cfg.autoSwitchPage !== false && cfg.pages.some((p) => p.autoApp && p.autoApp.trim())) {
+      try {
+        const fg = await NativeInput.getForegroundWindow();
+        const proc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
+        // 忽略控制台自身窗口与系统外壳
+        const isSelfOrShell = !proc || proc === 'electron' || proc === 'akp153 控制台' || proc === 'akp-input' || proc === 'searchhost' || proc === 'shellexperiencehost';
+        if (!isSelfOrShell && proc !== lastFgProcess) {
+          lastFgProcess = proc;
+          const matchedPage = cfg.pages.find((p) => {
+            if (!p.autoApp) return false;
+            const rules = p.autoApp.split(/[,;，；\s]+/).map((s) => s.trim().toLowerCase().replace(/\.exe$/i, '')).filter(Boolean);
+            return rules.some((r) => proc === r || proc.includes(r));
+          });
 
-        if (matchedPage) {
-          if (cfg.currentPage !== matchedPage.id) {
-            if (!autoSwitchedFromPageId) {
-              autoSwitchedFromPageId = cfg.currentPage;
+          if (matchedPage) {
+            if (cfg.currentPage !== matchedPage.id) {
+              if (!autoSwitchedFromPageId) {
+                autoSwitchedFromPageId = cfg.currentPage;
+              }
+              autoSwitchedToPageId = matchedPage.id;
+              await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
             }
-            autoSwitchedToPageId = matchedPage.id;
-            await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
+          } else if (autoSwitchedFromPageId && cfg.currentPage === autoSwitchedToPageId) {
+            const restoreId = autoSwitchedFromPageId;
+            autoSwitchedFromPageId = null;
+            autoSwitchedToPageId = null;
+            await goToPage(restoreId, `auto-restore (left ${proc})`, true);
           }
-        } else if (autoSwitchedFromPageId && cfg.currentPage === autoSwitchedToPageId) {
-          const restoreId = autoSwitchedFromPageId;
-          autoSwitchedFromPageId = null;
-          autoSwitchedToPageId = null;
-          await goToPage(restoreId, `auto-restore (left ${proc})`, true);
+        }
+      } catch (_) {}
+    }
+
+    // 2. 批量同步当前页面上绑定了进程双态角标的按键真实运行状态（免除逐个 spawnSync('tasklist') 阻塞）
+    try {
+      const page = config.currentPage();
+      if (!page || !page.buttons) return;
+      const entries = [];
+      for (const [k, spec] of Object.entries(page.buttons)) {
+        if (!spec || spec.type !== 'app' || !spec.badgeToggle || !spec.target) continue;
+        const procName = await runner.processNameFor(probe.probeApp(spec.target));
+        if (!procName) continue;
+        entries.push({ k, spec, procName: procName.replace(/\.exe$/i, '').toLowerCase() });
+      }
+      if (entries.length > 0) {
+        const runningSet = await runner.checkProcessesRunning(entries.map((e) => e.procName));
+        for (const { k, spec, procName } of entries) {
+          const [row, col] = k.split(',').map(Number);
+          const realState = runningSet.has(procName) ? 1 : 0;
+          const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+          if (realState !== curState) {
+            spec._activeState = realState;
+            broadcast('key:toggleState', { pageId: page.id, row, col, activeState: realState });
+          }
         }
       }
     } catch (_) {}
+  } finally {
+    isPollingState = false;
   }
-
-  // 2. 同步当前页面上绑定了进程双态角标的按键真实运行状态
-  try {
-    const page = config.currentPage();
-    if (!page || !page.buttons) return;
-    for (const [k, spec] of Object.entries(page.buttons)) {
-      if (!spec || spec.type !== 'app' || !spec.badgeToggle || !spec.target) continue;
-      const [row, col] = k.split(',').map(Number);
-      const procName = await runner.processNameFor(runner.probe.probeApp(spec.target));
-      if (!procName) continue;
-      const running = runner.isRunning(procName);
-      const realState = running ? 1 : 0;
-      const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-      if (realState !== curState) {
-        spec._activeState = realState;
-        broadcast('key:toggleState', { pageId: page.id, row, col, activeState: realState });
-      }
-    }
-  } catch (_) {}
 }
 
 // ------------------------------------------------------------------- window
@@ -548,6 +598,18 @@ function createWindow() {
   };
   win.on('resize', rememberBounds);
   win.on('move', rememberBounds);
+
+  // 拦截系统级 Alt+F4 或任务栏右键关闭事件，遵循 closeToTray 或安全休眠硬件后退出
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    const cfg = config.load();
+    if (cfg.closeToTray === false) {
+      prepareExitAndSleep();
+    } else {
+      win.hide();
+    }
+  });
   win.on('closed', () => { win = null; });
   win.on('hide', () => { /* keep running */ });
 
@@ -608,7 +670,7 @@ function createTray() {
 }
 
 function showWindow() {
-  if (!win) createWindow();
+  if (!win || win.isDestroyed()) createWindow();
   win.show();
   win.focus();
 }
@@ -639,6 +701,20 @@ ipcMain.handle('device:draw', async (e, a) => {
   }
   return r;
 });
+
+ipcMain.handle('device:batchDraw', async (e, items) => {
+  if (deviceAsleep) return { ok: true, drawn: 0, skipped: (items && items.length) || 0 };
+  const r = await safeRpc('batchDraw', { items });
+  if (r && r.ok === false) {
+    drawStats.fail++;
+    drawStats.lastError = r.error;
+  } else if (r) {
+    drawStats.ok += Number(r.drawn) || 0;
+    drawStats.skipped += Number(r.skipped) || 0;
+  }
+  return r;
+});
+
 ipcMain.handle('device:brightness', (e, v) => safeRpc('brightness', { value: v }));
 ipcMain.handle('device:sleep', () => doSleep());
 ipcMain.handle('device:wake', () => doWake());
@@ -651,10 +727,25 @@ ipcMain.handle('host:status', () => ({
 }));
 
 ipcMain.handle('action:run', async (e, spec) => {
-  const res = await runner.run(spec);
+  if (spec && spec.type === 'page') {
+    const page = config.currentPage();
+    const target = resolvePageAction(spec, page);
+    if (!target) return { ok: false, error: '当前翻页动作没有可跳转的目标页面' };
+    await goToPage(target, `ui-test (${spec.mode || 'next'})`);
+    return { ok: true, action: 'page', pageId: target };
+  }
+  const page = config.currentPage();
+  const res = await runner.run(spec, { pageId: page && page.id });
   if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (spec && (spec.type === 'volume' || spec.type === 'audio')))) {
+    let audioPayload = res;
+    if (res.level === undefined && res.volume === undefined) {
+      try {
+        const curVol = await NativeInput.getVolume();
+        if (curVol && curVol.level !== undefined) audioPayload = Object.assign({}, res, curVol);
+      } catch (_) {}
+    }
     broadcast('device:repaint-strips', {});
-    broadcast('audio:state', res);
+    broadcast('audio:state', audioPayload);
   }
   return res;
 });
@@ -708,8 +799,9 @@ function decodeIni(buf) {
 }
 
 function extractIconFromResource(filePath, iconIndex = 0) {
-  const tmp = path.join(os.tmpdir(), `akp153-res-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
-  const psScript = `
+  return new Promise((resolve) => {
+    const tmp = path.join(os.tmpdir(), `akp153-res-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+    const psScript = `
 Add-Type -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -747,26 +839,55 @@ if ($bmp -ne $null) {
 }
 `;
 
-  const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
-  spawnSync('powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64],
-    { windowsHide: true, timeout: 6000 });
-
-  try {
-    if (fs.existsSync(tmp)) {
-      const buf = fs.readFileSync(tmp);
-      fs.unlinkSync(tmp);
-      if (buf.length > 0) {
-        return 'data:image/png;base64,' + buf.toString('base64');
-      }
+    const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    let child;
+    try {
+      child = spawn('powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64],
+        { windowsHide: true, stdio: 'ignore' });
+    } catch (_) {
+      return finish(null);
     }
-  } catch (e) {}
-  return null;
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (_) {}
+      finish(null);
+    }, 6000);
+
+    child.on('error', () => { clearTimeout(timer); finish(null); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        if (fs.existsSync(tmp)) {
+          const buf = fs.readFileSync(tmp);
+          try { fs.unlinkSync(tmp); } catch (_) {}
+          if (buf.length > 0) {
+            return finish('data:image/png;base64,' + buf.toString('base64'));
+          }
+        }
+      } catch (_) {}
+      finish(null);
+    });
+  });
 }
 
 let prevCpus = null;
+let lastCpuTime = 0;
+let lastCpuPct = 0;
+
 function getCpuUsage() {
+  const now = Date.now();
+  // 防并发采样吞噬守卫：1000ms 内多块副屏并发请求直接复用同一采样周期结果，杜绝 totalDiff=0 导致归零
+  if (prevCpus && (now - lastCpuTime) < 1000) {
+    return lastCpuPct;
+  }
   const cpus = os.cpus();
+  lastCpuTime = now;
   if (!prevCpus) {
     prevCpus = cpus;
     return 0;
@@ -781,8 +902,9 @@ function getCpuUsage() {
     totalDiff += currTotal - prevTotal;
   }
   prevCpus = cpus;
-  if (totalDiff <= 0) return 0;
-  return Math.max(0, Math.min(100, Math.round((1 - idleDiff / totalDiff) * 100)));
+  if (totalDiff <= 0) return lastCpuPct;
+  lastCpuPct = Math.max(0, Math.min(100, Math.round((1 - idleDiff / totalDiff) * 100)));
+  return lastCpuPct;
 }
 
 function toSafeDataUrl(nat, maxDim = 1440) {
@@ -835,7 +957,7 @@ async function extractIcon(targetPath) {
             } catch (_) {}
           }
           if (iconExt === '.dll' || details.iconIndex) {
-            const resIcon = extractIconFromResource(iconPath, details.iconIndex || 0);
+            const resIcon = await extractIconFromResource(iconPath, details.iconIndex || 0);
             if (resIcon) return resIcon;
           }
           try {
@@ -903,7 +1025,7 @@ async function extractIcon(targetPath) {
                 } catch (_) {}
               }
               if (iconExt === '.dll' || iconIndex !== 0) {
-                const resIcon = extractIconFromResource(iconPath, iconIndex);
+                const resIcon = await extractIconFromResource(iconPath, iconIndex);
                 if (resIcon) return resIcon;
               }
               try {
@@ -973,21 +1095,39 @@ ipcMain.handle('macro:stopAll', () => {
   return { ok: true };
 });
 
+ipcMain.handle('macro:stopKey', (e, { pageId, row, col } = {}) => {
+  runner.stopMacroForKey(pageId, row, col);
+  return { ok: true };
+});
+
+ipcMain.handle('macro:stopPage', (e, pageId) => {
+  runner.stopMacrosForPage(pageId);
+  return { ok: true };
+});
+
 ipcMain.handle('macro:activeLoops', () => {
   return Array.from(runner.activeLoops.keys());
 });
 
 const REG_RUN = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-function setStartupRegistry(enable) {
-  try {
-    spawnSync('reg.exe', ['delete', REG_RUN, '/v', 'electron.app.Electron', '/f'], { windowsHide: true });
-  } catch (_) {}
+function runRegAsync(args) {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('reg.exe', args, { windowsHide: true, stdio: 'ignore' });
+      child.on('error', () => resolve(false));
+      child.on('close', (code) => resolve(code === 0));
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function setStartupRegistry(enable) {
+  await runRegAsync(['delete', REG_RUN, '/v', 'electron.app.Electron', '/f']);
 
   const keyName = 'AKP153-Dock';
   if (!enable) {
-    try {
-      spawnSync('reg.exe', ['delete', REG_RUN, '/v', keyName, '/f'], { windowsHide: true });
-    } catch (_) {}
+    await runRegAsync(['delete', REG_RUN, '/v', keyName, '/f']);
     return;
   }
 
@@ -998,17 +1138,13 @@ function setStartupRegistry(enable) {
     const rootDir = path.resolve(__dirname, '..', '..');
     cmd = `"${process.execPath}" "${rootDir}" --startup`;
   }
-  try {
-    spawnSync('reg.exe', ['add', REG_RUN, '/v', keyName, '/t', 'REG_SZ', '/d', cmd, '/f'], { windowsHide: true });
-    log('Set startup registry:', keyName, cmd);
-  } catch (err) {
-    log('Failed to set registry startup:', err && err.message);
-  }
+  const ok = await runRegAsync(['add', REG_RUN, '/v', keyName, '/t', 'REG_SZ', '/d', cmd, '/f']);
+  if (ok) log('Set startup registry:', keyName, cmd);
 }
 
-ipcMain.handle('app:setLogin', (e, v) => {
+ipcMain.handle('app:setLogin', async (e, v) => {
   config.set('openAtLogin', !!v);
-  setStartupRegistry(!!v);
+  await setStartupRegistry(!!v);
   return true;
 });
 
@@ -1180,15 +1316,17 @@ ipcMain.handle('config:import', async () => {
   try {
     const text = fs.readFileSync(res.filePaths[0], 'utf8');
     const parsed = JSON.parse(text);
-    if (!parsed || (!parsed.pages && !parsed.version)) {
+    if (!parsed || (!parsed.pages && !parsed.buttons && !parsed.version)) {
       return { ok: false, error: '该文件不包含有效的 AKP153 控制台配置！' };
     }
+    runner.stopAllMacros();
     config.save(parsed);
+    const normalized = config.load();
     resetIdleTimer();
     log('config backup imported from', res.filePaths[0]);
-    broadcast('config:external', parsed);
+    broadcast('config:external', normalized);
     repaintSoon(true);
-    return { ok: true, path: res.filePaths[0], data: parsed };
+    return { ok: true, path: res.filePaths[0], data: normalized };
   } catch (err) {
     return { ok: false, error: '无法解析备份文件：' + err.message };
   }
@@ -1205,6 +1343,7 @@ ipcMain.handle('config:openFolder', async () => {
 
 ipcMain.handle('config:reset', async () => {
   try {
+    runner.stopAllMacros();
     const def = JSON.parse(JSON.stringify(config.DEFAULTS));
     def.pages = [{
       id: 'p1',

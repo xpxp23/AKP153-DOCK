@@ -9,7 +9,7 @@
  *
  * Talks JSON-RPC over stdin/stdout, one JSON object per line.
  *
- * Commands:  open | close | draw | clear | brightness | sleep | wake | ping | status
+ * Commands:  open | close | draw | batchDraw | clear | brightness | sleep | wake | ping | status
  * Events:    ready | opened | lost | error | down | up | wake
  */
 
@@ -66,6 +66,7 @@ class Device {
     this.broken = false;
     this.brightness = 80;
     this.savedBrightness = 80;
+    this.lastSleepMode = 'zeros-last';
     this.queue = Promise.resolve();
     this.watchdog = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
@@ -262,7 +263,10 @@ class Device {
   static SLEEP_MODES = ['zeros-last', 'blackout', 'vendor', 'nobright', 'light'];
 
   async sleep(mode, force) {
-    const m = Device.SLEEP_MODES.includes(mode) ? mode : 'zeros-last';
+    const m = Device.SLEEP_MODES.includes(mode) ? mode : (this.lastSleepMode || 'zeros-last');
+    if (m !== 'blackout') {
+      this.lastSleepMode = m;
+    }
     // 若面板已处于休眠状态，且非关机彻底灭屏 (blackout) 亦非强制重发，则立即幂等返回，
     // 严禁向休眠中的硬件重复发送 LIG 0 / LBLIG 0，避免单片机 PWM 背光电路产生瞬态频闪。
     if (this.asleep && m !== 'blackout' && !force) {
@@ -355,7 +359,7 @@ class Device {
       try {
         this.open();
         if (wasAsleep) {
-          await this.sleep();
+          await this.sleep(this.lastSleepMode, true);
         } else {
           await this.wake(this.brightness, true);
         }
@@ -409,6 +413,17 @@ async function handle(msg) {
       if (!device.isOpen) return fail(id, 'NOT_OPEN');
       const res = await device.draw(msg.row, msg.col, msg.data, !!msg.force);
       return reply(id, res || {});
+    }
+    case 'batchDraw': {
+      if (!device.isOpen) return fail(id, 'NOT_OPEN');
+      const items = Array.isArray(msg.items) ? msg.items : [];
+      let drawn = 0, skipped = 0;
+      for (const it of items) {
+        const r = await device.draw(it.row, it.col, it.data, !!it.force);
+        if (r && r.drawn) drawn++;
+        else skipped++;
+      }
+      return reply(id, { drawn, skipped });
     }
     case 'clear':
       await device.clearScreen();

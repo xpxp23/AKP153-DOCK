@@ -1,14 +1,14 @@
 'use strict';
 /**
- * native-input.js - 原生 1ms 零延迟键鼠、窗口与音频驱动桥接
+ * native-input.js - 原生 1ms 零延迟键鼠、窗口、进程探测与音频驱动桥接
  *
  * 采用常驻子进程管道通信，将所有输入与窗口操作的延迟压缩至 0.1~1ms。
  * 具备：
  * 1. 自动按需编译更新：若检测到 native-input.cs 比 bin/akp-input.exe 更新，自动调用系统 .NET csc.exe 重编译；
- * 2. 健壮的 FIFO 队列守卫：进程异常退出自动清空并安全结算所有挂起 Promise，单指令超时保护，杜绝死锁；
- * 3. 多行输入清洗防注入：杜绝换行符截断管道协议导致的队列错位。
+ * 2. 异步流水号 + FIFO 双模守卫：支持 @id 异步乱序回调（耗时鼠标平滑移动绝不阻塞音量/窗口查询），同时向下兼容旧版二进制；
+ * 3. 安全参数隔离与多行清洗：降级模式采用 spawnSync 参数数组传递，彻底杜绝 cmd 命令行注入。
  */
-const { spawn, spawnSync, execSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -16,7 +16,9 @@ const BIN_PATH = path.join(__dirname, '..', '..', 'bin', 'akp-input.exe');
 const CS_PATH = path.join(__dirname, 'native-input.cs');
 
 let daemonProc = null;
-let pendingQueue = []; // [{ resolve, timer }]
+let pendingQueue = []; // [{ id, resolve, timer }]
+let reqSeq = 0;
+let supportsIdPrefix = true; // 自动协商：若发现旧版二进制未编译支持 @id，则自动无缝回退
 let compileChecked = false;
 
 /**
@@ -87,6 +89,33 @@ function ensureDaemon() {
 
       for (const line of lines) {
         const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // 优先匹配 @<id> 异步完成回调
+        if (trimmed.startsWith('@')) {
+          const sp = trimmed.indexOf(' ');
+          if (sp > 1) {
+            const respId = parseInt(trimmed.slice(1, sp), 10);
+            const payload = trimmed.slice(sp + 1).trim();
+            const idx = pendingQueue.findIndex((x) => x.id === respId);
+            if (idx >= 0) {
+              const item = pendingQueue.splice(idx, 1)[0];
+              clearTimeout(item.timer);
+              item.resolve(payload);
+              continue;
+            }
+          }
+        }
+
+        // 若收到旧版二进制对 @id 的未知指令报错，自动降级为无前缀模式并重发
+        if (trimmed.startsWith('ERR Unknown op: @') && pendingQueue.length > 0) {
+          supportsIdPrefix = false;
+          const item = pendingQueue.shift();
+          clearTimeout(item.timer);
+          sendCmd(item.rawCmd, item.timeoutMs).then(item.resolve);
+          continue;
+        }
+
         if (pendingQueue.length > 0) {
           const item = pendingQueue.shift();
           clearTimeout(item.timer);
@@ -116,14 +145,18 @@ function ensureDaemon() {
  * 向常驻输入引擎发送一条单行指令并等待执行确认 (0.1~1ms)，具备超时与防换行截断保护
  */
 function sendCmd(cmdStr, timeoutMs = 4000) {
-  // 清洗任何意外的换行符，防止单条指令被拆成多行污染 FIFO 队列
+  // 清洗任何意外的换行符，防止单条指令被拆成多行污染管道队列
   const sanitized = String(cmdStr || '').replace(/\r\n/g, '\\n').replace(/[\r\n]/g, '\\n').trim();
   if (!sanitized) return Promise.resolve('OK');
 
   return new Promise((resolve) => {
     const daemon = ensureDaemon();
     if (daemon && daemon.stdin && daemon.stdin.writable) {
+      const id = ++reqSeq;
       const entry = {
+        id,
+        rawCmd: sanitized,
+        timeoutMs,
         resolve,
         timer: setTimeout(() => {
           const idx = pendingQueue.indexOf(entry);
@@ -133,7 +166,8 @@ function sendCmd(cmdStr, timeoutMs = 4000) {
       };
       pendingQueue.push(entry);
       try {
-        daemon.stdin.write(sanitized + '\n');
+        const wireLine = supportsIdPrefix ? `@${id} ${sanitized}\n` : `${sanitized}\n`;
+        daemon.stdin.write(wireLine);
       } catch (e) {
         const idx = pendingQueue.indexOf(entry);
         if (idx >= 0) pendingQueue.splice(idx, 1);
@@ -141,13 +175,18 @@ function sendCmd(cmdStr, timeoutMs = 4000) {
         resolve('ERR WRITE_FAILED');
       }
     } else {
+      // 安全降级：使用 spawnSync 参数数组传递，杜绝 shell 字符串拼接导致的命令注入
       try {
-        const out = execSync(`"${BIN_PATH}" ${sanitized}`, {
+        const r = spawnSync(BIN_PATH, [sanitized], {
           encoding: 'utf8',
           windowsHide: true,
           timeout: 2000,
         });
-        resolve(out.trim());
+        if (r.error) {
+          resolve('ERR ' + r.error.message);
+        } else {
+          resolve(String(r.stdout || '').trim() || 'OK');
+        }
       } catch (e) {
         resolve('ERR ' + e.message);
       }
@@ -210,6 +249,27 @@ const NativeInput = {
       };
     }
     return null;
+  },
+
+  /**
+   * 毫秒级批量查询进程是否存活（耗时 ~0.5ms，彻底替代阻塞主进程的 spawnSync('tasklist')）
+   * @param {string[]} names 进程名数组
+   * @returns {Promise<Set<string>>} 正在运行的进程名集合（小写、无 .exe 后缀）
+   */
+  checkProcesses: async (names) => {
+    const cleanList = Array.from(new Set(
+      (Array.isArray(names) ? names : [names])
+        .map((n) => String(n || '').trim().replace(/\.exe$/i, '').toLowerCase())
+        .filter(Boolean)
+    ));
+    if (cleanList.length === 0) return new Set();
+    const res = await sendCmd(`check_procs ${cleanList.join(',')}`);
+    if (res.startsWith('OK')) {
+      const raw = res.slice(2).trim();
+      if (!raw) return new Set();
+      return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+    }
+    return null; // null 表示守护进程不支持该指令，由调用方降级
   },
 
   activateOrToggleWindow: async (procName, allowMinimize = false) => {
@@ -303,7 +363,8 @@ const NativeInput = {
   switchAudioDevice: async (target = '') => {
     const res = await sendCmd(`audio_switch ${target}`.trim());
     if (res.startsWith('OK ')) {
-      return { ok: true, name: res.slice(3).trim() };
+      const name = res.slice(3).trim();
+      return { ok: true, name, device: name };
     }
     return { ok: false, error: res.replace(/^ERR\s*/, '') };
   },
