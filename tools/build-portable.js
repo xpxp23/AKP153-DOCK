@@ -86,6 +86,11 @@ function run() {
   copyDirSync(path.join(ROOT, 'assets'), path.join(appDir, 'assets'));
   copyDirSync(path.join(ROOT, 'bin'), path.join(appDir, 'bin'));
   copyDirSync(path.join(ROOT, 'bin'), path.join(STAGE, 'bin'));
+  if (fs.existsSync(path.join(ROOT, 'plugins'))) {
+    copyDirSync(path.join(ROOT, 'plugins'), path.join(appDir, 'plugins'));
+    copyDirSync(path.join(ROOT, 'plugins'), path.join(STAGE, 'plugins'));
+    log('已注入动态扩展插件库 (plugins/)');
+  }
 
   // 复制 package.json
   const pkgContent = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Runs whatever a button points at.
- * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode
+ * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode | widget
  */
 const { spawn, spawnSync } = require('child_process');
 let shell = null;
@@ -9,18 +9,16 @@ try { ({ shell } = require('electron')); } catch (_) {}
 const path = require('path');
 const probe = require('./probe');
 const NativeInput = require('./native-input');
+const telemetry = require('./telemetry-plugins');
 
 const EXT_EXEC = new Set(['.exe', '.bat', '.cmd', '.com', '.msi', '.ps1']);
 
-/** Targets we try to *focus* (or smart-toggle) before launching. Single-instance apps
- *  (QOwnNotes, WeChat DevTools, VS Code, most Electron apps) silently drop a
- *  second launch, so without this a key press looks like it did nothing. */
 const FOCUSABLE = new Set(['.exe', '.lnk']);
 
 const PS_TIMEOUT = 8000;
 const resolvedNameCache = new Map();   // target -> process name (no extension)
 const runningStateCache = new Map();   // lowerProcName -> { running: bool, ts: number }
-const RUNNING_CACHE_TTL = 600;         // 600ms 短期存活缓存，消除单次按键重复探测开销
+const RUNNING_CACHE_TTL = 600;
 
 function looksLikeUrl(s) {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(String(s || '').trim());
@@ -28,6 +26,51 @@ function looksLikeUrl(s) {
 
 function exists(p) {
   try { return require('fs').existsSync(p); } catch (e) { return false; }
+}
+
+/**
+ * 解析命令行参数字符串，保留双引号与单引号包裹的带空格路径
+ */
+function splitArgs(argStr) {
+  const s = String(argStr || '').trim();
+  if (!s) return [];
+  const out = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (cur.length > 0) {
+        out.push(cur);
+        cur = '';
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
+}
+
+function hexColorDistance(hex1, hex2) {
+  const c1 = String(hex1 || '').replace(/^#/, '');
+  const c2 = String(hex2 || '').replace(/^#/, '');
+  if (c1.length !== 6 || c2.length !== 6) return 999;
+  const r1 = parseInt(c1.slice(0, 2), 16) || 0;
+  const g1 = parseInt(c1.slice(2, 4), 16) || 0;
+  const b1 = parseInt(c1.slice(4, 6), 16) || 0;
+  const r2 = parseInt(c2.slice(0, 2), 16) || 0;
+  const g2 = parseInt(c2.slice(2, 4), 16) || 0;
+  const b2 = parseInt(c2.slice(4, 6), 16) || 0;
+  return Math.max(Math.abs(r1 - r2), Math.abs(g1 - g2), Math.abs(b1 - b2));
 }
 
 let lastVolTime = 0;
@@ -46,27 +89,20 @@ function computeVolStep(baseStep) {
   return baseStep;
 }
 
-/**
- * Spawn a process that must not show anything.
- * NEVER pass `detached: true` here on Windows.
- */
 function spawnQuiet(file, args, opts) {
   const child = spawn(file, args, Object.assign({ stdio: 'ignore', windowsHide: true }, opts || {}));
-  child.on('error', () => { /* reported through the caller's return value where possible */ });
+  child.on('error', () => {});
   child.unref();
   return child;
 }
 
-/**
- * Spawn a GUI desktop application that should be visible to the user.
- */
 function spawnApp(file, args, opts) {
   const child = spawn(file, args || [], Object.assign({
     stdio: 'ignore',
     windowsHide: false,
     detached: true,
   }, opts || {}));
-  child.on('error', () => { /* ignored */ });
+  child.on('error', () => {});
   child.unref();
   return child;
 }
@@ -90,7 +126,7 @@ function runPowerShell(script, timeout) {
     }
     const timer = setTimeout(() => { try { child.kill(); } catch (e) {} finish(''); }, timeout || PS_TIMEOUT);
     child.stdout.on('data', (d) => { out += d.toString('utf8'); });
-    child.stderr.on('data', () => { /* noise */ });
+    child.stderr.on('data', () => {});
     child.on('error', () => { clearTimeout(timer); finish(''); });
     child.on('close', () => { clearTimeout(timer); finish(out); });
   });
@@ -98,7 +134,6 @@ function runPowerShell(script, timeout) {
 
 const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'";
 
-/** Resolve a .lnk to its real target, then cache the process name. */
 async function processNameFor(target) {
   const ext = path.extname(target).toLowerCase();
   if (ext !== '.lnk' && ext !== '.url') {
@@ -107,7 +142,7 @@ async function processNameFor(target) {
   if (resolvedNameCache.has(target)) return resolvedNameCache.get(target);
 
   try {
-    const details = shell.readShortcutLink(target);
+    const details = shell && shell.readShortcutLink(target);
     if (details && details.target) {
       const exp = probe.expandPath(details.target);
       if (exp && path.extname(exp)) {
@@ -134,9 +169,6 @@ Write-Output ('AKP_TARGET=' + $t)
   return name;
 }
 
-/**
- * 同步进程检测（仅作兜底与 CLI 诊断使用，优先命中 600ms 内存缓存）
- */
 function isRunning(name) {
   if (!name) return false;
   const clean = name.replace(/\.exe$/i, '').toLowerCase();
@@ -156,9 +188,6 @@ function isRunning(name) {
   }
 }
 
-/**
- * 零阻塞异步进程存活检测：优先走 0.5ms C# 守护进程管道，不阻塞 Electron 主线程
- */
 async function isRunningAsync(name) {
   if (!name) return false;
   const clean = name.replace(/\.exe$/i, '').toLowerCase();
@@ -177,9 +206,6 @@ async function isRunningAsync(name) {
   return isRunning(clean);
 }
 
-/**
- * 批量异步检测多个进程名是否正在运行（供后台 2s 状态同步引擎使用，单次耗时 < 1ms）
- */
 async function checkProcessesRunning(names) {
   const list = Array.from(new Set(
     (Array.isArray(names) ? names : [])
@@ -198,7 +224,6 @@ async function checkProcessesRunning(names) {
     }
   } catch (_) {}
 
-  // 降级：仅当 C# 守护进程不支持 check_procs 时逐个检查
   const fallbackSet = new Set();
   for (const n of list) {
     if (isRunning(n)) fallbackSet.add(n);
@@ -206,14 +231,9 @@ async function checkProcessesRunning(names) {
   return fallbackSet;
 }
 
-/**
- * Bring an existing instance's main window to the front (or toggle minimize if
- * allowMinimize is true and the window is already foreground).
- */
 async function activateWindow(name, allowMinimize = false) {
   if (!name) return null;
 
-  // 1. Try 0.5ms native C# daemon first (also checks if process/window exists)
   try {
     const nat = await NativeInput.activateOrToggleWindow(name, allowMinimize);
     if (nat && nat.ok) {
@@ -222,13 +242,11 @@ async function activateWindow(name, allowMinimize = false) {
       return nat.state === 'MINIMIZED' ? 'minimized' : 'focused';
     }
     if (nat && nat.state === 'NOWINDOW') {
-      // 如果 C# 守护进程明确告知无窗口且进程未运行，直接快速返回，免去启动 PowerShell
       const alive = await isRunningAsync(name);
       if (!alive) return null;
     }
   } catch (_) {}
 
-  // 2. Fallback to PowerShell (waits up to 2s if the process is still creating its main window)
   const out = await runPowerShell(`
 $ErrorActionPreference='SilentlyContinue'
 $name = ${psQuote(name.replace(/\.exe$/i, ''))}
@@ -277,10 +295,6 @@ if ($ok) { Write-Output 'AKP_RESULT=focused' } else { Write-Output 'AKP_RESULT=n
   return null;
 }
 
-/**
- * Already running -> raise its window (or minimize if already foreground and allowMinimize=true) and stop.
- * Otherwise return null so the caller launches normally.
- */
 async function focusExisting(target, allowMinimize = false) {
   try {
     const name = await processNameFor(target);
@@ -291,16 +305,13 @@ async function focusExisting(target, allowMinimize = false) {
   }
 }
 
-/**
- * Run a raw command line through cmd.exe.
- */
 function runShell(line) {
   const child = spawn(line, {
     shell: true,
     stdio: 'ignore',
     windowsHide: true,
   });
-  child.on('error', () => { /* fire and forget */ });
+  child.on('error', () => {});
   child.unref();
   return child;
 }
@@ -322,6 +333,12 @@ function stopAllMacros() {
 }
 
 function stopMacroForKey(pageId, row, col) {
+  if (pageId && typeof pageId === 'object') {
+    row = pageId.row;
+    col = pageId.col;
+    pageId = pageId.pageId;
+  }
+  if (row === undefined || col === undefined) return false;
   const targetKey = `${pageId || ''}:${row},${col}`;
   const shortKey = `${row},${col}`;
   let stopped = false;
@@ -348,6 +365,10 @@ function stopMacrosForPage(pageId) {
   }
 }
 
+/**
+ * 执行复合宏中的单步动作或条件分支指令
+ * 返回 { ok: true, control?: 'continue' | 'skip_next' | 'abort' }
+ */
 async function runSingleAction(action) {
   if (!action || typeof action !== 'object') return { ok: true };
   const type = String(action.type || 'app').toLowerCase();
@@ -357,6 +378,64 @@ async function runSingleAction(action) {
       const ms = Math.max(10, Number(action.ms) || 50);
       await new Promise((r) => setTimeout(r, ms));
       return { ok: true };
+    }
+    case 'if_color': {
+      const x = Number(action.x) || 0;
+      const y = Number(action.y) || 0;
+      const w = Number(action.w) || 0;
+      const h = Number(action.h) || 0;
+      const targetColor = String(action.color || '#ffffff').trim();
+      const tol = Math.max(0, Math.min(255, Number(action.tolerance !== undefined ? action.tolerance : 20)));
+      const thenAct = String(action.thenAction || 'click').toLowerCase();
+
+      let matched = false;
+      let hitX = x;
+      let hitY = y;
+
+      if (w > 1 && h > 1) {
+        const reg = await NativeInput.findColorInRegion(x, y, w, h, targetColor, tol);
+        matched = !!(reg && reg.matched);
+        if (matched) { hitX = reg.x; hitY = reg.y; }
+      } else {
+        const px = await NativeInput.getPixelColor(x, y);
+        if (px && px.ok && px.color) {
+          matched = hexColorDistance(px.color, targetColor) <= tol;
+        }
+      }
+
+      if (matched) {
+        if (thenAct === 'click') {
+          await NativeInput.mouseClick(action.button || 'left', hitX, hitY);
+        }
+        return { ok: true, matched: true, control: 'continue' };
+      } else {
+        if (thenAct === 'abort') return { ok: true, matched: false, control: 'abort' };
+        if (thenAct === 'skip_next') return { ok: true, matched: false, control: 'skip_next' };
+        return { ok: true, matched: false, control: 'continue' };
+      }
+    }
+    case 'if_process': {
+      const proc = String(action.target || '').trim();
+      const expectRunning = (action.expect || 'running') !== 'stopped';
+      const thenAct = String(action.thenAction || 'abort').toLowerCase();
+      const alive = proc ? await isRunningAsync(proc) : false;
+      const matched = expectRunning ? alive : !alive;
+      if (matched) {
+        return { ok: true, matched: true, control: 'continue' };
+      }
+      return { ok: true, matched: false, control: thenAct === 'skip_next' ? 'skip_next' : 'abort' };
+    }
+    case 'if_qr': {
+      const qrEngine = require('./qr-engine');
+      const res = await qrEngine.runDecode();
+      const thenAct = String(action.thenAction || 'abort').toLowerCase();
+      if (res && res.ok && res.text) {
+        if (action.openUrl && looksLikeUrl(res.text) && shell) {
+          await shell.openExternal(res.text);
+        }
+        return { ok: true, matched: true, text: res.text, control: 'continue' };
+      }
+      return { ok: true, matched: false, control: thenAct === 'skip_next' ? 'skip_next' : 'abort' };
     }
     case 'mouse_click': {
       const btn = action.double ? 'double' : (action.button || 'left');
@@ -456,6 +535,18 @@ async function runSingleAction(action) {
   }
 }
 
+async function executeActionListOnce(actions, shouldStop) {
+  for (let idx = 0; idx < actions.length; idx++) {
+    if (shouldStop && shouldStop()) break;
+    const act = actions[idx];
+    try {
+      const stepRes = await runSingleAction(act);
+      if (stepRes && stepRes.control === 'abort') break;
+      if (stepRes && stepRes.control === 'skip_next') idx++;
+    } catch (_) {}
+  }
+}
+
 async function runMacro(spec, context) {
   const actions = Array.isArray(spec.actions) ? spec.actions : [];
   if (!actions.length) return { ok: false, error: 'NO_ACTIONS' };
@@ -485,10 +576,7 @@ async function runMacro(spec, context) {
       const minInterval = Math.max(50, Number(spec.loopInterval || loopCfg.interval) || 50);
       try {
         while (!token.stop) {
-          for (const act of actions) {
-            if (token.stop) break;
-            try { await runSingleAction(act); } catch (_) {}
-          }
+          await executeActionListOnce(actions, () => token.stop);
           if (token.stop) break;
           await new Promise((r) => setTimeout(r, minInterval));
         }
@@ -509,9 +597,7 @@ async function runMacro(spec, context) {
     const interval = Math.max(20, Number(spec.loopInterval || loopCfg.interval) || 50);
 
     for (let i = 0; i < times; i++) {
-      for (const act of actions) {
-        try { await runSingleAction(act); } catch (_) {}
-      }
+      await executeActionListOnce(actions, null);
       if (i < times - 1) {
         await new Promise((r) => setTimeout(r, interval));
       }
@@ -534,6 +620,30 @@ async function run(spec, context) {
     const qrEngine = require('./qr-engine');
     const res = await qrEngine.runDecode();
     return Object.assign({ action: 'qr_decode' }, res);
+  }
+
+  if (type === 'widget') {
+    const wKind = String(spec.widgetType || spec.subType || spec.target || 'pomodoro').toLowerCase();
+    if (wKind === 'pomodoro') {
+      const pAct = String(spec.action || 'toggle').toLowerCase();
+      const snap = telemetry.controlPomodoro(pAct, spec.minutes || 25);
+      return { ok: true, action: 'widget_pomodoro', pomodoro: snap };
+    }
+    if (wKind === 'media_now') {
+      await NativeInput.sendMedia(spec.action || 'play_pause');
+      return { ok: true, action: 'widget_media' };
+    }
+    if (wKind === 'obs') {
+      const combo = spec.hotkey || '';
+      if (combo) await sendHotkey(combo);
+      else await focusExisting('obs64.exe', false);
+      return { ok: true, action: 'widget_obs' };
+    }
+    if (wKind === 'plugin' && spec.pluginId) {
+      await telemetry.triggerPluginPress(spec.pluginId, spec.args);
+      return { ok: true, action: 'widget_plugin' };
+    }
+    return { ok: true, action: 'widget_refresh' };
   }
 
   if (type === 'volume' || type === 'audio') {
@@ -579,7 +689,7 @@ async function run(spec, context) {
 
   let target = probe.expandPath(rawTarget);
   if (type === 'app') {
-    target = probe.probeApp(rawTarget);
+    target = await probe.probeAppAsync(rawTarget);
   }
 
   try {
@@ -631,8 +741,9 @@ async function run(spec, context) {
       }
       case 'ps1': {
         if (!exists(target)) return { ok: false, error: '找不到脚本：' + target };
+        const extraArgs = splitArgs(spec.args);
         spawnQuiet('powershell.exe',
-          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', target].concat(spec.args ? [spec.args] : []));
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', target].concat(extraArgs));
         return { ok: true };
       }
       case 'hotkey': {
@@ -650,7 +761,8 @@ async function run(spec, context) {
         if (!exists(target)) return { ok: false, error: '找不到文件或文件夹：' + target };
 
         if (ext === '.ps1') {
-          spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', target]);
+          const extraArgs = splitArgs(spec.args);
+          spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', target].concat(extraArgs));
           return { ok: true };
         }
 
@@ -663,7 +775,7 @@ async function run(spec, context) {
         }
 
         if (EXT_EXEC.has(ext) && wantsArgs) {
-          const args = String(spec.args).split(/\s+/).filter(Boolean);
+          const args = splitArgs(spec.args);
           spawnApp(target, args, {
             cwd: spec.cwd || path.dirname(target),
           });
@@ -706,10 +818,6 @@ async function sendHotkey(combo) {
   if (lower === 'media_prev_track' || lower === 'mediaprevtrack' || lower === 'media_prev') {
     return await NativeInput.sendMedia('prev');
   }
-  if (lower === 'win+d') {
-    spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).ToggleDesktop()']);
-    return;
-  }
   if (lower === 'win+l') {
     spawnQuiet('rundll32.exe', ['user32.dll,LockWorkStation']);
     return;
@@ -718,12 +826,23 @@ async function sendHotkey(combo) {
     spawnQuiet('explorer.exe', []);
     return;
   }
-  if (lower === 'win+r') {
-    spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).FileRun()']);
-    return;
-  }
   if (lower === 'ctrl+shift+esc') {
     spawnQuiet('taskmgr.exe', []);
+    return;
+  }
+
+  // 1. 优先调用原生 0.5ms SendInput 引擎
+  try {
+    const nat = await NativeInput.sendHotkey(norm);
+    if (nat && nat.ok) return;
+  } catch (_) {}
+
+  if (lower === 'win+d') {
+    spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).ToggleDesktop()']);
+    return;
+  }
+  if (lower === 'win+r') {
+    spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).FileRun()']);
     return;
   }
   if (lower === 'win+m') {
@@ -732,49 +851,6 @@ async function sendHotkey(combo) {
   }
   if (lower === 'win+shift+m') {
     spawnQuiet('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object -ComObject Shell.Application).UndoMinimizeALL()']);
-    return;
-  }
-
-  // 1. 优先调用原生 0.5ms SendInput 引擎（免除 PowerShell 启动开销，彻底免疫 SendKeys 特殊字符与引号注入）
-  try {
-    const nat = await NativeInput.sendHotkey(norm);
-    if (nat && nat.ok) return;
-  } catch (_) {}
-
-  // 2. 降级兜底（兼容未重新编译旧版 akp-input.exe 的环境）
-  if (/win/i.test(norm)) {
-    const parts = norm.split('+').map(s => s.trim().toLowerCase());
-    const key = parts.find(p => p !== 'win' && p !== 'ctrl' && p !== 'alt' && p !== 'shift') || 'v';
-    const vkMap = {
-      'v': 0x56, 'tab': 0x09, 's': 0x53, 'a': 0x41, 'i': 0x49, 'x': 0x58, 'g': 0x47, 'h': 0x48,
-      'k': 0x4B, 'p': 0x50, 'w': 0x57, 'z': 0x5A, 'prtscn': 0x2C, 'printscreen': 0x2C,
-      'enter': 0x0D, 'return': 0x0D, 'esc': 0x1B, 'escape': 0x1B, 'space': 0x20,
-      'backspace': 0x08, 'del': 0x2E, 'delete': 0x2E, 'insert': 0x2D,
-      'home': 0x24, 'end': 0x23, 'pgup': 0x21, 'pageup': 0x21, 'pgdn': 0x22, 'pagedown': 0x22,
-      'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27,
-      'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73, 'f5': 0x74, 'f6': 0x75,
-      'f7': 0x76, 'f8': 0x77, 'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
-      '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34, '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
-    };
-    const vk = vkMap[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0x56);
-    const hasCtrl = parts.includes('ctrl');
-    const hasAlt = parts.includes('alt');
-    const hasShift = parts.includes('shift');
-
-    const psCode = `
-$w = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);' -Name 'WinKey' -Namespace 'AKP' -PassThru
-${hasCtrl ? '$w::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)' : ''}
-${hasAlt ? '$w::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)' : ''}
-${hasShift ? '$w::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)' : ''}
-$w::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
-$w::keybd_event(${vk}, 0, 0, [UIntPtr]::Zero)
-$w::keybd_event(${vk}, 0, 2, [UIntPtr]::Zero)
-$w::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
-${hasShift ? '$w::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)' : ''}
-${hasAlt ? '$w::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)' : ''}
-${hasCtrl ? '$w::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)' : ''}
-`;
-    await runPowerShell(psCode, 3000);
     return;
   }
 
@@ -811,7 +887,6 @@ ${hasCtrl ? '$w::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)' : ''}
   await runPowerShell(`(New-Object -ComObject WScript.Shell).SendKeys(${psQuote(sendKeyStr)})`, 3000);
 }
 
-/** Classify a dropped path so the UI can pre-fill sensible defaults. */
 function classify(p) {
   if (!p) return { type: 'app', label: '' };
   if (looksLikeUrl(p)) return { type: 'url', label: stripHost(p), abs: p, exists: true };
@@ -831,7 +906,7 @@ function classify(p) {
     let absPath = full;
     let shortcutArgs = '';
     try {
-      const details = shell.readShortcutLink(full);
+      const details = shell && shell.readShortcutLink(full);
       if (details && details.target) {
         let tgt = probe.expandPath(details.target);
         if (exists(tgt)) {
@@ -886,6 +961,7 @@ async function diagnose(target) {
 module.exports = {
   run,
   runSingleAction,
+  splitArgs,
   stopAllMacros,
   stopMacroForKey,
   stopMacrosForPage,

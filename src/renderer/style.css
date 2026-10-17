@@ -618,15 +618,33 @@ body[data-theme="dark"] .ps-big-snapshot-btn:hover {
   background: var(--accent-subtle);
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1080px) {
   main {
     gap: 10px;
     padding: 8px 10px;
   }
   .page-sidebar {
-    flex: 0 0 148px;
-    width: 148px;
-    padding: 8px 6px;
+    flex: 0 0 172px;
+    width: 172px;
+    padding: 8px 8px;
+  }
+  .ps-new-page-btn, .ps-new-sub-btn {
+    font-size: 11px;
+    padding: 0 6px;
+  }
+  .cell .thumb {
+    max-width: 40% !important;
+    max-height: 40% !important;
+  }
+  .cell .glyph {
+    font-size: 1.35rem !important;
+  }
+  .cell .cap {
+    display: block !important;
+    font-size: 9.5px !important;
+    line-height: 1.15 !important;
+    white-space: nowrap !important;
+    word-break: normal !important;
   }
 }
 
@@ -819,11 +837,30 @@ body[data-theme="dark"] .cell .plus { color: #4a5563; }
 .cell:hover .plus, .cell.dragover .plus { opacity: 1; }
 .cell .tag {
   position: absolute; top: 3px; left: 5px; font-size: 9px;
-  color: #fff; opacity: .45; pointer-events: none;
+  color: #fff; opacity: 0; pointer-events: none; z-index: 4;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  transition: opacity 0.15s ease;
 }
 .cell .badge {
   position: absolute; bottom: 3px; left: 5px; font-size: 9px;
-  color: #fff; opacity: .6; pointer-events: none;
+  color: #fff; opacity: 0; pointer-events: none; z-index: 4;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  transition: opacity 0.15s ease;
+}
+.cell:not(.has-canvas):hover .tag, .cell:not(.has-canvas).selected .tag, .cell:not(.has-canvas).multi-selected .tag {
+  opacity: 0.72;
+}
+.cell:not(.has-canvas):hover .badge, .cell:not(.has-canvas).selected .badge, .cell:not(.has-canvas).multi-selected .badge {
+  opacity: 0.85;
+}
+.cell.has-canvas .tag, .cell.has-canvas .badge {
+  background: rgba(0, 0, 0, 0.68);
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 8.5px;
+}
+.cell.has-canvas:hover .tag, .cell.has-canvas:hover .badge {
+  opacity: 0.88;
 }
 .cell .clear {
   position: absolute; top: 2px; right: 3px; width: 18px; height: 18px;
@@ -918,8 +955,10 @@ body[data-theme="dark"] .insp-tab.active {
 }
 
 .inspector .row { margin-bottom: 10px; }
-.inspector label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-.inspector input, .inspector select, .inspector textarea {
+.inspector label:not(.switch):not(.swap-mini-switch-wrap) { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.inspector input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.inspector select,
+.inspector textarea {
   width: 100%; padding: 5px 8px; border: 1px solid var(--line);
   border-radius: 7px; font: inherit; font-size: 13px; background: #fff;
   transition: border-color 0.14s ease;
@@ -930,18 +969,22 @@ body[data-theme="dark"] .insp-tab.active {
 }
 .inspector textarea { resize: vertical; min-height: 40px; }
 
-/* 紧凑型 4×2 快捷类型切换网格（节省属性面板纵向空间） */
+/* 宽敞型 2 列快捷类型切换网格（杜绝文字截断） */
 .quick-switch-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
   margin-bottom: 10px;
 }
 .quick-switch-grid button.ghost {
-  padding: 4px 4px;
-  font-size: 11px;
-  text-align: center;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  gap: 4px;
+  text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -979,11 +1022,11 @@ body[data-theme="dark"] button.ghost:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
-body[data-theme="dark"] .inspector input,
+body[data-theme="dark"] .inspector input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 body[data-theme="dark"] .inspector select,
 body[data-theme="dark"] .inspector textarea,
 body[data-theme="dark"] .popover select,
-body[data-theme="dark"] .popover input {
+body[data-theme="dark"] .popover input:not([type="checkbox"]):not([type="range"]) {
   background: #0d1117;
   color: #e6edf3;
   border-color: #30363d;
@@ -2230,12 +2273,24 @@ body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-/* -------------------------------------------------------- 属性面板底部操作按钮组 */
+/* -------------------------------------------------------- 属性面板底部操作按钮组 (Sticky 悬浮底栏) */
 .insp-foot-actions {
+  position: sticky;
+  bottom: -12px;
+  z-index: 15;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 14px;
+  margin: 14px -12px -12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+body[data-theme="dark"] .insp-foot-actions {
+  background: rgba(22, 27, 34, 0.92);
+  border-top-color: #30363d;
 }
 .act-main {
   flex: 1.4;
@@ -3946,4 +4001,222 @@ body[data-theme="dark"] .psm-card:hover {
 }
 .vol-dev-select:focus {
   border-color: var(--accent);
+}
+
+/* =========================================================================
+   v0.8.0 Upgrades: Undo/Redo, Style Brush, Multi-Select, Live Canvas,
+   Macro Recorder, Conditional Steps & Dynamic Telemetry Widgets
+   ========================================================================= */
+
+.history-btn-group {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1px;
+  gap: 1px;
+}
+body[data-theme="dark"] .history-btn-group {
+  background: #161b22;
+  border-color: #30363d;
+}
+.history-btn-group .tool-pill-btn {
+  border: 0 !important;
+  border-radius: 6px !important;
+  padding: 4px 9px !important;
+  font-size: 12px !important;
+  background: transparent !important;
+}
+.history-btn-group .tool-pill-btn:hover:not(:disabled) {
+  background: var(--card) !important;
+  color: var(--accent) !important;
+}
+.tool-pill-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+#btnStyleBrush {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+#btnStyleBrush.active {
+  background: linear-gradient(135deg, #00a896 0%, #0284c7 100%) !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+  box-shadow: 0 0 0 2px rgba(0, 168, 150, 0.35), 0 3px 10px rgba(0, 168, 150, 0.3);
+}
+body.style-brush-mode #grid .cell:not(.display):not(.back) {
+  cursor: copy !important;
+}
+body.style-brush-mode #grid .cell:not(.display):not(.back):hover {
+  box-shadow: 0 0 0 2.5px #0284c7, 0 6px 16px rgba(2, 132, 199, 0.3) !important;
+}
+
+.multi-select-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.32);
+  padding: 1px 8px;
+  border-radius: 999px;
+  margin-left: 6px;
+}
+body[data-theme="dark"] .multi-select-badge {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.cell.multi-selected {
+  box-shadow: 0 0 0 2.5px #0284c7, 0 6px 14px rgba(2, 132, 199, 0.25) !important;
+  border-color: #0284c7 !important;
+}
+body[data-theme="dark"] .cell.multi-selected {
+  box-shadow: 0 0 0 2.5px #38bdf8, 0 6px 14px rgba(56, 189, 248, 0.35) !important;
+  border-color: #38bdf8 !important;
+}
+
+/* 1:1 Hardware LCD Canvas Preview inside Grid Cell */
+.cell.has-canvas {
+  padding: 0 !important;
+  border-style: solid !important;
+}
+.cell .cell-canvas-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8.5px;
+  display: block;
+  pointer-events: none;
+}
+
+/* Device status indicator states in settings sidebar */
+.device-status-indicator.warn {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b26a00;
+}
+.device-status-indicator.err {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--danger);
+}
+body[data-theme="dark"] .device-status-indicator.warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+body[data-theme="dark"] .device-status-indicator.err {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+/* Macro Recorder Bar */
+.macro-record-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(245, 158, 11, 0.06) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+.macro-record-btn {
+  flex: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #ef4444;
+  background: #ef4444;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.macro-record-btn:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.macro-record-btn.recording {
+  background: #dc2626;
+  animation: hk-pulse 1.1s infinite ease-in-out;
+}
+
+/* Conditional Macro Card Accent */
+.macro-card.cond-card {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.03);
+}
+body[data-theme="dark"] .macro-card.cond-card {
+  border-left: 3px solid #fbbf24;
+  background: rgba(245, 158, 11, 0.05);
+}
+
+/* Widget Editor Card */
+.widget-editor-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.widget-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.widget-kind-pill {
+  padding: 7px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.14s ease;
+}
+.widget-kind-pill:hover {
+  border-color: var(--accent);
+  background: var(--card);
+}
+.widget-kind-pill.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.quick-switch-compact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.quick-switch-compact button.ghost {
+  padding: 4px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
 }

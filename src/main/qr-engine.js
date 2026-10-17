@@ -1,14 +1,31 @@
 'use strict';
 /**
- * AKP153 二维码智能解码引擎
- * 支持：剪贴板优先秒解 -> 交互式半透明屏幕框选 -> 全屏扫描 -> 自动回写剪贴板并触发硬件反馈
+ * AKP153 二维码智能解码引擎 (v0.8.0)
+ * 支持：剪贴板优先秒解 -> 交互式半透明屏幕框选 -> 全屏扫描 -> 自动静默区白边增强识别 -> 自动回写剪贴板并触发原生提示音
  */
 const { clipboard, desktopCapturer, screen, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const jsQR = require('jsqr');
+const NativeInput = require('./native-input');
 
 /**
- * 将 Electron nativeImage 转换为 RGBA 像素矩阵并用 jsQR 进行解码
+ * 为 RGBA 图像矩阵四周补白边（Quiet Zone），解决紧贴深色背景或截图裁切过紧导致 jsQR 无法定位 Finder Pattern 的问题
+ */
+function padRgbaWithWhite(rgba, width, height, pad = 16) {
+  const nw = width + pad * 2;
+  const nh = height + pad * 2;
+  const out = new Uint8ClampedArray(nw * nh * 4);
+  out.fill(255);
+  for (let y = 0; y < height; y++) {
+    const srcOff = y * width * 4;
+    const dstOff = ((y + pad) * nw + pad) * 4;
+    out.set(rgba.subarray(srcOff, srcOff + width * 4), dstOff);
+  }
+  return { data: out, width: nw, height: nh };
+}
+
+/**
+ * 将 Electron nativeImage 转换为 RGBA 像素矩阵并用 jsQR 进行多策略解码
  */
 function decodeNativeImage(nativeImg) {
   if (!nativeImg || nativeImg.isEmpty()) return null;
@@ -28,6 +45,13 @@ function decodeNativeImage(nativeImg) {
     }
     const res = jsQR(rgba, size.width, size.height, { inversionAttempts: 'attemptBoth' });
     if (res && res.data) return res.data;
+
+    // 1b. 若框选紧贴二维码边缘，自动补充 16px 白色静默区再试一次
+    if (size.width <= 1200 && size.height <= 1200) {
+      const padded = padRgbaWithWhite(rgba, size.width, size.height, 16);
+      const resPad = jsQR(padded.data, padded.width, padded.height, { inversionAttempts: 'attemptBoth' });
+      if (resPad && resPad.data) return resPad.data;
+    }
   } catch (_) {}
 
   // 2. 备用兜底：通过 jpeg-js 标准解码
@@ -161,12 +185,7 @@ function playBeep(success) {
       shell.beep();
       return;
     }
-    const snd = success ? '[System.Media.SystemSounds]::Beep.Play()' : '[System.Media.SystemSounds]::Asterisk.Play()';
-    const child = require('child_process').spawn('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', snd],
-      { windowsHide: true, stdio: 'ignore' });
-    child.on('error', () => {});
-    child.unref();
+    NativeInput.beep(!!success).catch(() => {});
   } catch (_) {}
 }
 

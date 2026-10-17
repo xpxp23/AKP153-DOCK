@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace AkpInput
@@ -139,6 +143,18 @@ namespace AkpInput
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        static extern bool LockWorkStation();
+
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        static extern int ExtractIconEx(string szFileName, int nIconIndex, IntPtr[] phiconLarge, IntPtr[] phiconSmall, int nIcons);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool DestroyIcon(IntPtr hIcon);
+
         [DllImport("ole32.dll")]
         static extern int PropVariantClear(ref PROPVARIANT pvar);
 
@@ -186,7 +202,6 @@ namespace AkpInput
             {
                 if (m.Msg == WM_QUERYENDSESSION)
                 {
-                    // 操作系统正在关机，在独立 STA 消息循环内同步执行硬件灭屏直写
                     try
                     {
                         DirectHardwareBlackout();
@@ -257,6 +272,7 @@ namespace AkpInput
         }
 
         private static string _cachedDevicePath = null;
+        private static long _lastBlackoutTs = 0;
 
         public static void SetDevicePath(string path)
         {
@@ -378,6 +394,13 @@ namespace AkpInput
         {
             lock (_blackoutLock)
             {
+                // 幂等防并发守卫：1500ms 内若已由任一通道完成物理断电，不再重复下发，杜绝多通道交错重亮
+                long nowTicks = Environment.TickCount & Int32.MaxValue;
+                if (_lastBlackoutTs != 0 && (nowTicks - _lastBlackoutTs) < 1500)
+                {
+                    return true;
+                }
+
                 var candidatePaths = new List<string>();
                 if (!string.IsNullOrEmpty(_cachedDevicePath))
                 {
@@ -400,12 +423,12 @@ namespace AkpInput
 
                 byte[][] blackoutSeq = new byte[][]
                 {
-                    new byte[] { 67, 76, 69, 0, 0, 0, 255 },     // CLEAR_ALL (清空显存)
-                    new byte[] { 76, 66, 76, 73, 71, 0 },          // LBLIG 0 (LED灯带调零)
-                    new byte[] { 76, 73, 71, 0, 0, 0 },            // LIG 0 (屏幕背光调零)
-                    new byte[] { 72, 65, 78 },                     // HAN (准备休眠)
-                    new byte[] { 115, 108, 101, 101, 112 },        // sleep (芯片休眠)
-                    new byte[] { 67, 76, 69, 0, 0, 68, 67 }        // DEVICE_CLOSE (断开连接)
+                    new byte[] { 67, 76, 69, 0, 0, 0, 255 },     // CLEAR_ALL
+                    new byte[] { 76, 66, 76, 73, 71, 0 },          // LBLIG 0
+                    new byte[] { 76, 73, 71, 0, 0, 0 },            // LIG 0
+                    new byte[] { 72, 65, 78 },                     // HAN
+                    new byte[] { 115, 108, 101, 101, 112 },        // sleep
+                    new byte[] { 67, 76, 69, 0, 0, 68, 67 }        // DEVICE_CLOSE
                 };
 
                 bool anySuccess = false;
@@ -429,6 +452,7 @@ namespace AkpInput
                     }
                     catch { }
                 }
+                if (anySuccess) _lastBlackoutTs = nowTicks;
                 return anySuccess;
             }
         }
@@ -687,7 +711,7 @@ namespace AkpInput
                 case "=": case "plus": case "equal": return 0xBB;
                 case ",": case "comma": return 0xBC;
                 case "-": case "minus": case "hyphen": return 0xBD;
-                case ".": case "period": case "dot": return 0xBE;
+                case ".": case "period": return "dot" == k ? (ushort)0xBE : (ushort)0xBE;
                 case "/": case "slash": return 0xBF;
                 case "`": case "tilde": case "backquote": return 0xC0;
                 case "[": case "bracketleft": return 0xDB;
@@ -741,6 +765,12 @@ namespace AkpInput
 
             if (!ctrl && !alt && !shift && !win && mainVk == 0) return false;
 
+            // Special guard for Win+L: call LockWorkStation directly so LWIN never gets stuck down across desktop switch
+            if (win && !ctrl && !alt && !shift && mainVk == (ushort)'L')
+            {
+                return LockWorkStation();
+            }
+
             var downList = new List<INPUT>();
             var upList = new List<INPUT>();
 
@@ -771,12 +801,13 @@ namespace AkpInput
                 upList.Insert(0, CreateKeyInput(mainVk, true, ext));
             }
 
-            var all = new List<INPUT>(downList.Count + upList.Count);
-            all.AddRange(downList);
-            all.AddRange(upList);
-            var arr = all.ToArray();
-            uint sent = SendInput((uint)arr.Length, arr, Marshal.SizeOf(typeof(INPUT)));
-            return sent > 0;
+            int cb = Marshal.SizeOf(typeof(INPUT));
+            var downArr = downList.ToArray();
+            var upArr = upList.ToArray();
+            uint sentDown = SendInput((uint)downArr.Length, downArr, cb);
+            Thread.Sleep(8);
+            uint sentUp = SendInput((uint)upArr.Length, upArr, cb);
+            return (sentDown + sentUp) > 0;
         }
 
         public static void SetWindowBounds(int x, int y, int width, int height, string target)
@@ -906,6 +937,56 @@ namespace AkpInput
             return string.Join(",", found);
         }
 
+        public static string GetProcessWindowTitles(string csvNames)
+        {
+            if (string.IsNullOrWhiteSpace(csvNames)) return "";
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in csvNames.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string clean = raw.Trim();
+                if (clean.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    clean = clean.Substring(0, clean.Length - 4);
+                }
+                if (!string.IsNullOrEmpty(clean)) targets.Add(clean);
+            }
+            if (targets.Count == 0) return "";
+
+            var results = new List<string>();
+            Process[] procs = Process.GetProcesses();
+            try
+            {
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        string pName = p.ProcessName;
+                        if (!string.IsNullOrEmpty(pName) && targets.Contains(pName) && p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            string wTitle = (p.MainWindowTitle ?? "").Replace("\r", "").Replace("\n", " ").Replace(";;", ";").Replace("|", "-");
+                            if (!string.IsNullOrWhiteSpace(wTitle))
+                            {
+                                results.Add(pName.ToLowerInvariant() + "|" + wTitle);
+                            }
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs)
+                {
+                    try { p.Dispose(); } catch { }
+                }
+            }
+            return string.Join(";;", results);
+        }
+
         public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
         {
             if (string.IsNullOrWhiteSpace(procName)) return "ERR EMPTY";
@@ -1027,6 +1108,314 @@ namespace AkpInput
             }
         }
 
+        #region Native Icon Extraction, Registry Probe, Pixel Color & Macro Recording
+
+        public static string ExtractIconDataUrl(string filePath, int iconIndex)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return "";
+            Bitmap bmp = null;
+            IntPtr hIcon = IntPtr.Zero;
+            try
+            {
+                IntPtr[] large = new IntPtr[1];
+                int count = ExtractIconEx(filePath, iconIndex, large, null, 1);
+                if (count > 0 && large[0] != IntPtr.Zero)
+                {
+                    hIcon = large[0];
+                    using (Icon ico = Icon.FromHandle(hIcon))
+                    {
+                        bmp = ico.ToBitmap();
+                    }
+                }
+                else
+                {
+                    using (Icon assoc = Icon.ExtractAssociatedIcon(filePath))
+                    {
+                        if (assoc != null) bmp = assoc.ToBitmap();
+                    }
+                }
+
+                if (bmp != null)
+                {
+                    using (var ms = new MemoryStream())
+                    {
+                        bmp.Save(ms, ImageFormat.Png);
+                        return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (bmp != null) try { bmp.Dispose(); } catch { }
+                if (hIcon != IntPtr.Zero) try { DestroyIcon(hIcon); } catch { }
+            }
+            return "";
+        }
+
+        public static string QueryAppPathRegistry(string exeName)
+        {
+            if (string.IsNullOrWhiteSpace(exeName)) return "";
+            string target = exeName.Trim();
+            if (!target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) target += ".exe";
+            string subKey = @"Software\Microsoft\Windows\CurrentVersion\App Paths\" + target;
+            string subKeyWow = @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\" + target;
+
+            RegistryKey[] roots = new RegistryKey[] { Registry.CurrentUser, Registry.LocalMachine };
+            string[] paths = new string[] { subKey, subKeyWow };
+
+            foreach (var r in roots)
+            {
+                foreach (var p in paths)
+                {
+                    try
+                    {
+                        using (var k = r.OpenSubKey(p, false))
+                        {
+                            if (k != null)
+                            {
+                                object val = k.GetValue(null);
+                                if (val != null)
+                                {
+                                    string cand = val.ToString().Trim().Trim('"');
+                                    if (File.Exists(cand)) return cand;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            return "";
+        }
+
+        public static string GetScreenPixelHex(int x, int y)
+        {
+            try
+            {
+                using (var bmp = new Bitmap(1, 1, PixelFormat.Format32bppArgb))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.CopyFromScreen(x, y, 0, 0, new Size(1, 1), CopyPixelOperation.SourceCopy);
+                    }
+                    Color c = bmp.GetPixel(0, 0);
+                    return string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B);
+                }
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        public static string FindColorInRegion(int rx, int ry, int rw, int rh, string targetHex, int tolerance)
+        {
+            try
+            {
+                string clean = (targetHex ?? "").Trim().TrimStart('#');
+                if (clean.Length != 6) return "0 -1,-1";
+                int tr = Convert.ToInt32(clean.Substring(0, 2), 16);
+                int tg = Convert.ToInt32(clean.Substring(2, 2), 16);
+                int tb = Convert.ToInt32(clean.Substring(4, 2), 16);
+                int w = Math.Max(1, Math.Min(3840, rw));
+                int h = Math.Max(1, Math.Min(2160, rh));
+                int tol = Math.Max(0, Math.Min(255, tolerance));
+
+                using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.CopyFromScreen(rx, ry, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+                    }
+                    int step = (w * h > 40000) ? 2 : 1;
+                    for (int dy = 0; dy < h; dy += step)
+                    {
+                        for (int dx = 0; dx < w; dx += step)
+                        {
+                            Color c = bmp.GetPixel(dx, dy);
+                            if (Math.Abs(c.R - tr) <= tol && Math.Abs(c.G - tg) <= tol && Math.Abs(c.B - tb) <= tol)
+                            {
+                                return string.Format("1 {0},{1} #{2:X2}{3:X2}{4:X2}", rx + dx, ry + dy, c.R, c.G, c.B);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "0 -1,-1";
+        }
+
+        private static long _prevRxBytes = -1;
+        private static long _prevTxBytes = -1;
+        private static long _prevNetTick = 0;
+        private static double _lastRxKbps = 0;
+        private static double _lastTxKbps = 0;
+
+        public static string GetNetworkSpeedStats()
+        {
+            try
+            {
+                long now = Environment.TickCount & Int32.MaxValue;
+                long rx = 0, tx = 0;
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback || ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
+                    var stats = ni.GetIPv4Statistics();
+                    rx += stats.BytesReceived;
+                    tx += stats.BytesSent;
+                }
+                if (_prevRxBytes >= 0 && _prevNetTick > 0)
+                {
+                    long dt = now - _prevNetTick;
+                    if (dt >= 400)
+                    {
+                        _lastRxKbps = Math.Max(0, ((rx - _prevRxBytes) * 1000.0 / dt) / 1024.0);
+                        _lastTxKbps = Math.Max(0, ((tx - _prevTxBytes) * 1000.0 / dt) / 1024.0);
+                        _prevRxBytes = rx;
+                        _prevTxBytes = tx;
+                        _prevNetTick = now;
+                    }
+                }
+                else
+                {
+                    _prevRxBytes = rx;
+                    _prevTxBytes = tx;
+                    _prevNetTick = now;
+                }
+                return string.Format("{0:F1}|{1:F1}", _lastRxKbps, _lastTxKbps);
+            }
+            catch
+            {
+                return "0.0|0.0";
+            }
+        }
+
+        private static volatile bool _stopMacroRecord = false;
+
+        static string VkToRecordName(int vk)
+        {
+            if (vk >= 0x41 && vk <= 0x5A) return ((char)vk).ToString();
+            if (vk >= 0x30 && vk <= 0x39) return ((char)vk).ToString();
+            if (vk >= 0x70 && vk <= 0x7B) return "F" + (vk - 0x70 + 1);
+            switch (vk)
+            {
+                case 0x0D: return "Enter";
+                case 0x09: return "Tab";
+                case 0x20: return "Space";
+                case 0x08: return "Backspace";
+                case 0x2E: return "Delete";
+                case 0x2D: return "Insert";
+                case 0x24: return "Home";
+                case 0x23: return "End";
+                case 0x21: return "PgUp";
+                case 0x22: return "PgDn";
+                case 0x26: return "Up";
+                case 0x28: return "Down";
+                case 0x25: return "Left";
+                case 0x27: return "Right";
+            }
+            return null;
+        }
+
+        public static string RecordMacroSequence(int maxDurationMs)
+        {
+            _stopMacroRecord = false;
+            int maxMs = Math.Max(1000, Math.Min(60000, maxDurationMs));
+            var steps = new List<string>();
+            var prevDown = new bool[256];
+
+            // Initialize baseline key states so held keys before start aren't recorded
+            for (int v = 1; v < 255; v++)
+            {
+                prevDown[v] = (GetAsyncKeyState(v) & 0x8000) != 0;
+            }
+
+            Stopwatch sw = Stopwatch.StartNew();
+            long lastEventMs = 0;
+
+            int[] watchKeys = new int[] {
+                0x0D, 0x09, 0x20, 0x08, 0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x26, 0x28, 0x25, 0x27,
+                0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+                0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D,
+                0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A,
+                0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B
+            };
+
+            while (!_stopMacroRecord && sw.ElapsedMilliseconds < maxMs && steps.Count < 80)
+            {
+                // Esc stops recording immediately
+                if ((GetAsyncKeyState(0x1B) & 0x8000) != 0 && !prevDown[0x1B])
+                {
+                    break;
+                }
+                prevDown[0x1B] = (GetAsyncKeyState(0x1B) & 0x8000) != 0;
+
+                // Check mouse buttons (L, R, M)
+                int[] mBtns = new int[] { 0x01, 0x02, 0x04 };
+                string[] mNames = new string[] { "left", "right", "middle" };
+                for (int bi = 0; bi < mBtns.Length; bi++)
+                {
+                    int mv = mBtns[bi];
+                    bool isDown = (GetAsyncKeyState(mv) & 0x8000) != 0;
+                    if (isDown && !prevDown[mv])
+                    {
+                        long nowMs = sw.ElapsedMilliseconds;
+                        long gap = nowMs - lastEventMs;
+                        if (lastEventMs > 0 && gap >= 40)
+                        {
+                            steps.Add("delay:" + Math.Min(10000, gap));
+                        }
+                        lastEventMs = nowMs;
+                        POINT pt;
+                        GetCursorPos(out pt);
+                        steps.Add(string.Format("mouse_click:{0}:{1}:{2}", mNames[bi], pt.X, pt.Y));
+                    }
+                    prevDown[mv] = isDown;
+                }
+
+                // Check keyboard keys with modifiers
+                bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0;
+                bool alt = (GetAsyncKeyState(0x12) & 0x8000) != 0;
+                bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;
+                bool win = ((GetAsyncKeyState(0x5B) & 0x8000) != 0) || ((GetAsyncKeyState(0x5C) & 0x8000) != 0);
+
+                foreach (int kv in watchKeys)
+                {
+                    bool isDown = (GetAsyncKeyState(kv) & 0x8000) != 0;
+                    if (isDown && !prevDown[kv])
+                    {
+                        string kName = VkToRecordName(kv);
+                        if (!string.IsNullOrEmpty(kName))
+                        {
+                            long nowMs = sw.ElapsedMilliseconds;
+                            long gap = nowMs - lastEventMs;
+                            if (lastEventMs > 0 && gap >= 40)
+                            {
+                                steps.Add("delay:" + Math.Min(10000, gap));
+                            }
+                            lastEventMs = nowMs;
+                            var mods = new List<string>();
+                            if (ctrl) mods.Add("Ctrl");
+                            if (alt) mods.Add("Alt");
+                            if (shift) mods.Add("Shift");
+                            if (win) mods.Add("Win");
+                            mods.Add(kName);
+                            steps.Add("hotkey:" + string.Join("+", mods));
+                        }
+                    }
+                    prevDown[kv] = isDown;
+                }
+
+                Thread.Sleep(15);
+            }
+
+            return string.Join(";", steps);
+        }
+
+        #endregion
+
         #region CoreAudio & Audio Control
 
         [ComImport]
@@ -1141,46 +1530,59 @@ namespace AkpInput
             public bool IsDefault;
         }
 
-        static IAudioEndpointVolume GetMasterVolumeEndpoint()
+        static bool WithMasterVolumeEndpoint(Func<IAudioEndpointVolume, bool> fn)
         {
-            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-            IMMDevice dev;
-            if (enumerator.GetDefaultAudioEndpoint(0, 1, out dev) != 0 || dev == null) return null;
-            var iid = typeof(IAudioEndpointVolume).GUID;
-            object epvObj;
-            if (dev.Activate(ref iid, 1, IntPtr.Zero, out epvObj) != 0 || epvObj == null) return null;
-            return (IAudioEndpointVolume)epvObj;
+            IMMDeviceEnumerator enumerator = null;
+            IMMDevice dev = null;
+            IAudioEndpointVolume epv = null;
+            try
+            {
+                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                if (enumerator.GetDefaultAudioEndpoint(0, 1, out dev) != 0 || dev == null) return false;
+                var iid = typeof(IAudioEndpointVolume).GUID;
+                object epvObj;
+                if (dev.Activate(ref iid, 1, IntPtr.Zero, out epvObj) != 0 || epvObj == null) return false;
+                epv = (IAudioEndpointVolume)epvObj;
+                return fn(epv);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (epv != null) try { Marshal.ReleaseComObject(epv); } catch { }
+                if (dev != null) try { Marshal.ReleaseComObject(dev); } catch { }
+                if (enumerator != null) try { Marshal.ReleaseComObject(enumerator); } catch { }
+            }
         }
 
         public static bool AudioGetVolume(out int level, out bool isMute)
         {
-            level = 0;
-            isMute = false;
-            try
+            int outLvl = 0;
+            bool outMute = false;
+            bool ok = WithMasterVolumeEndpoint(epv =>
             {
-                var epv = GetMasterVolumeEndpoint();
-                if (epv == null) return false;
                 float f;
                 epv.GetMasterVolumeLevelScalar(out f);
-                level = (int)Math.Round(f * 100);
-                epv.GetMute(out isMute);
+                outLvl = (int)Math.Round(f * 100);
+                epv.GetMute(out outMute);
                 return true;
-            }
-            catch { return false; }
+            });
+            level = outLvl;
+            isMute = outMute;
+            return ok;
         }
 
         public static bool AudioSetVolume(int level)
         {
-            try
+            return WithMasterVolumeEndpoint(epv =>
             {
-                var epv = GetMasterVolumeEndpoint();
-                if (epv == null) return false;
                 float f = Math.Max(0f, Math.Min(1f, (float)level / 100f));
                 Guid empty = Guid.Empty;
                 epv.SetMasterVolumeLevelScalar(f, ref empty);
                 return true;
-            }
-            catch { return false; }
+            });
         }
 
         public static bool AudioStepVolume(int delta, out int newLevel, out bool isMute, bool triggerOsd = true)
@@ -1191,34 +1593,27 @@ namespace AkpInput
             bool wasMute;
             if (!AudioGetVolume(out curLevel, out wasMute)) return false;
 
-            newLevel = Math.Max(0, Math.Min(100, curLevel + delta));
+            int targetLvl = Math.Max(0, Math.Min(100, curLevel + delta));
+            newLevel = targetLvl;
             isMute = wasMute;
 
             if (wasMute && delta > 0)
             {
-                try
+                WithMasterVolumeEndpoint(epv =>
                 {
-                    var epv = GetMasterVolumeEndpoint();
-                    if (epv != null)
-                    {
-                        Guid empty = Guid.Empty;
-                        epv.SetMute(false, ref empty);
-                        isMute = false;
-                    }
-                }
-                catch { }
+                    Guid empty = Guid.Empty;
+                    epv.SetMute(false, ref empty);
+                    return true;
+                });
+                isMute = false;
             }
 
-            // 先直接通过 WASAPI 设定精准目标音量
-            AudioSetVolume(newLevel);
+            AudioSetVolume(targetLvl);
 
             if (triggerOsd && !isMute)
             {
-                int targetLvl = newLevel;
                 SendMedia(delta >= 0 ? "vol_up" : "vol_down");
                 AudioSetVolume(targetLvl);
-                // Windows Shell (explorer.exe) 异步处理 VK_VOLUME_UP/DOWN 会附加 ±2% 偏移，
-                // 在后台线程延迟 28ms 二次校准，既唤出原生 OSD 弹窗又确保音量精确无回弹跳变
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
@@ -1234,23 +1629,23 @@ namespace AkpInput
 
         public static bool AudioToggleMute(out bool newMute, out int curLevel, bool triggerOsd = true)
         {
-            newMute = false;
-            curLevel = 0;
-            try
+            bool outMute = false;
+            int outLvl = 0;
+            bool ok = WithMasterVolumeEndpoint(epv =>
             {
-                var epv = GetMasterVolumeEndpoint();
-                if (epv == null) return false;
                 bool cur;
                 epv.GetMute(out cur);
                 Guid empty = Guid.Empty;
                 epv.SetMute(!cur, ref empty);
-                newMute = !cur;
+                outMute = !cur;
                 float f;
                 epv.GetMasterVolumeLevelScalar(out f);
-                curLevel = (int)Math.Round(f * 100);
+                outLvl = (int)Math.Round(f * 100);
                 return true;
-            }
-            catch { return false; }
+            });
+            newMute = outMute;
+            curLevel = outLvl;
+            return ok;
         }
 
         public static List<AudioDeviceInfo> AudioGetDevices()
@@ -1366,7 +1761,6 @@ namespace AkpInput
             string line = rawLine.Trim();
             string reqPrefix = "";
 
-            // 支持可选的 @<id> 异步请求流水号前缀，彻底消除耗时鼠标动画对后续查询指令的队头阻塞
             if (line.StartsWith("@"))
             {
                 int spIdx = line.IndexOf(' ');
@@ -1389,6 +1783,99 @@ namespace AkpInput
                         int cx, cy;
                         GetCursor(out cx, out cy);
                         WriteOut(reqPrefix, "OK " + cx + "," + cy);
+                        break;
+
+                    case "get_pixel":
+                        {
+                            int px = parts.Length > 1 ? int.Parse(parts[1]) : 0;
+                            int py = parts.Length > 2 ? int.Parse(parts[2]) : 0;
+                            string hex = GetScreenPixelHex(px, py);
+                            WriteOut(reqPrefix, !string.IsNullOrEmpty(hex) ? ("OK " + hex) : "ERR PIXEL_FAILED");
+                        }
+                        break;
+
+                    case "find_color":
+                        {
+                            int rx = parts.Length > 1 ? int.Parse(parts[1]) : 0;
+                            int ry = parts.Length > 2 ? int.Parse(parts[2]) : 0;
+                            int rw = parts.Length > 3 ? int.Parse(parts[3]) : 100;
+                            int rh = parts.Length > 4 ? int.Parse(parts[4]) : 100;
+                            string hex = parts.Length > 5 ? parts[5] : "#FFFFFF";
+                            int tol = parts.Length > 6 ? int.Parse(parts[6]) : 16;
+                            WriteOut(reqPrefix, "OK " + FindColorInRegion(rx, ry, rw, rh, hex, tol));
+                        }
+                        break;
+
+                    case "extract_icon":
+                        {
+                            int iconIdx = parts.Length > 1 ? int.Parse(parts[1]) : 0;
+                            string iconFile = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "";
+                            string dataUrl = ExtractIconDataUrl(iconFile, iconIdx);
+                            WriteOut(reqPrefix, !string.IsNullOrEmpty(dataUrl) ? ("OK " + dataUrl) : "ERR NO_ICON");
+                        }
+                        break;
+
+                    case "app_path":
+                        {
+                            string exeName = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1) : "";
+                            string foundPath = QueryAppPathRegistry(exeName);
+                            WriteOut(reqPrefix, !string.IsNullOrEmpty(foundPath) ? ("OK " + foundPath) : "ERR NOT_FOUND");
+                        }
+                        break;
+
+                    case "net_stats":
+                        WriteOut(reqPrefix, "OK " + GetNetworkSpeedStats());
+                        break;
+
+                    case "proc_titles":
+                        {
+                            string csv = parts.Length > 1 ? string.Join("", parts, 1, parts.Length - 1) : "";
+                            WriteOut(reqPrefix, "OK " + GetProcessWindowTitles(csv));
+                        }
+                        break;
+
+                    case "beep":
+                        {
+                            string bType = parts.Length > 1 ? parts[1].ToLowerInvariant() : "ok";
+                            try
+                            {
+                                if (bType == "err" || bType == "fail") System.Media.SystemSounds.Asterisk.Play();
+                                else System.Media.SystemSounds.Beep.Play();
+                            }
+                            catch { }
+                            WriteOut(reqPrefix, "OK");
+                        }
+                        break;
+
+                    case "record_macro":
+                        {
+                            int maxDur = parts.Length > 1 ? int.Parse(parts[1]) : 15000;
+                            if (allowAsync)
+                            {
+                                ThreadPool.QueueUserWorkItem(_ =>
+                                {
+                                    try
+                                    {
+                                        string seq = RecordMacroSequence(maxDur);
+                                        WriteOut(reqPrefix, "OK " + seq);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        WriteOut(reqPrefix, "ERR " + ex.Message);
+                                    }
+                                });
+                            }
+                            else
+                            {
+                                string seq = RecordMacroSequence(maxDur);
+                                WriteOut(reqPrefix, "OK " + seq);
+                            }
+                        }
+                        break;
+
+                    case "stop_record":
+                        _stopMacroRecord = true;
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "mouse_click":

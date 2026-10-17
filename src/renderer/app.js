@@ -19,6 +19,191 @@ let isDeviceAsleep = false;
 let repaintGen = 0;
 let lastSysStats = { cpu: 0, mem: 0, memUsedGb: '' };
 
+// v0.8.0: Multi-select, Style Brush, Undo/Redo History Stack & Telemetry State
+const multiSelected = new Set(); // Set<"row,col">
+let styleBrushSpec = null;       // Extracted visual style for Style Painter
+const historyStack = [];
+const redoStack = [];
+const MAX_HISTORY = 50;
+let _isApplyingHistory = false;
+let _lastHistoryHash = '';
+
+let lastTelemetry = {
+  gpu: { available: true, name: 'NVIDIA RTX', temp: 48, load: 22, memUsedMb: 2450, memTotalMb: 8192, memPct: 30 },
+  net: { rxSec: 184320, txSec: 40960, downText: '180.0K/s', upText: '40.0K/s' },
+  weather: { city: 'Local', temp: '24', desc: '晴间多云', icon: '⛅', humidity: '56' },
+  obs: { running: false, streaming: false, recording: false, statusText: '未启动' },
+  media: { playing: true, app: '网易云音乐', title: '晴天 - 周杰伦', artist: '叶惠美', lyric: '故事的小黄花 从出生那年就飘着' },
+  pomodoro: { running: false, phase: 'work', remainSec: 25 * 60, totalSec: 25 * 60, formatted: '25:00', progressPct: 0 },
+  plugins: [
+    { id: 'uptime-greeting', name: '工作台时段问候与运行时长', icon: '✨', color: '#1e293b', title: '☀️ 专注时刻', value: 'RUN 2.4h', subValue: 'AKP153 插件引擎就绪', barPct: 48 }
+  ]
+};
+
+function getPagesSnapshotHash() {
+  if (!cfg || !cfg.pages) return '';
+  try {
+    return JSON.stringify({ pages: cfg.pages, currentPage: cfg.currentPage });
+  } catch (_) {
+    return '';
+  }
+}
+
+function updateUndoRedoUI() {
+  const btnUndo = document.getElementById('btnUndo');
+  const btnRedo = document.getElementById('btnRedo');
+  if (btnUndo) {
+    btnUndo.disabled = historyStack.length === 0;
+    btnUndo.title = historyStack.length
+      ? `撤销：${historyStack[historyStack.length - 1].reason || '上一步修改'} (Ctrl+Z)`
+      : '撤销上一步修改 (Ctrl+Z)';
+  }
+  if (btnRedo) {
+    btnRedo.disabled = redoStack.length === 0;
+    btnRedo.title = redoStack.length
+      ? `重做：${redoStack[redoStack.length - 1].reason || '上一步修改'} (Ctrl+Y)`
+      : '重做上一步修改 (Ctrl+Y)';
+  }
+}
+
+function pushHistory(reason = '编辑配置') {
+  if (!cfg || !cfg.pages || _isApplyingHistory) return;
+  const curHash = getPagesSnapshotHash();
+  if (_lastHistoryHash && curHash === _lastHistoryHash) return;
+  historyStack.push({
+    pages: JSON.parse(JSON.stringify(cfg.pages)),
+    currentPage: cfg.currentPage,
+    reason
+  });
+  if (historyStack.length > MAX_HISTORY) historyStack.shift();
+  redoStack.length = 0;
+  _lastHistoryHash = curHash;
+  updateUndoRedoUI();
+}
+
+async function performUndo() {
+  if (!historyStack.length || !cfg) {
+    toast('没有可撤销的操作');
+    return;
+  }
+  _isApplyingHistory = true;
+  try {
+    const snap = historyStack.pop();
+    redoStack.push({
+      pages: JSON.parse(JSON.stringify(cfg.pages)),
+      currentPage: cfg.currentPage,
+      reason: snap.reason
+    });
+    cfg.pages = JSON.parse(JSON.stringify(snap.pages));
+    if (snap.currentPage && cfg.pages.some(p => p.id === snap.currentPage)) {
+      cfg.currentPage = snap.currentPage;
+    } else if (cfg.pages[0]) {
+      cfg.currentPage = cfg.pages[0].id;
+    }
+    _lastHistoryHash = getPagesSnapshotHash();
+    updateUndoRedoUI();
+    renderPageTabs();
+    refreshGrid();
+    renderInspector();
+    await saveConfig();
+    if (!DEMO) await repaintAll();
+    toast(`↩ 已撤销：${snap.reason || '上一步修改'}`);
+  } finally {
+    _isApplyingHistory = false;
+  }
+}
+
+async function performRedo() {
+  if (!redoStack.length || !cfg) {
+    toast('没有可重做的操作');
+    return;
+  }
+  _isApplyingHistory = true;
+  try {
+    const snap = redoStack.pop();
+    historyStack.push({
+      pages: JSON.parse(JSON.stringify(cfg.pages)),
+      currentPage: cfg.currentPage,
+      reason: snap.reason
+    });
+    cfg.pages = JSON.parse(JSON.stringify(snap.pages));
+    if (snap.currentPage && cfg.pages.some(p => p.id === snap.currentPage)) {
+      cfg.currentPage = snap.currentPage;
+    } else if (cfg.pages[0]) {
+      cfg.currentPage = cfg.pages[0].id;
+    }
+    _lastHistoryHash = getPagesSnapshotHash();
+    updateUndoRedoUI();
+    renderPageTabs();
+    refreshGrid();
+    renderInspector();
+    await saveConfig();
+    if (!DEMO) await repaintAll();
+    toast(`↪ 已重做：${snap.reason || '修改'}`);
+  } finally {
+    _isApplyingHistory = false;
+  }
+}
+
+function setStyleBrush(spec) {
+  if (!spec) {
+    styleBrushSpec = null;
+    document.body.classList.remove('style-brush-mode');
+    const btn = document.getElementById('btnStyleBrush');
+    if (btn) {
+      btn.classList.remove('active');
+      btn.textContent = '🖌️ 样式刷';
+    }
+    return;
+  }
+  styleBrushSpec = {
+    color: spec.color || '#37474f',
+    color2: spec.color2 || '',
+    customColor: !!spec.customColor,
+    textColor: spec.textColor || '',
+    fontSize: Number(spec.fontSize) || 17,
+    iconScale: Number(spec.iconScale) || 62,
+    labelPos: spec.labelPos || 'bottom',
+  };
+  document.body.classList.add('style-brush-mode');
+  const btn = document.getElementById('btnStyleBrush');
+  if (btn) {
+    btn.classList.add('active');
+    btn.textContent = '🖌️ 刷子就绪 (点格子应用)';
+  }
+  toast('🖌️ 已提取按键外观样式！点击任意格子（或多选格子）即可一键刷入样式，按 Esc 退出');
+}
+
+async function applyStyleBrushToCell(row, col) {
+  if (!styleBrushSpec || col === 5 || isBackCell(row, col)) return;
+  pushHistory('样式刷应用');
+  const targets = (multiSelected.size > 1 && multiSelected.has(`${row},${col}`))
+    ? Array.from(multiSelected).map(k => { const [r, c] = k.split(',').map(Number); return { row: r, col: c }; })
+    : [{ row, col }];
+  for (const t of targets) {
+    if (t.col === 5 || isBackCell(t.row, t.col)) continue;
+    const key = `${t.row},${t.col}`;
+    if (!pageButtons()[key]) {
+      pageButtons()[key] = { type: 'app', label: '新按键', target: '', color: styleBrushSpec.color };
+    }
+    const dst = pageButtons()[key];
+    dst.color = styleBrushSpec.color;
+    if (styleBrushSpec.color2) dst.color2 = styleBrushSpec.color2; else delete dst.color2;
+    if (styleBrushSpec.customColor) dst.customColor = true; else delete dst.customColor;
+    dst.textColor = styleBrushSpec.textColor;
+    dst.fontSize = styleBrushSpec.fontSize;
+    dst.iconScale = styleBrushSpec.iconScale;
+    dst.labelPos = styleBrushSpec.labelPos;
+  }
+  await saveConfig();
+  refreshGrid();
+  renderInspector();
+  if (!DEMO) {
+    for (const t of targets) await pushKey(t.row, t.col);
+  }
+  toast(`🖌️ 已将外观样式刷入 ${targets.length} 个按键`);
+}
+
 if (typeof api !== 'undefined' && api.on) {
   api.on('macro:loopState', (payload) => {
     if (!payload) return;
@@ -101,6 +286,34 @@ const ACTION_TEMPLATES = [
       type: 'qr_decode', label: '扫码解码',
       target: 'qr_decode',
       color: '#00838f', iconName: '二维码/扫码'
+    }
+  },
+  {
+    id: 'widget_pomodoro', name: '🍅 番茄钟专注倒计时 (实时组件)',
+    spec: {
+      type: 'widget', widgetKind: 'pomodoro', action: 'pomodoro_toggle',
+      label: '番茄钟', color: '#b71c1c'
+    }
+  },
+  {
+    id: 'widget_gpu', name: '🎮 GPU 温度与显存监控 (NVML)',
+    spec: {
+      type: 'widget', widgetKind: 'gpu', action: 'refresh',
+      label: 'GPU 监控', color: '#1b5e20'
+    }
+  },
+  {
+    id: 'widget_net', name: '🌐 实时上下行网速表',
+    spec: {
+      type: 'widget', widgetKind: 'net', action: 'refresh',
+      label: '实时网速', color: '#0d47a1'
+    }
+  },
+  {
+    id: 'widget_media', name: '🎵 正在播放歌词/曲目卡片',
+    spec: {
+      type: 'widget', widgetKind: 'media_now', action: 'media_play_pause',
+      label: '正在播放', color: '#4a148c'
     }
   }
 ];
@@ -186,6 +399,7 @@ function glyphFor(type) {
     case 'back': return '←';
     case 'qr_decode':
     case 'qr': return '📷';
+    case 'widget': return '📊';
     default: return '';
   }
 }
@@ -194,7 +408,8 @@ function glyphFor(type) {
  *  otherwise Chinese UI. */
 const TYPE_NAMES = {
   volume: '🔊 音频与音量控制 (WASAPI 毫秒级极速)',
-  multi: '🎛️ 复合动作 (多操作宏 / 键鼠编排)',
+  widget: '📊 动态实时组件 (GPU/网速/番茄钟/天气/音乐/OBS/插件)',
+  multi: '🎛️ 复合动作 (多操作宏 / 键鼠录制 / 条件分支)',
   app: '应用程序 / 快捷方式',
   hotkey: '虚拟快捷键 / 组合键宏',
   folder: '文件夹',
@@ -206,7 +421,7 @@ const TYPE_NAMES = {
   qr_decode: '📷 屏幕/剪贴板二维码解码',
 };
 const TYPE_SHORT = {
-  volume: '音量', multi: '宏', app: '应用', hotkey: '快捷键', folder: '文件夹', url: '网址',
+  volume: '音量', widget: '组件', multi: '宏', app: '应用', hotkey: '快捷键', folder: '文件夹', url: '网址',
   command: '命令', ps1: '脚本', file: '文件', page: '切页', qr_decode: '扫码',
 };
 
@@ -288,17 +503,36 @@ function getGlobalGradientCanvas(gradient) {
   return c;
 }
 
+function parseHexRgb(hex, fallback = [55, 71, 79]) {
+  const h = String(hex || '').replace('#', '').trim();
+  if (h.length !== 6) return fallback;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return fallback;
+  return [r, g, b];
+}
+
 function sampleGradientContrast(grad, row, col) {
-  const master = getGlobalGradientCanvas(grad);
-  if (!master) return '#ffffff';
-  try {
-    const ctx = master.getContext('2d');
-    const p = ctx.getImageData(col * 96 + 48, row * 96 + 48, 1, 1).data;
-    const bri = (p[0] * 299 + p[1] * 587 + p[2] * 114) / 1000;
-    return bri > 140 ? '#1f2430' : '#ffffff';
-  } catch (e) {
-    return '#ffffff';
-  }
+  if (!grad || !grad.enabled) return '#ffffff';
+  const w = TOTAL_COLS * 96;
+  const h = ROWS * 96;
+  const angle = (Number(grad.angle) || 0) % 360;
+  const rad = ((angle - 90) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const L = Math.abs(w * cos) + Math.abs(h * sin) || 1;
+  const px = col * 96 + 48 - w / 2;
+  const py = row * 96 + 48 - h / 2;
+  const proj = px * cos + py * sin;
+  const t = Math.max(0, Math.min(1, proj / L + 0.5));
+  const c0 = parseHexRgb(grad.from, [21, 101, 192]);
+  const c1 = parseHexRgb(grad.to, [106, 27, 154]);
+  const r = c0[0] + (c1[0] - c0[0]) * t;
+  const g = c0[1] + (c1[1] - c0[1]) * t;
+  const b = c0[2] + (c1[2] - c0[2]) * t;
+  const bri = (r * 299 + g * 587 + b * 114) / 1000;
+  return bri > 140 ? '#1f2430' : '#ffffff';
 }
 
 /**
@@ -485,6 +719,9 @@ function getActiveBadge(spec) {
 }
 
 async function paintKey(spec, size, keyPos) {
+  if (spec && spec.type === 'widget') {
+    return paintWidgetCanvas(spec, size, keyPos || { row: 0, col: 0 });
+  }
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const ctx = c.getContext('2d');
@@ -500,12 +737,7 @@ async function paintKey(spec, size, keyPos) {
       const sx = keyPos.col * 96;
       const sy = keyPos.row * 96;
       ctx.drawImage(master, sx, sy, 96, 96, 0, 0, size, size);
-      try {
-        const mctx = master.getContext('2d');
-        const p = mctx.getImageData(sx + 48, sy + 48, 1, 1).data;
-        const bri = (p[0] * 299 + p[1] * 587 + p[2] * 114) / 1000;
-        sampledFg = bri > 140 ? '#1f2430' : '#ffffff';
-      } catch (e) {}
+      sampledFg = sampleGradientContrast(grad, keyPos.row, keyPos.col);
     } else {
       drawBase(ctx, size, spec);
     }
@@ -939,51 +1171,249 @@ function paintMetricStrip(spec, size, row, mode, stats) {
   return c;
 }
 
-async function pushStrip(row, force = false, preStats = null) {
-  if (!cfg || DEMO) return;
+const WIDGET_KINDS = ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
+
+function paintWidgetCanvas(spec, size, keyPos) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const row = (keyPos && keyPos.row !== undefined) ? keyPos.row : 0;
+  const col = (keyPos && keyPos.col !== undefined) ? keyPos.col : 5;
+  const kind = (spec && (spec.widgetKind || (WIDGET_KINDS.includes(spec.type) ? spec.type : ''))) || 'gpu';
+
+  const page = curPage();
+  const grad = page && page.gradient;
+  const drawBg = (topCol, botCol) => {
+    if (grad && grad.enabled && (!spec || !spec.customColor)) {
+      const master = getGlobalGradientCanvas(grad);
+      if (master) {
+        ctx.drawImage(master, col * 96, row * 96, 96, 96, 0, 0, size, size);
+        return;
+      }
+    }
+    if (spec && spec.color && spec.customColor) {
+      ctx.fillStyle = spec.color;
+      ctx.fillRect(0, 0, size, size);
+      return;
+    }
+    const g = ctx.createLinearGradient(0, 0, 0, size);
+    g.addColorStop(0, (spec && spec.color) || topCol);
+    g.addColorStop(1, botCol);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+  };
+
+  const scale = size / 80;
+  ctx.save();
+
+  if (kind === 'gpu') {
+    drawBg('#0f291e', '#07140e');
+    const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 18, memPct: 25, memUsedMb: 2048 };
+    ctx.fillStyle = '#4ade80';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('🎮 GPU 监控', size / 2, Math.round(6 * scale));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(20 * scale)}px "Segoe UI", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${gpu.temp || 45}°C`, size / 2, Math.round(32 * scale));
+
+    const drawMini = (lbl, pct, y, colHex) => {
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = `bold ${Math.round(9.5 * scale)}px "Segoe UI", sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillText(lbl, Math.round(7 * scale), y);
+      ctx.fillStyle = colHex;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${pct}%`, size - Math.round(7 * scale), y);
+      const bx = Math.round(7 * scale), by = y + Math.round(7 * scale), bw = size - Math.round(14 * scale), bh = Math.max(4, Math.round(4.5 * scale));
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = colHex;
+      ctx.fillRect(bx, by, Math.max(2, Math.round((bw * Math.min(100, Math.max(0, pct))) / 100)), bh);
+    };
+    drawMini('CORE', gpu.load || 0, Math.round(48 * scale), '#34d399');
+    drawMini('VRAM', gpu.memPct || 0, Math.round(63 * scale), '#38bdf8');
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.28)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'net') {
+    drawBg('#0c1e35', '#07111f');
+    const net = (lastTelemetry && lastTelemetry.net) || { downText: '120K/s', upText: '32K/s' };
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('🌐 实时网速', size / 2, Math.round(6 * scale));
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#34d399';
+    ctx.font = `bold ${Math.round(12.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    ctx.fillText(`↓ ${net.downText || '0B/s'}`, Math.round(7 * scale), Math.round(28 * scale));
+
+    ctx.fillStyle = '#c084fc';
+    ctx.font = `bold ${Math.round(12.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    ctx.fillText(`↑ ${net.upText || '0B/s'}`, Math.round(7 * scale), Math.round(48 * scale));
+
+    // Activity wave bar
+    const rxPct = Math.min(100, Math.round(Math.log10(Math.max(10, (net.rxSec || 1000))) * 15));
+    const bx = Math.round(8 * scale), by = size - Math.round(12 * scale), bw = size - Math.round(16 * scale), bh = Math.max(4, Math.round(5 * scale));
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(bx, by, Math.max(4, Math.round((bw * rxPct) / 100)), bh);
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'weather') {
+    drawBg('#102a43', '#091826');
+    const w = (lastTelemetry && lastTelemetry.weather) || { icon: '⛅', temp: '24', desc: '晴朗', city: 'Local' };
+    ctx.fillStyle = '#7dd3fc';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${w.icon || '🌤️'} ${String(w.city || '天气').slice(0, 6)}`, size / 2, Math.round(6 * scale));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(22 * scale)}px "Segoe UI", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${w.temp !== undefined ? w.temp : 24}°C`, size / 2, Math.round(39 * scale));
+
+    ctx.fillStyle = '#bae6fd';
+    ctx.font = `${Math.round(10.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${String(w.desc || '晴').slice(0, 5)} · 湿${w.humidity || 50}%`, size / 2, size - Math.round(7 * scale));
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.28)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'pomodoro') {
+    const p = (lastTelemetry && lastTelemetry.pomodoro) || { running: false, formatted: '25:00', progressPct: 0, phase: 'work' };
+    drawBg(p.running ? '#7f1d1d' : '#27272a', p.running ? '#450a0a' : '#18181b');
+    ctx.fillStyle = p.running ? '#fca5a5' : '#fbbf24';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(p.running ? '🍅 专注中' : '🍅 番茄钟', size / 2, Math.round(7 * scale));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(21 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(p.formatted || '25:00', size / 2, Math.round(41 * scale));
+
+    const bx = Math.round(9 * scale), by = size - Math.round(15 * scale), bw = size - Math.round(18 * scale), bh = Math.max(5, Math.round(6 * scale));
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = p.running ? '#f87171' : '#fbbf24';
+    const pct = p.running ? Math.max(8, p.progressPct || 0) : (p.progressPct || 0);
+    if (pct > 0) ctx.fillRect(bx, by, Math.round((bw * pct) / 100), bh);
+    ctx.strokeStyle = p.running ? 'rgba(248, 113, 113, 0.45)' : 'rgba(251, 191, 36, 0.25)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'obs') {
+    const obs = (lastTelemetry && lastTelemetry.obs) || { running: false, streaming: false, recording: false, statusText: '未启动' };
+    drawBg(obs.streaming || obs.recording ? '#4c0519' : '#1e293b', '#0f172a');
+    ctx.fillStyle = obs.streaming ? '#fb7185' : '#94a3b8';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('🔴 OBS 监控', size / 2, Math.round(7 * scale));
+
+    ctx.fillStyle = obs.streaming ? '#ff4d6d' : (obs.running ? '#34d399' : '#cbd5e1');
+    ctx.font = `bold ${Math.round(14 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(obs.streaming ? 'LIVE 推流' : (obs.running ? '已就绪' : '未运行'), size / 2, Math.round(40 * scale));
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(obs.statusText || '待命', size / 2, size - Math.round(8 * scale));
+    ctx.strokeStyle = 'rgba(251, 113, 133, 0.28)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'media_now') {
+    drawBg('#3b0764', '#1e1b4b');
+    const m = (lastTelemetry && lastTelemetry.media) || { playing: false, app: '音乐', title: '暂无播放', lyric: '等待播放…' };
+    ctx.fillStyle = '#e879f9';
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`🎵 ${m.app || '正在播放'}`, size / 2, Math.round(6 * scale));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(11.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    const titleStr = String(m.title || '暂无曲目').slice(0, 8);
+    ctx.fillText(titleStr, size / 2, Math.round(35 * scale));
+
+    ctx.fillStyle = '#c4b5fd';
+    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    const subStr = String(m.lyric || m.artist || '点击播放/暂停').slice(0, 9);
+    ctx.fillText(subStr, size / 2, Math.round(54 * scale));
+
+    ctx.strokeStyle = 'rgba(232, 121, 249, 0.32)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else {
+    // External JS plugin card
+    const plugins = (lastTelemetry && lastTelemetry.plugins) || [];
+    const plg = plugins.find(p => p.id === spec.pluginId) || plugins[0] || {
+      title: spec.label || 'JS 插件', value: 'READY', subValue: 'Plugin v0.8', barPct: 50, color: '#1e293b'
+    };
+    drawBg(plg.color || '#1e293b', '#0f172a');
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(String(plg.title || '🧩 插件').slice(0, 8), size / 2, Math.round(7 * scale));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(16 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(plg.value || 'OK').slice(0, 8), size / 2, Math.round(38 * scale));
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(String(plg.subValue || '').slice(0, 9), size / 2, size - Math.round(8 * scale));
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  }
+
+  ctx.restore();
+  return c;
+}
+
+async function buildStripCanvas(row, preStats = null) {
   const spec = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const size = 80;
   let s = Object.assign({}, spec);
-  let c = null;
 
   if (s.type === 'volume') {
     let vol = lastAudioState ? lastAudioState.volume : 50;
     let isMute = lastAudioState ? lastAudioState.isMute : false;
-    try {
-      const stats = preStats || await api.systemStats();
-      if (stats) {
-        lastSysStats = Object.assign({}, lastSysStats, stats);
-        if (stats.volume !== undefined) {
-          vol = stats.volume;
-          isMute = !!stats.isMute;
-          lastAudioState.volume = vol;
-          lastAudioState.isMute = isMute;
-        }
-      }
-    } catch (_) {}
-    c = paintVolumeStrip(s, size, row, vol, isMute);
-  } else if (s.type === 'clock') {
-    c = paintClockStrip(s, size, row);
-  } else if (s.type === 'cpu' || s.type === 'mem' || s.type === 'sys') {
-    let stats = preStats || lastSysStats || { cpu: 0, mem: 0, memUsedGb: '' };
-    if (!preStats) {
-      try {
-        const st = await api.systemStats();
-        if (st) {
-          stats = st;
-          lastSysStats = Object.assign({}, lastSysStats, st);
-        }
-      } catch (_) {}
+    if (preStats && preStats.volume !== undefined) {
+      vol = preStats.volume;
+      isMute = !!preStats.isMute;
     }
-    c = paintMetricStrip(s, size, row, s.type, stats);
-  } else {
-    if (s.type === 'page') {
-      s = Object.assign({}, s, { label: pageStripLabel() });
-    }
-    c = await paintKey(s, size, { row, col: 5 });
+    return paintVolumeStrip(s, size, row, vol, isMute);
   }
+  if (s.type === 'clock') {
+    return paintClockStrip(s, size, row);
+  }
+  if (s.type === 'cpu' || s.type === 'mem' || s.type === 'sys') {
+    const stats = preStats || lastSysStats || { cpu: 24, mem: 48, memUsedGb: '7.6' };
+    return paintMetricStrip(s, size, row, s.type, stats);
+  }
+  if (WIDGET_KINDS.includes(s.type) || s.type === 'widget') {
+    return paintWidgetCanvas(Object.assign({}, s, { widgetKind: s.widgetKind || s.type }), size, { row, col: 5 });
+  }
+  if (s.type === 'page') {
+    s = Object.assign({}, s, { label: pageStripLabel() });
+  }
+  return paintKey(s, size, { row, col: 5 });
+}
 
-  const rotated = rotateCanvas(c, $('rotate').value);
+async function pushStrip(row, force = false, preStats = null) {
+  if (!cfg || DEMO) return;
+  const c = await buildStripCanvas(row, preStats);
+  const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+  const rotated = rotateCanvas(c, rotMode);
   const dataUrl = toJpegUnder(rotated, 10240);
   await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1], force: !!force });
 }
@@ -991,7 +1421,7 @@ async function pushStrip(row, force = false, preStats = null) {
 async function repaintAllKeys(force = false, gen = null) {
   if (!cfg || DEMO) return;
   const myGen = gen !== null ? gen : ++repaintGen;
-  const rotMode = $('rotate') ? $('rotate').value : 'cw';
+  const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const blank = { color: '#20262e', label: '' };
   const jobs = [];
   for (let row = 0; row < ROWS; row++) {
@@ -1008,18 +1438,23 @@ async function repaintAllKeys(force = false, gen = null) {
   }
   const items = await Promise.all(jobs);
   if (myGen !== repaintGen) return;
-  for (const item of items) {
-    if (myGen !== repaintGen) return;
-    await api.deviceDraw(item);
+  if (api.deviceBatchDraw) {
+    await api.deviceBatchDraw(items);
+  } else {
+    for (const item of items) {
+      if (myGen !== repaintGen) return;
+      await api.deviceDraw(item);
+    }
   }
 }
 
 async function repaintAll(force = false) {
   if (!cfg || DEMO) return;
   const myGen = ++repaintGen;
-  await repaintAllKeys(force, myGen);
-  if (myGen !== repaintGen) return;
-  let sharedStats = null;
+  const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+  const blank = { color: '#20262e', label: '' };
+
+  let sharedStats = lastSysStats;
   const strips = pageStrips();
   const needsStats = [0, 1, 2].some((r) => {
     const st = strips[String(r)];
@@ -1027,13 +1462,45 @@ async function repaintAll(force = false) {
   });
   if (needsStats && api.systemStats) {
     try {
-      sharedStats = await api.systemStats();
-      if (sharedStats) lastSysStats = Object.assign({}, lastSysStats, sharedStats);
+      const st = await api.systemStats();
+      if (st) {
+        sharedStats = st;
+        lastSysStats = Object.assign({}, lastSysStats, st);
+      }
     } catch (_) {}
   }
+
+  const jobs = [];
   for (let row = 0; row < ROWS; row++) {
-    if (myGen !== repaintGen) return;
-    await pushStrip(row, force, sharedStats);
+    for (let col = 0; col < KEY_COLS; col++) {
+      const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
+      jobs.push(
+        paintKey(spec || blank, 96, { row, col }).then((c) => {
+          const rotated = rotateCanvas(c, rotMode);
+          const dataUrl = toJpegUnder(rotated, 10240);
+          return { row, col, data: dataUrl.split(',')[1], force: !!force };
+        })
+      );
+    }
+  }
+  for (let row = 0; row < ROWS; row++) {
+    jobs.push(
+      buildStripCanvas(row, sharedStats).then((c) => {
+        const rotated = rotateCanvas(c, rotMode);
+        const dataUrl = toJpegUnder(rotated, 10240);
+        return { row, col: 5, data: dataUrl.split(',')[1], force: !!force };
+      })
+    );
+  }
+  const items = await Promise.all(jobs);
+  if (myGen !== repaintGen) return;
+  if (api.deviceBatchDraw) {
+    await api.deviceBatchDraw(items);
+  } else {
+    for (const item of items) {
+      if (myGen !== repaintGen) return;
+      await api.deviceDraw(item);
+    }
   }
 }
 
@@ -1136,8 +1603,39 @@ function buildGrid() {
       cell.dataset.row = row;
       cell.dataset.col = col;
 
-      cell.addEventListener('click', () => {
+      cell.addEventListener('click', async (e) => {
         hideContextMenu();
+        if (styleBrushSpec && col < 5 && !isBackCell(row, col)) {
+          await applyStyleBrushToCell(row, col);
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && col < 5 && !isBackCell(row, col)) {
+          const k = `${row},${col}`;
+          if (selected && selected.col < 5 && !multiSelected.size) {
+            multiSelected.add(`${selected.row},${selected.col}`);
+          }
+          if (multiSelected.has(k)) multiSelected.delete(k);
+          else multiSelected.add(k);
+          selected = { row, col };
+          refreshGrid();
+          renderInspector();
+          return;
+        }
+        if (e.shiftKey && selected && selected.col < 5 && col < 5) {
+          multiSelected.clear();
+          const r0 = Math.min(selected.row, row), r1 = Math.max(selected.row, row);
+          const c0 = Math.min(selected.col, col), c1 = Math.max(selected.col, col);
+          for (let rr = r0; rr <= r1; rr++) {
+            for (let cc = c0; cc <= c1; cc++) {
+              if (!isBackCell(rr, cc)) multiSelected.add(`${rr},${cc}`);
+            }
+          }
+          selected = { row, col };
+          refreshGrid();
+          renderInspector();
+          return;
+        }
+        multiSelected.clear();
         select(row, col);
       });
 
@@ -1199,6 +1697,7 @@ async function handleDrop(row, col, e) {
     if (isBackCell(row, col)) { toast('子页自动返回键不可覆盖'); return; }
     const entry = (cfg.library || []).find((x) => x.id === fromLib);
     if (!entry) return;
+    pushHistory(`放置库按键「${entry.name}」`);
     await stopKeyMacroIfNeeded(row, col);
     pageButtons()[row + ',' + col] = clone(entry.spec);
     await saveConfig();
@@ -1217,6 +1716,7 @@ async function handleDrop(row, col, e) {
 async function swapCells(a, b) {
   if (a.row === b.row && a.col === b.col) return;
   if (a.col === 5 || b.col === 5) return;   // strips are not part of the key grid
+  pushHistory(`交换按键 r${a.row}c${a.col} ⇄ r${b.row}c${b.col}`);
   const ka = a.row + ',' + a.col;
   const kb = b.row + ',' + b.col;
   const va = pageButtons()[ka];
@@ -1233,30 +1733,31 @@ async function swapCells(a, b) {
 
 function renderStripCellContent(cell, row, page, grad) {
   const s = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
-  const cpuVal = Math.max(0, Math.min(100, Number(lastSysStats && lastSysStats.cpu) || 0));
-  const memVal = Math.max(0, Math.min(100, Number(lastSysStats && lastSysStats.mem) || 0));
-  const volVal = lastAudioState ? lastAudioState.volume : 50;
-  const isMute = !!(lastAudioState && lastAudioState.isMute);
-
-  const now = new Date();
-  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-  const txt = s.type === 'clock' ? `时钟 ${hhmm}`
-    : s.type === 'page' ? pageStripLabel().replace('\n', ' · ')
-    : s.type === 'cpu' ? `CPU ${cpuVal}%`
-    : s.type === 'mem' ? `内存 ${memVal}%`
-    : s.type === 'sys' ? `CPU ${cpuVal}% · 内存 ${memVal}%`
-    : s.type === 'volume' ? (isMute ? '🔇 已静音' : `🔊 音量 ${volVal}%`)
-    : (s.label || '（空）');
-  const gl = s.type === 'cpu' ? '💻'
-    : s.type === 'mem' ? '📊'
-    : s.type === 'sys' ? '📈'
-    : s.type === 'clock' ? '⏰'
-    : s.type === 'volume' ? (isMute ? '🔇' : '🔊')
-    : '▢';
-
   cell.classList.add('display');
-  cell.classList.remove('filled', 'pos-top', 'pos-center');
+  cell.classList.remove('filled', 'pos-top', 'pos-center', 'has-canvas');
+
+  const isCanvasStrip = ['clock', 'cpu', 'mem', 'sys', 'volume', ...WIDGET_KINDS, 'widget'].includes(s.type);
+  if (isCanvasStrip) {
+    cell.classList.add('has-canvas');
+    let c = null;
+    if (s.type === 'clock') c = paintClockStrip(s, 80, row);
+    else if (s.type === 'volume') c = paintVolumeStrip(s, 80, row, lastAudioState ? lastAudioState.volume : 50, !!(lastAudioState && lastAudioState.isMute));
+    else if (s.type === 'cpu' || s.type === 'mem' || s.type === 'sys') {
+      const st = (lastSysStats && (lastSysStats.cpu || lastSysStats.mem)) ? lastSysStats : { cpu: 24, mem: 48, memUsedGb: '7.6' };
+      c = paintMetricStrip(s, 80, row, s.type, st);
+    } else {
+      c = paintWidgetCanvas(Object.assign({}, s, { widgetKind: s.widgetKind || s.type }), 80, { row, col: 5 });
+    }
+    if (c) {
+      c.className = 'cell-canvas-preview';
+      cell.appendChild(c);
+    }
+    cell.appendChild(el('span', 'badge', `屏 ${row + 1}`));
+    return;
+  }
+
+  const txt = s.type === 'page' ? pageStripLabel().replace('\n', ' · ') : (s.label || '（空）');
+  const gl = '▢';
 
   const isStripGrad = grad && grad.enabled && !s.customColor;
   cell.classList.toggle('grad-cell', !!isStripGrad);
@@ -1283,26 +1784,6 @@ function renderStripCellContent(cell, row, page, grad) {
   }
   cell.appendChild(capEl);
   cell.appendChild(el('span', 'badge', `屏 ${row + 1}`));
-
-  if (['cpu', 'mem', 'sys', 'volume'].includes(s.type)) {
-    const meter = document.createElement('div');
-    meter.className = 'strip-meter';
-    const fill = document.createElement('div');
-    fill.className = 'strip-meter-fill';
-    let pct = 0;
-    if (s.type === 'cpu') pct = cpuVal;
-    else if (s.type === 'mem') pct = memVal;
-    else if (s.type === 'sys') pct = Math.round((cpuVal + memVal) / 2);
-    else if (s.type === 'volume') pct = isMute ? 0 : volVal;
-    fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-    if (s.type === 'volume' && isMute) {
-      fill.style.background = '#ff5252';
-    } else if (pct >= 85) {
-      fill.style.background = 'linear-gradient(90deg, #ff9800, #ff5252)';
-    }
-    meter.appendChild(fill);
-    cell.appendChild(meter);
-  }
 }
 
 function refreshStripCells(stats) {
@@ -1323,11 +1804,21 @@ function refreshStripCells(stats) {
 function refreshGrid() {
   const page = curPage();
   const grad = page.gradient;
+  const msHint = $('multiSelectHint');
+  if (msHint) {
+    msHint.hidden = multiSelected.size <= 1;
+    if (multiSelected.size > 1) {
+      msHint.textContent = `已多选 ${multiSelected.size} 格 · 右侧可批量修改样式`;
+    }
+  }
 
   document.querySelectorAll('#grid .cell').forEach((cell) => {
     const row = +cell.dataset.row, col = +cell.dataset.col;
     const isSel = !!selected && selected.row === row && selected.col === col;
+    const isMulti = col < 5 && multiSelected.size > 1 && multiSelected.has(`${row},${col}`);
     cell.classList.toggle('selected', isSel);
+    cell.classList.toggle('multi-selected', isMulti);
+    cell.classList.remove('has-canvas');
     cell.innerHTML = '';
     cell.style.background = '';
     cell.style.color = '';
@@ -1381,6 +1872,21 @@ function refreshGrid() {
 
     if (!spec) {
       cell.appendChild(el('span', 'plus', '＋'));
+      return;
+    }
+
+    if (spec.type === 'widget') {
+      cell.classList.add('has-canvas');
+      const wc = paintWidgetCanvas(spec, 96, { row, col });
+      wc.className = 'cell-canvas-preview';
+      cell.appendChild(wc);
+      cell.appendChild(el('span', 'tag', `r${row}c${col}`));
+      cell.appendChild(el('span', 'badge', '组件'));
+      const x = document.createElement('button');
+      x.className = 'clear';
+      x.textContent = '×';
+      x.onclick = (e) => { e.stopPropagation(); removeKey(row, col); };
+      cell.appendChild(x);
       return;
     }
 
@@ -1531,6 +2037,7 @@ async function onDrop(row, col, e) {
     applyAppDualStateDefaults(spec, cls, abs);
   }
 
+  pushHistory(`拖入配置 r${row}c${col}`);
   await stopKeyMacroIfNeeded(row, col);
   pageButtons()[row + ',' + col] = spec;
   await saveConfig();
@@ -1704,6 +2211,7 @@ async function stopPageMacrosIfNeeded(pageId) {
 }
 
 async function removeKey(row, col) {
+  pushHistory(`清空按键 r${row}c${col}`);
   await stopKeyMacroIfNeeded(row, col);
   delete pageButtons()[row + ',' + col];
   await saveConfig();
@@ -1771,6 +2279,7 @@ async function commit(repaint) {
   syncSelectedToggleBadge();
   refreshGrid();
   await saveConfig();
+  _lastHistoryHash = getPagesSnapshotHash();
   if (repaint) await repaintSelected();
 }
 
@@ -1827,6 +2336,9 @@ function getActionIcon(type) {
     case 'mouse_wheel': return '🎡';
     case 'window_rect': return '📐';
     case 'media': return '🔊';
+    case 'if_color': return '🎨';
+    case 'if_process': return '🔍';
+    case 'if_qr': return '📷';
     default: return '▶';
   }
 }
@@ -1846,8 +2358,45 @@ function getActionTypeName(type) {
     case 'mouse_wheel': return '鼠标滚轮';
     case 'window_rect': return '固定窗口尺寸位置';
     case 'media': return '多媒体控制';
+    case 'if_color': return '条件分支：屏幕颜色检测';
+    case 'if_process': return '条件分支：进程状态检测';
+    case 'if_qr': return '条件分支：屏幕二维码检测';
     default: return type || '动作';
   }
+}
+
+function startColorCoordPicker(btnEl, onPicked) {
+  let count = 3;
+  btnEl.disabled = true;
+  const originalText = btnEl.textContent;
+  btnEl.textContent = `⏳ ${count} 秒后采样坐标与颜色...`;
+
+  const timer = setInterval(async () => {
+    count--;
+    if (count > 0) {
+      btnEl.textContent = `⏳ ${count} 秒后采样坐标与颜色...`;
+    } else {
+      clearInterval(timer);
+      btnEl.textContent = '🎯 正在采样像素...';
+      try {
+        const pt = (!DEMO && api.macroGetCursor) ? await api.macroGetCursor() : { x: 640, y: 360 };
+        let hex = '#00e676';
+        if (!DEMO && api.pixelGetColor && pt && pt.x !== undefined) {
+          const cRes = await api.pixelGetColor(pt.x, pt.y);
+          if (cRes && cRes.hex) hex = cRes.hex;
+        }
+        if (pt && pt.x !== undefined && pt.y !== undefined) {
+          onPicked(pt.x, pt.y, hex);
+          toast(`🎯 已采样坐标 (${pt.x}, ${pt.y}) 颜色 ${hex}`);
+        }
+      } catch (err) {
+        toast('采样失败：' + (err && err.message));
+      } finally {
+        btnEl.disabled = false;
+        btnEl.textContent = originalText;
+      }
+    }
+  }, 1000);
 }
 
 function startCoordinatePicker(btnEl, onPicked) {
@@ -2401,10 +2950,75 @@ function renderActionCardHtml(act, idx, total) {
         </select>
       </div>
     `;
+  } else if (t === 'if_color') {
+    bodyHtml = `
+      <div class="macro-rect-grid">
+        <div class="macro-num-field">
+          <span class="m-lbl">起点 X</span>
+          <input type="number" class="m-field" data-field="x" data-idx="${idx}" value="${act.x !== undefined ? act.x : 500}" />
+        </div>
+        <div class="macro-num-field">
+          <span class="m-lbl">起点 Y</span>
+          <input type="number" class="m-field" data-field="y" data-idx="${idx}" value="${act.y !== undefined ? act.y : 500}" />
+        </div>
+        <div class="macro-num-field">
+          <span class="m-lbl">区域宽 W</span>
+          <input type="number" class="m-field" data-field="w" data-idx="${idx}" value="${act.w !== undefined ? act.w : 1}" title="1 表示单点像素检测，>1 表示矩形区域搜色" />
+        </div>
+        <div class="macro-num-field">
+          <span class="m-lbl">区域高 H</span>
+          <input type="number" class="m-field" data-field="h" data-idx="${idx}" value="${act.h !== undefined ? act.h : 1}" />
+        </div>
+      </div>
+      <div class="macro-inline-row" style="margin-top: 4px;">
+        <span style="font-size:11px; color:var(--muted);">目标色:</span>
+        <input type="color" class="m-field" data-field="color" data-idx="${idx}" value="${act.color || '#00e676'}" style="width:36px; height:26px; padding:0; cursor:pointer;" />
+        <span style="font-size:11px; color:var(--muted);">容差:</span>
+        <input type="number" class="m-field" data-field="tolerance" data-idx="${idx}" min="0" max="120" value="${act.tolerance !== undefined ? act.tolerance : 24}" style="width:58px;" />
+        <button type="button" class="ghost tiny m-pick-color-coord" data-idx="${idx}" style="margin-left:auto;">🎯 3秒拾取坐标与颜色</button>
+      </div>
+      <div class="macro-inline-row" style="margin-top: 4px;">
+        <label>匹配动作：</label>
+        <select class="m-field" data-field="thenAction" data-idx="${idx}" style="flex:1;">
+          <option value="click_found" ${(act.thenAction || 'click_found') === 'click_found' ? 'selected' : ''}>🖱️ 找到颜色后自动点击该坐标并继续</option>
+          <option value="continue" ${act.thenAction === 'continue' ? 'selected' : ''}>✅ 满足则继续执行后续步骤 (不满足则中止)</option>
+          <option value="skip_next" ${act.thenAction === 'skip_next' ? 'selected' : ''}>⏭️ 满足则执行下一步 (不满足则跳过下一步)</option>
+          <option value="abort" ${act.thenAction === 'abort' ? 'selected' : ''}>⏹️ 满足该颜色时立即停止本轮宏</option>
+        </select>
+      </div>
+    `;
+  } else if (t === 'if_process') {
+    bodyHtml = `
+      <div class="macro-inline-row">
+        <input class="m-field" data-field="target" data-idx="${idx}" value="${escapeAttr(act.target || 'obs64.exe')}" placeholder="进程名 (如 obs64.exe, Code.exe)" style="flex:1;" />
+        <select class="m-field" data-field="thenAction" data-idx="${idx}" style="width:155px;">
+          <option value="continue" ${(act.thenAction || 'continue') === 'continue' ? 'selected' : ''}>运行中则继续，否则中止</option>
+          <option value="skip_next" ${act.thenAction === 'skip_next' ? 'selected' : ''}>未运行则跳过下一步</option>
+          <option value="abort" ${act.thenAction === 'abort' ? 'selected' : ''}>运行中则立即中止宏</option>
+        </select>
+      </div>
+    `;
+  } else if (t === 'if_qr') {
+    bodyHtml = `
+      <div class="macro-inline-row">
+        <label>检测到二维码后：</label>
+        <select class="m-field" data-field="thenAction" data-idx="${idx}" style="flex:1;">
+          <option value="continue" ${(act.thenAction || 'continue') === 'continue' ? 'selected' : ''}>📋 解码复制并继续执行 (未识别则中止)</option>
+          <option value="click" ${act.thenAction === 'click' ? 'selected' : ''}>🖱️ 解码复制后点击下方指定坐标</option>
+          <option value="skip_next" ${act.thenAction === 'skip_next' ? 'selected' : ''}>⏭️ 未识别到二维码则跳过下一步</option>
+        </select>
+      </div>
+      <div class="macro-inline-row" style="margin-top:4px;">
+        <span style="font-size:11px; color:var(--muted);">点击坐标(可选):</span>
+        <input type="number" class="m-field" data-field="clickX" data-idx="${idx}" value="${act.clickX !== undefined ? act.clickX : ''}" placeholder="X" style="flex:1;" />
+        <input type="number" class="m-field" data-field="clickY" data-idx="${idx}" value="${act.clickY !== undefined ? act.clickY : ''}" placeholder="Y" style="flex:1;" />
+      </div>
+    `;
   }
 
+  const isCond = ['if_color', 'if_process', 'if_qr'].includes(t);
   return `
-    <div class="macro-card" data-idx="${idx}">
+    <div class="macro-card ${isCond ? 'cond-card' : ''}" data-idx="${idx}">
       <div class="macro-card-head">
         <div class="macro-card-title">
           <span class="badge" style="background: var(--line);">${idx + 1}</span>
@@ -2452,6 +3066,13 @@ function renderMacroEditorHtml(spec) {
           <button type="button" class="ghost tiny" id="m-btn-test-run" style="flex:1;">▶ 运行测试宏</button>
           <button type="button" class="ghost tiny danger" id="m-btn-stop-all" style="flex:1;">⏹ 停止所有宏</button>
         </div>
+        <div class="macro-record-bar">
+          <div style="display:flex; flex-direction:column; gap:1px;">
+            <span style="font-size:11.5px; font-weight:600; color:var(--fg);">🎥 全局键鼠轨迹录制器</span>
+            <span style="font-size:10px; color:var(--muted);">记录点击坐标、快捷键与时间间隔 (Esc 结束)</span>
+          </div>
+          <button type="button" class="macro-record-btn" id="m-btn-record-macro">🔴 开始录制</button>
+        </div>
       </div>
 
       <div class="macro-action-list" id="m-action-list">
@@ -2473,6 +3094,9 @@ function renderMacroEditorHtml(spec) {
           <button type="button" class="ghost" data-add="mouse_wheel">🎡 鼠标滚轮</button>
           <button type="button" class="ghost" data-add="cmd">⚡ 命令行 (Cmd/PS)</button>
           <button type="button" class="ghost" data-add="media">🔊 多媒体控制</button>
+          <button type="button" class="ghost" data-add="if_color" style="border-color:rgba(245,158,11,0.45);">🎨 条件: 屏幕找色点击</button>
+          <button type="button" class="ghost" data-add="if_qr" style="border-color:rgba(245,158,11,0.45);">📷 条件: 扫码判定分支</button>
+          <button type="button" class="ghost" data-add="if_process" style="border-color:rgba(245,158,11,0.45);">🔍 条件: 进程状态分支</button>
         </div>
       </div>
     </div>
@@ -2597,6 +3221,10 @@ function wireMacroEditor(box, spec) {
       else if (type === 'window_rect') newAct = { type: 'window_rect', target: '', x: 0, y: 0, w: 1280, h: 720 };
       else if (type === 'cmd') newAct = { type: 'command', target: '' };
       else if (type === 'media') newAct = { type: 'media', cmd: 'play_pause' };
+      else if (type === 'if_color') newAct = { type: 'if_color', x: 500, y: 500, w: 1, h: 1, color: '#00e676', tolerance: 24, thenAction: 'click_found' };
+      else if (type === 'if_process') newAct = { type: 'if_process', target: 'obs64.exe', expectRunning: true, thenAction: 'continue' };
+      else if (type === 'if_qr') newAct = { type: 'if_qr', thenAction: 'continue' };
+      pushHistory('添加宏步骤');
       spec.actions.push(newAct);
       await commit(true);
       renderInspector();
@@ -2681,6 +3309,68 @@ function wireMacroEditor(box, spec) {
       }
     };
   });
+
+  box.querySelectorAll('.m-pick-color-coord').forEach((btn) => {
+    btn.onclick = () => {
+      const idx = Number(btn.dataset.idx);
+      startColorCoordPicker(btn, async (x, y, hex) => {
+        if (spec.actions[idx]) {
+          pushHistory('拾取找色坐标与颜色');
+          spec.actions[idx].x = x;
+          spec.actions[idx].y = y;
+          if (hex) spec.actions[idx].color = hex;
+          await commit(true);
+          renderInspector();
+        }
+      });
+    };
+  });
+
+  const btnRecMacro = box.querySelector('#m-btn-record-macro');
+  if (btnRecMacro) {
+    btnRecMacro.onclick = async () => {
+      if (btnRecMacro.classList.contains('recording')) {
+        if (!DEMO && api.macroRecordStop) await api.macroRecordStop();
+        return;
+      }
+      btnRecMacro.classList.add('recording');
+      btnRecMacro.textContent = '⏹ 录制中… (按 Esc 结束)';
+      toast('🎥 已开启全局键鼠录制：请直接点击屏幕或按键，按 Esc 结束录制');
+      try {
+        let res = null;
+        if (!DEMO && api.macroRecordStart) {
+          res = await api.macroRecordStart({ maxSec: 15 });
+        } else {
+          await new Promise(r => setTimeout(r, 1200));
+          res = {
+            ok: true,
+            actions: [
+              { type: 'mouse_click', button: 'left', x: 640, y: 400 },
+              { type: 'delay', ms: 350 },
+              { type: 'hotkey', target: 'Ctrl+V', combo: 'Ctrl+V' }
+            ]
+          };
+        }
+        if (res && Array.isArray(res.actions) && res.actions.length > 0) {
+          pushHistory(`录制 ${res.actions.length} 步键鼠宏`);
+          spec.actions.push(...res.actions);
+          await commit(true);
+          renderInspector();
+          toast(`✅ 录制完成！已追加 ${res.actions.length} 个真实键鼠动作步骤`);
+        } else {
+          toast('录制结束，未捕获到新的键鼠操作');
+        }
+      } catch (err) {
+        toast('录制出错：' + (err && err.message));
+      } finally {
+        const b = box.querySelector('#m-btn-record-macro');
+        if (b) {
+          b.classList.remove('recording');
+          b.textContent = '🔴 开始录制';
+        }
+      }
+    };
+  }
 }
 
 function renderVolumeEditorHtml(spec) {
@@ -2969,9 +3659,280 @@ function applyActionPayload(dst, payload) {
 
 function isActionConfigured(act) {
   if (!act || !act.type) return false;
-  if (['volume', 'audio', 'media', 'page', 'qr_decode', 'qr'].includes(act.type)) return true;
+  if (['volume', 'audio', 'media', 'page', 'qr_decode', 'qr', 'widget'].includes(act.type)) return true;
   if ((act.type === 'multi' || act.type === 'macro') && Array.isArray(act.actions) && act.actions.length > 0) return true;
   return !!(act.target || act.hotkey);
+}
+
+const WIDGET_KIND_INFOS = [
+  { id: 'gpu', icon: '🎮', name: 'GPU 温度/显存 (NVML)', desc: '实时显示核心温度、负载与显存占用', color: '#0f291e', act: 'refresh' },
+  { id: 'net', icon: '🌐', name: '实时网速上下行', desc: '实时监控网卡下行/上行吞吐速率', color: '#0c1e35', act: 'refresh' },
+  { id: 'pomodoro', icon: '🍅', name: '番茄钟专注倒计时', desc: '按键即启停/重置专注倒计时进度', color: '#7f1d1d', act: 'pomodoro_toggle' },
+  { id: 'weather', icon: '🌤️', name: '实时天气与温湿度', desc: '自动或指定城市天气状况与温度', color: '#102a43', act: 'refresh' },
+  { id: 'media_now', icon: '🎵', name: '当前播放音乐/歌词', desc: '感知网易云/Spotify/QQ音乐曲目', color: '#3b0764', act: 'media_play_pause' },
+  { id: 'obs', icon: '🔴', name: 'OBS 推流/录制监控', desc: '实时监控 OBS Studio 在线与直播态', color: '#1e293b', act: 'refresh' },
+  { id: 'plugin', icon: '🧩', name: '外部 JS 插件钩子', desc: '加载 plugins/*.plugin.js 自定义数据源', color: '#1e293b', act: 'plugin_click' },
+];
+
+function renderWidgetEditorHtml(spec) {
+  const kind = spec.widgetKind || 'gpu';
+  const act = spec.action || (kind === 'pomodoro' ? 'pomodoro_toggle' : (kind === 'media_now' ? 'media_play_pause' : 'refresh'));
+  const plugins = (lastTelemetry && lastTelemetry.plugins) || [];
+
+  return `
+    <div class="widget-editor-card">
+      <div>
+        <label style="font-size: 11px; color: var(--muted); margin-bottom: 6px; display: block;">📊 选择实时数据源组件：</label>
+        <div class="widget-kind-grid">
+          ${WIDGET_KIND_INFOS.map(w => `
+            <button type="button" class="widget-kind-pill ${kind === w.id ? 'active' : ''}" data-kind="${w.id}">
+              <span style="font-size:15px;">${w.icon}</span>
+              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${w.name}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 6px; margin-bottom: 0;">
+        <label>按下该组件按键时的交互动作</label>
+        <select id="i-widget-action">
+          <option value="pomodoro_toggle" ${act === 'pomodoro_toggle' ? 'selected' : ''}>🍅 番茄钟：开始 / 暂停倒计时</option>
+          <option value="pomodoro_reset" ${act === 'pomodoro_reset' ? 'selected' : ''}>🔄 番茄钟：重置倒计时</option>
+          <option value="media_play_pause" ${act === 'media_play_pause' ? 'selected' : ''}>⏯️ 音乐：播放 / 暂停切换</option>
+          <option value="media_next" ${act === 'media_next' ? 'selected' : ''}>⏭️ 音乐：切到下一首</option>
+          <option value="refresh" ${act === 'refresh' ? 'selected' : ''}>⚡ 立即刷新实时监控数据</option>
+          <option value="plugin_click" ${act === 'plugin_click' ? 'selected' : ''}>🧩 触发 JS 插件 onAction 钩子</option>
+        </select>
+      </div>
+
+      ${kind === 'plugin' ? `
+        <div class="row" style="margin-top: 4px; margin-bottom: 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="margin:0;">选择外部 JS 插件 (plugins/*.plugin.js)</label>
+            <button type="button" class="ghost tiny" id="i-widget-reload-plugins">🔄 重载插件</button>
+          </div>
+          <select id="i-widget-plugin-id">
+            ${plugins.length ? plugins.map(p => `<option value="${escapeAttr(p.id)}" ${spec.pluginId === p.id ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.id)}</option>`).join('') : '<option value="uptime-greeting">✨ 工作台时段问候与运行时长 (内置示例)</option>'}
+          </select>
+        </div>
+      ` : ''}
+
+      ${kind === 'pomodoro' ? `
+        <div class="btnrow" style="margin-top: 4px; margin-bottom: 0;">
+          <button type="button" class="ghost tiny" id="i-pomo-toggle" style="flex:1;">⏯️ 启停番茄钟</button>
+          <button type="button" class="ghost tiny" id="i-pomo-reset" style="flex:1;">↺ 重置 (${(cfg && cfg.pomodoroMinutes) || 25}分钟)</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function wireWidgetEditor(box, spec) {
+  box.querySelectorAll('.widget-kind-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      pushHistory('切换实时组件类型');
+      const kind = btn.dataset.kind;
+      const info = WIDGET_KIND_INFOS.find(x => x.id === kind) || WIDGET_KIND_INFOS[0];
+      spec.widgetKind = kind;
+      spec.action = info.act;
+      spec.label = info.name.split(' ')[0];
+      spec.color = info.color;
+      await commit(true);
+      renderInspector();
+    };
+  });
+  const actSel = box.querySelector('#i-widget-action');
+  if (actSel) {
+    actSel.onchange = async () => {
+      spec.action = actSel.value;
+      await commit(true);
+    };
+  }
+  const plgSel = box.querySelector('#i-widget-plugin-id');
+  if (plgSel) {
+    plgSel.onchange = async () => {
+      spec.pluginId = plgSel.value;
+      await commit(true);
+    };
+  }
+  const btnReloadPlg = box.querySelector('#i-widget-reload-plugins');
+  if (btnReloadPlg) {
+    btnReloadPlg.onclick = async () => {
+      if (!DEMO && api.pluginsReload) {
+        const res = await api.pluginsReload();
+        toast(`已重新扫描加载 ${(res && res.plugins && res.plugins.length) || 0} 个外部 JS 插件`);
+        renderInspector();
+      } else {
+        toast('已重新扫描外部 JS 插件目录');
+      }
+    };
+  }
+  const btnPomoToggle = box.querySelector('#i-pomo-toggle');
+  if (btnPomoToggle) {
+    btnPomoToggle.onclick = async () => {
+      if (!DEMO && api.pomodoroControl) {
+        await api.pomodoroControl('toggle', (cfg && cfg.pomodoroMinutes) || 25);
+      } else {
+        lastTelemetry.pomodoro.running = !lastTelemetry.pomodoro.running;
+        refreshGrid();
+      }
+      toast(lastTelemetry.pomodoro.running ? '🍅 番茄专注已启动' : '⏸ 番茄专注已暂停');
+    };
+  }
+  const btnPomoReset = box.querySelector('#i-pomo-reset');
+  if (btnPomoReset) {
+    btnPomoReset.onclick = async () => {
+      const mins = (cfg && cfg.pomodoroMinutes) || 25;
+      if (!DEMO && api.pomodoroControl) {
+        await api.pomodoroControl('reset', mins);
+      } else {
+        lastTelemetry.pomodoro = { running: false, phase: 'work', remainSec: mins * 60, totalSec: mins * 60, formatted: `${String(mins).padStart(2, '0')}:00`, progressPct: 0 };
+        refreshGrid();
+      }
+      toast('↺ 番茄钟已重置');
+    };
+  }
+}
+
+function renderBatchInspector(box) {
+  const coords = Array.from(multiSelected).map(k => {
+    const [r, c] = k.split(',').map(Number);
+    return { key: k, row: r, col: c };
+  });
+  const firstSpec = pageButtons()[coords[0].key] || { color: '#37474f', fontSize: 17, iconScale: 62, labelPos: 'bottom' };
+  const grad = curPage().gradient;
+
+  box.className = 'inspector';
+  box.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line);">
+      <div>
+        <div style="font-size:13px; font-weight:700; color:var(--ink);">🎨 批量样式工作台 (已选 ${coords.length} 格)</div>
+        <div style="font-size:11px; color:var(--muted);">按住 Ctrl 或 Shift 点击面板格子可增减多选范围</div>
+      </div>
+      <button type="button" class="ghost tiny" id="b-clear-sel">取消多选</button>
+    </div>
+
+    ${grad && grad.enabled ? `
+      <div class="row">
+        <label>批量底色模式</label>
+        <div class="color-capsule-group">
+          <button type="button" id="b-mode-grad" class="color-capsule-pill ${!firstSpec.customColor ? 'active' : ''}">🌈 跟随整板流光</button>
+          <button type="button" id="b-mode-custom" class="color-capsule-pill ${firstSpec.customColor ? 'active' : ''}">🎨 统一独立底色</button>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="stylegrid" style="margin-bottom:10px;">
+      <span>统一底色</span><input id="b-color" type="color" value="${firstSpec.color || '#37474f'}" />
+      <span>渐变底色</span><input id="b-color2" type="color" value="${firstSpec.color2 || '#37474f'}" />
+    </div>
+
+    <div class="row">
+      <label>快捷色卡一键着色</label>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+        ${['#1565c0', '#2e7d32', '#c62828', '#6a1b9a', '#ef6c00', '#00838f', '#37474f', '#1e293b'].map(c => `
+          <span class="lkm-cchip b-cchip" data-c="${c}" style="background:${c}; width:22px; height:22px;"></span>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="tc-capsule-row">
+      <span class="tc-label">统一文字色</span>
+      <div class="color-capsule-group">
+        <button type="button" id="b-tc-auto" class="color-capsule-pill">⚡ 自动对比色</button>
+        <button type="button" id="b-tc-white" class="color-capsule-pill">⚪ 纯白文字</button>
+      </div>
+    </div>
+
+    <div class="stylegrid" style="margin-top:8px;">
+      <span>字号 <b id="b-v-font">${Number(firstSpec.fontSize) || 17}</b>%</span>
+      <input id="b-fontsize" type="range" min="8" max="40" value="${Number(firstSpec.fontSize) || 17}" />
+      <span>图标 <b id="b-v-icon">${Number(firstSpec.iconScale) || 62}</b>%</span>
+      <input id="b-iconscale" type="range" min="25" max="100" value="${Number(firstSpec.iconScale) || 62}" />
+      <span>文字对齐</span>
+      <select id="b-labelpos">
+        <option value="bottom" ${(firstSpec.labelPos || 'bottom') === 'bottom' ? 'selected' : ''}>底部</option>
+        <option value="center" ${firstSpec.labelPos === 'center' ? 'selected' : ''}>居中</option>
+        <option value="top" ${firstSpec.labelPos === 'top' ? 'selected' : ''}>顶部</option>
+      </select>
+    </div>
+
+    <div class="insp-foot-actions">
+      <button type="button" class="primary act-main" id="b-push-all">↻ 同步重画所选 (${coords.length})</button>
+      <button type="button" class="ghost danger act-sub" id="b-del-all">🗑️ 批量清空</button>
+    </div>
+  `;
+
+  const applyBatch = async (mutator, reason = '批量修改样式') => {
+    pushHistory(reason);
+    for (const { key, row, col } of coords) {
+      if (col === 5 || isBackCell(row, col)) continue;
+      if (!pageButtons()[key]) continue;
+      mutator(pageButtons()[key]);
+    }
+    refreshGrid();
+    await saveConfig();
+    if (!DEMO) {
+      for (const { row, col } of coords) await pushKey(row, col);
+    }
+  };
+
+  $('b-clear-sel').onclick = () => {
+    multiSelected.clear();
+    refreshGrid();
+    renderInspector();
+  };
+
+  if ($('b-mode-grad')) {
+    $('b-mode-grad').onclick = () => applyBatch(s => { delete s.customColor; }, '批量设为整板流光');
+  }
+  if ($('b-mode-custom')) {
+    $('b-mode-custom').onclick = () => applyBatch(s => { s.customColor = true; }, '批量设为独立底色');
+  }
+
+  $('b-color').onchange = (e) => applyBatch(s => { s.color = e.target.value; s.customColor = true; }, '批量修改底色');
+  $('b-color2').onchange = (e) => applyBatch(s => { s.color2 = e.target.value; s.customColor = true; }, '批量修改渐变色');
+
+  box.querySelectorAll('.b-cchip').forEach(chip => {
+    chip.onclick = () => {
+      const c = chip.dataset.c;
+      $('b-color').value = c;
+      applyBatch(s => { s.color = c; delete s.color2; s.customColor = true; }, '批量应用色卡');
+    };
+  });
+
+  $('b-tc-auto').onclick = () => applyBatch(s => { s.textColor = ''; }, '批量设为自动文字对比色');
+  $('b-tc-white').onclick = () => applyBatch(s => { s.textColor = '#ffffff'; }, '批量设为纯白文字');
+
+  $('b-fontsize').oninput = (e) => { $('b-v-font').textContent = e.target.value; };
+  $('b-fontsize').onchange = (e) => applyBatch(s => { s.fontSize = Number(e.target.value); }, '批量调整字号');
+
+  $('b-iconscale').oninput = (e) => { $('b-v-icon').textContent = e.target.value; };
+  $('b-iconscale').onchange = (e) => applyBatch(s => { s.iconScale = Number(e.target.value); }, '批量调整图标缩放');
+
+  $('b-labelpos').onchange = (e) => applyBatch(s => { s.labelPos = e.target.value; }, '批量调整文字对齐');
+
+  $('b-push-all').onclick = async () => {
+    if (!DEMO) {
+      for (const { row, col } of coords) await pushKey(row, col, true);
+    }
+    toast(`已同步重画选中的 ${coords.length} 个按键`);
+  };
+
+  $('b-del-all').onclick = async () => {
+    if (!(await askConfirm('批量清空按键', `确定要清空选中的 ${coords.length} 个按键格子吗？（可按 Ctrl+Z 撤销）`))) return;
+    pushHistory(`批量清空 ${coords.length} 个按键`);
+    for (const { key, row, col } of coords) {
+      await stopKeyMacroIfNeeded(row, col);
+      delete pageButtons()[key];
+    }
+    multiSelected.clear();
+    await saveConfig();
+    refreshGrid();
+    renderInspector();
+    if (!DEMO) await repaintAllKeys();
+    toast(`已批量清空 ${coords.length} 个按键`);
+  };
 }
 
 function renderInspector() {
@@ -2979,6 +3940,12 @@ function renderInspector() {
   const box = $('inspector');
   const title = $('inspectorTitle');
   const inspTabs = $('inspTabs');
+
+  if (multiSelected.size > 1) {
+    if (inspTabs) inspTabs.hidden = true;
+    title.textContent = `批量编辑 · 已选 ${multiSelected.size} 格`;
+    return renderBatchInspector(box);
+  }
 
   if (!selected) {
     if (inspTabs) inspTabs.hidden = true;
@@ -3021,6 +3988,7 @@ function renderInspector() {
         <button class="ghost" id="i-quickmacro">🎛️ 设为复合宏…</button>
         <button class="ghost" id="i-quickhotkey">⌨️ 设为快捷键…</button>
         <button class="ghost" id="i-quickvol">🔊 设为音量…</button>
+        <button class="ghost" id="i-quickwidget">📊 设为实时组件…</button>
         <button class="ghost" id="i-page">↦ 设为翻页键…</button>
       </div>`;
     $('i-pickapp').onclick = () => pickInto({ properties: ['openFile'] });
@@ -3043,7 +4011,18 @@ function renderInspector() {
       commit(true);
       renderInspector();
     };
+    if ($('i-quickwidget')) {
+      $('i-quickwidget').onclick = () => {
+        pushHistory('新建实时动态组件');
+        pageButtons()[selected.row + ',' + selected.col] = {
+          type: 'widget', widgetKind: 'pomodoro', action: 'pomodoro_toggle', label: '番茄钟', color: '#7f1d1d'
+        };
+        commit(true);
+        renderInspector();
+      };
+    }
     $('i-quickvol').onclick = () => {
+      pushHistory('新建音量控制键');
       pageButtons()[selected.row + ',' + selected.col] = {
         type: 'volume', action: 'up', step: 5, label: '音量 +', color: '#1565c0'
       };
@@ -3085,20 +4064,30 @@ function renderInspector() {
 
         ${!spec.toggleAction ? `
           <div id="i-single-action-box">
-            <div class="row"><label>快捷动作预设</label>
-              <select id="i-quickpreset" class="quick-preset-select">
-                ${ACTION_TEMPLATES.map((t) => `<option value="${t.id}">${t.name}</option>`).join('')}
-              </select>
+            <div class="row" style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:8px;">
+              <div>
+                <label>动作类型</label>
+                <select id="i-type">
+                  ${Object.keys(TYPE_NAMES).map((x) =>
+                    `<option value="${x}" ${spec.type === x ? 'selected' : ''}>${TYPE_SHORT[x] ? TYPE_SHORT[x] + ' · ' : ''}${TYPE_NAMES[x].replace(/^[^\s]+\s/, '')}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label>快捷模板预设</label>
+                <select id="i-quickpreset" class="quick-preset-select">
+                  ${ACTION_TEMPLATES.map((t) => `<option value="${t.id}">${t.name}</option>`).join('')}
+                </select>
+              </div>
             </div>
-            <div class="quick-switch-grid">
-              <button class="ghost" id="i-pickapp">🚀 选择程序…</button>
-              <button class="ghost" id="i-pickdir">📁 选择文件夹…</button>
-              <button class="ghost" id="i-pickurl">🌐 设为网址</button>
-              <button class="ghost" id="i-pickcmd">⌘ 设为命令</button>
-              <button class="ghost" id="i-pickmacro">🎛️ 设为复合宏</button>
-              <button class="ghost" id="i-pickhotkey">⌨️ 设为快捷键</button>
-              <button class="ghost" id="i-pickvol">🔊 设为音量…</button>
-              <button class="ghost" id="i-page">↦ ${spec.type === 'page' ? '改翻页设置…' : '设为翻页键…'}</button>
+            <div class="quick-switch-compact" style="${['multi', 'macro', 'widget', 'volume', 'audio', 'page'].includes(spec.type) ? 'display:none;' : ''}">
+              <button class="ghost" id="i-pickapp" title="浏览并绑定本地程序">🚀 选程序</button>
+              <button class="ghost" id="i-pickdir" title="浏览并绑定本地文件夹">📁 选目录</button>
+              <button class="ghost" id="i-pickurl" title="一键设为打开网址">🌐 设网址</button>
+              <button class="ghost" id="i-pickcmd" title="一键设为执行命令行">⌘ 设命令</button>
+              <button class="ghost" id="i-pickmacro" title="切换为多步复合宏与键鼠录制">🎛️ 复合宏</button>
+              <button class="ghost" id="i-pickhotkey" title="切换为系统快捷键">⌨️ 快捷键</button>
+              <button class="ghost" id="i-pickvol" title="切换为 WASAPI 音量控制">🔊 调音量</button>
+              <button class="ghost" id="i-page" title="切换为页面跳转键">↦ 翻页键</button>
             </div>
             ${spec.type === 'hotkey' ? `
               <div class="row">
@@ -3106,12 +4095,7 @@ function renderInspector() {
                 ${renderHotkeyBuilderHtml('i-hotkey', spec.hotkey || spec.target || '')}
               </div>
             ` : ''}
-            <div class="row"><label>类型</label>
-              <select id="i-type">
-                ${Object.keys(TYPE_NAMES).map((x) =>
-                  `<option value="${x}" ${spec.type === x ? 'selected' : ''}>${TYPE_NAMES[x]}</option>`).join('')}
-              </select>
-            </div>
+
             ${spec.type === 'multi' || spec.type === 'macro' ? `
               <div id="i-macro-editor-container">
                 ${renderMacroEditorHtml(spec)}
@@ -3119,6 +4103,10 @@ function renderInspector() {
             ` : spec.type === 'volume' || spec.type === 'audio' ? `
               <div id="i-volume-editor-container">
                 ${renderVolumeEditorHtml(spec)}
+              </div>
+            ` : spec.type === 'widget' ? `
+              <div id="i-widget-editor-container">
+                ${renderWidgetEditorHtml(spec)}
               </div>
             ` : spec.type === 'page' ? `
               <div class="page-inspector-card">
@@ -3617,6 +4605,9 @@ function renderInspector() {
 
   if (spec.type === 'volume' || spec.type === 'audio') {
     wireVolumeEditor(box, spec);
+  }
+  if (spec.type === 'widget') {
+    wireWidgetEditor(box, spec);
   }
 
   const iptHotkey = $('i-hotkey');
@@ -4123,6 +5114,11 @@ function renderInspector() {
           const ic = BUILTIN_ICONS.find(i => i.name === '音量+');
           if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
         }
+      } else if (v === 'widget') {
+        spec.widgetKind = spec.widgetKind || 'gpu';
+        spec.action = spec.action || 'refresh';
+        spec.color = spec.color || '#0f291e';
+        if (!spec.label) spec.label = 'GPU 监控';
       }
     }
     await commit(true);
@@ -4327,17 +5323,28 @@ function renderPageInspector(box) {
     </details>
 
     <details class="sec" data-sec="page-autoapp" open>
-      <summary>前台应用自动切页 (Auto-Profile)</summary>
+      <summary>智能前台感知自动切页 (Auto-Profile 2.0)</summary>
       <div class="body">
         <div class="row">
-          <label>关联应用程序进程名（多个用逗号分隔，切到该软件时自动切入本页）</label>
+          <label>关联进程名（多个用逗号分隔，留空则匹配任意进程）</label>
           <div style="display:flex; gap:6px;">
-            <input id="p-autoapp" value="${escapeAttr(p.autoApp || '')}" placeholder="例如：Code.exe, photoshop.exe" style="flex:1;" />
+            <input id="p-autoapp" value="${escapeAttr(p.autoApp || '')}" placeholder="例如：chrome.exe, msedge.exe, Code.exe" style="flex:1;" />
             <button type="button" class="ghost tiny" id="p-autoapp-pick" title="选择本地程序自动提取进程名">📁 选程序…</button>
           </div>
         </div>
+        <div class="row">
+          <label>窗口标题正则 / 关键词匹配（可选，支持标签页级精准切页）</label>
+          <input id="p-autotitle" value="${escapeAttr(p.autoTitle || '')}" placeholder="例如：Bilibili|哔哩哔哩|Figma|YouTube" />
+          <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
+            <span class="hotkey-tag p-title-preset" data-val="Bilibili|哔哩哔哩">📺 Bilibili</span>
+            <span class="hotkey-tag p-title-preset" data-val="Figma">🎨 Figma</span>
+            <span class="hotkey-tag p-title-preset" data-val="GitHub">🐙 GitHub</span>
+            <span class="hotkey-tag p-title-preset" data-val="YouTube">▶️ YouTube</span>
+            <span class="hotkey-tag p-title-preset" data-val="Premiere|剪映">🎬 剪辑工作台</span>
+          </div>
+        </div>
         <p class="muted" style="margin: 4px 0 0; font-size: 11px; line-height: 1.4;">
-          💡 当指定软件处于前台焦点时，AKP153 将自动切换到「${escapeHtml(p.name)}」；切回其他未绑定软件时自动恢复原页面。
+          💡 支持「进程名 + 窗口标题正则」双重感知，并内置<b>多层级子页记忆栈</b>：即使在自动切入的「${escapeHtml(p.name)}」内点进子页，切走应用后仍能精准还原您之前的手动驻留页。
         </p>
       </div>
     </details>
@@ -4435,9 +5442,34 @@ function renderPageInspector(box) {
       p.autoApp = autoAppInput.value.trim();
       await commit(false);
       renderPageTabs();
-      toast(p.autoApp ? `已绑定自动切页进程：${p.autoApp}` : '已清除本页自动切页绑定');
+      toast(p.autoApp ? `已绑定自动切页进程：${p.autoApp}` : '已清除本页进程名限制');
     };
   }
+  const autoTitleInput = box.querySelector('#p-autotitle');
+  if (autoTitleInput) {
+    autoTitleInput.onchange = async () => {
+      const val = autoTitleInput.value.trim();
+      if (val) {
+        try { new RegExp(val, 'i'); } catch (err) {
+          toast('正则表达式语法有误，将按普通关键词匹配：' + err.message);
+        }
+      }
+      p.autoTitle = val;
+      await commit(false);
+      renderPageTabs();
+      toast(p.autoTitle ? `已设置窗口标题正则匹配：${p.autoTitle}` : '已清除窗口标题匹配规则');
+    };
+  }
+  box.querySelectorAll('.p-title-preset').forEach((tag) => {
+    tag.onclick = async () => {
+      if (!autoTitleInput) return;
+      autoTitleInput.value = tag.dataset.val;
+      p.autoTitle = tag.dataset.val;
+      await commit(false);
+      renderPageTabs();
+      toast(`已应用窗口标题匹配规则：${p.autoTitle}`);
+    };
+  });
   const autoAppPick = box.querySelector('#p-autoapp-pick');
   if (autoAppPick) {
     autoAppPick.onclick = async () => {
@@ -4476,13 +5508,20 @@ function renderStripInspector(box) {
       <div class="body">
         <div class="row">
           <select id="s-type">
-            <option value="clock" ${s.type === 'clock' ? 'selected' : ''}>时钟（自动刷新）</option>
-            <option value="text" ${s.type === 'text' ? 'selected' : ''}>自定义文字</option>
-            <option value="page" ${s.type === 'page' ? 'selected' : ''}>页码 + 页名（随翻页自动更新）</option>
+            <option value="clock" ${s.type === 'clock' ? 'selected' : ''}>⏰ 时钟与星期（自动刷新）</option>
+            <option value="page" ${s.type === 'page' ? 'selected' : ''}>📑 页码 + 页名（随翻页自动更新）</option>
             <option value="cpu" ${s.type === 'cpu' ? 'selected' : ''}>💻 CPU 占用率（实时动态监控）</option>
             <option value="mem" ${s.type === 'mem' ? 'selected' : ''}>📊 内存占用率（实时动态监控）</option>
             <option value="sys" ${s.type === 'sys' ? 'selected' : ''}>📈 系统态势仪表（CPU + 内存组合）</option>
             <option value="volume" ${s.type === 'volume' ? 'selected' : ''}>🔊 声学监听与音量监控（实时动态）</option>
+            <option value="gpu" ${s.type === 'gpu' ? 'selected' : ''}>🎮 GPU 温度/显存/负载 (NVML)</option>
+            <option value="net" ${s.type === 'net' ? 'selected' : ''}>🌐 实时网速上下行监控</option>
+            <option value="pomodoro" ${s.type === 'pomodoro' ? 'selected' : ''}>🍅 番茄钟专注倒计时</option>
+            <option value="weather" ${s.type === 'weather' ? 'selected' : ''}>🌤️ 实时天气与温湿度</option>
+            <option value="media_now" ${s.type === 'media_now' ? 'selected' : ''}>🎵 网易云 / Spotify 当前播放歌词与曲目</option>
+            <option value="obs" ${s.type === 'obs' ? 'selected' : ''}>🔴 OBS 推流 / 录制状态监控</option>
+            <option value="plugin" ${s.type === 'plugin' ? 'selected' : ''}>🧩 外部 JS 插件动态卡片 (plugins/*.plugin.js)</option>
+            <option value="text" ${s.type === 'text' ? 'selected' : ''}>✍️ 自定义静态文字</option>
           </select>
         </div>
         <div class="row"><label>文字（回车换行，时钟模式下忽略）</label>
@@ -5002,36 +6041,31 @@ function updateLkmActionUI() {
   const argsWrap = $('lkmArgsWrap');
   if (argsWrap) argsWrap.hidden = !['app', 'command', 'ps1'].includes(type);
 
-  // 专属音量配置面板同步
+  const isWidget = (type === 'widget');
+  if (targetWrap) targetWrap.hidden = hideTargetInput || isWidget;
+
+  // 专属音量配置面板同步 (#lkmVolAction + #lkmVolStep)
   const volWrap = $('lkmVolumeWrap');
   if (volWrap) {
     volWrap.hidden = !isVolume;
     if (isVolume) {
       const act = currentLibModalSpec.action || 'up';
-      const step = Number(currentLibModalSpec.step) || 5;
-      volWrap.querySelectorAll('.lkm-vol-pill').forEach((b) => {
-        b.classList.toggle('active', b.dataset.act === act);
-      });
-      if ($('lkmVolStepWrap')) $('lkmVolStepWrap').hidden = !(act === 'up' || act === 'down');
-      if ($('lkmVolStepRange')) $('lkmVolStepRange').value = step;
-      if ($('lkmVolStepVal')) $('lkmVolStepVal').textContent = `${step}%`;
-      if ($('lkmVolTargetWrap')) $('lkmVolTargetWrap').hidden = (act !== 'set');
-      if ($('lkmVolTargetRange')) $('lkmVolTargetRange').value = Number(currentLibModalSpec.target) || 50;
-      if ($('lkmVolTargetVal')) $('lkmVolTargetVal').textContent = `${Number(currentLibModalSpec.target) || 50}%`;
-      if ($('lkmVolDeviceWrap')) $('lkmVolDeviceWrap').hidden = (act !== 'switch_device');
-      if ($('lkmVolDeviceInput')) $('lkmVolDeviceInput').value = currentLibModalSpec.target || '';
+      const step = (act === 'set') ? (Number(currentLibModalSpec.target) || 50) : (Number(currentLibModalSpec.step) || 5);
+      if ($('lkmVolAction')) $('lkmVolAction').value = act;
+      if ($('lkmVolStep')) {
+        $('lkmVolStep').value = step;
+        $('lkmVolStep').hidden = (act === 'mute' || act === 'switch_device');
+      }
     }
   }
 
-  // 专属翻页配置面板同步
+  // 专属翻页配置面板同步 (#lkmPageMode + #lkmPageTargetSelect)
   const pageWrap = $('lkmPageWrap');
   if (pageWrap) {
     pageWrap.hidden = !isPage;
     if (isPage) {
       const mode = currentLibModalSpec.mode || 'next';
-      pageWrap.querySelectorAll('.lkm-page-pill').forEach((b) => {
-        b.classList.toggle('active', b.dataset.mode === mode);
-      });
+      if ($('lkmPageMode')) $('lkmPageMode').value = mode;
       if ($('lkmPageTargetWrap')) $('lkmPageTargetWrap').hidden = (mode !== 'goto');
       const sel = $('lkmPageTargetSelect');
       if (sel) {
@@ -5039,6 +6073,15 @@ function updateLkmActionUI() {
           `<option value="${page.id}" ${currentLibModalSpec.pageId === page.id ? 'selected' : ''}>${'　'.repeat(depth)}${depth ? '↳ ' : ''}${escapeHtml(page.name)}</option>`
         ).join('');
       }
+    }
+  }
+
+  // 专属实时动态组件面板同步 (#lkmWidgetWrap)
+  const widgetWrap = $('lkmWidgetWrap');
+  if (widgetWrap) {
+    widgetWrap.hidden = !isWidget;
+    if (isWidget && $('lkmWidgetKind')) {
+      $('lkmWidgetKind').value = currentLibModalSpec.widgetKind || 'gpu';
     }
   }
 
@@ -5419,7 +6462,13 @@ async function saveCurrentPageAsSnapshot() {
     name: name.trim().slice(0, 30),
     tags: [],
     savedAt: new Date().toISOString(),
-    page: { buttons: clone(p.buttons || {}), strips: clone(p.strips || {}) }
+    page: {
+      buttons: clone(p.buttons || {}),
+      strips: clone(p.strips || {}),
+      gradient: clone(p.gradient || { enabled: false, from: '#1565c0', to: '#6a1b9a', angle: 135 }),
+      autoApp: p.autoApp || '',
+      autoTitle: p.autoTitle || ''
+    }
   });
 
   await libSave();
@@ -5435,10 +6484,14 @@ async function applyPageSnapshot(snap, mode) {
     how = ok ? 'overwrite' : 'new';
   }
   if (how === 'overwrite') {
+    pushHistory(`应用快照「${snap.name}」覆盖当前页`);
     const p = curPage();
     await stopPageMacrosIfNeeded(p.id);
     p.buttons = clone(pageData.buttons || {});
     p.strips = clone(pageData.strips || {});
+    if (pageData.gradient) p.gradient = clone(pageData.gradient);
+    if (pageData.autoApp !== undefined) p.autoApp = pageData.autoApp;
+    if (pageData.autoTitle !== undefined) p.autoTitle = pageData.autoTitle;
     selected = null;
     await persistAll();
     closePageSnapshotModal();
@@ -5448,12 +6501,16 @@ async function applyPageSnapshot(snap, mode) {
   const name = await askText('以此快照创建新页面', snap.name);
   if (name == null || !name.trim()) return;
   const id = newPageId();
+  pushHistory(`从快照新建页面「${name.trim()}」`);
   cfg.pages.push({
     id,
     name: name.trim(),
     parent: null,
     buttons: clone(pageData.buttons || {}),
-    strips: clone(pageData.strips || {})
+    strips: clone(pageData.strips || {}),
+    gradient: clone(pageData.gradient || { enabled: false, from: '#1565c0', to: '#6a1b9a', angle: 135 }),
+    autoApp: pageData.autoApp || '',
+    autoTitle: pageData.autoTitle || ''
   });
   cfg.currentPage = id;
   selected = null;
@@ -5822,6 +6879,10 @@ async function goToPage(id) {
   if (!id || id === cfg.currentPage || !pageById(id)) return;
   cfg.currentPage = id;
   selected = null;
+  multiSelected.clear();
+  if (!DEMO && typeof api !== 'undefined' && api.pageManualSwitch) {
+    api.pageManualSwitch(id).catch(() => {});
+  }
   await persistAll();
 }
 
@@ -5857,11 +6918,12 @@ function renderPageTabs() {
     t.appendChild(nameSpan);
     t.appendChild(countSpan);
 
-    if (page.autoApp) {
+    if (page.autoApp || page.autoTitle) {
       nameSpan.textContent = (depth ? '↳ ' : '') + page.name + ' ⚡';
     }
     t.title = (depth ? `子页「${page.name}」（返回键已自动生成）` : `顶层页「${page.name}」`)
-      + (page.autoApp ? ` · 关联应用: ${page.autoApp}` : '')
+      + (page.autoApp ? ` · 关联进程: ${page.autoApp}` : '')
+      + (page.autoTitle ? ` · 标题匹配: ${page.autoTitle}` : '')
       + ` · 已配置 ${count}/15 键 (支持拖拽排序，右键管理)`;
     t.onclick = () => goToPage(page.id);
 
@@ -6142,6 +7204,7 @@ function initContextMenu() {
     if (!cmTarget || cmTarget.col === 5 || !clipboardKey) return;
     const { row, col } = cmTarget;
     if (isBackCell(row, col)) return;
+    pushHistory(`粘贴按键到 r${row}c${col}`);
     await stopKeyMacroIfNeeded(row, col);
     pageButtons()[row + ',' + col] = clone(clipboardKey);
     await commit(true);
@@ -6149,6 +7212,16 @@ function initContextMenu() {
     toast(`已粘贴到 r${row}c${col}`);
     hideContextMenu();
   };
+
+  if ($('cmCopyStyle')) {
+    $('cmCopyStyle').onclick = () => {
+      if (!cmTarget) return;
+      const { row, col } = cmTarget;
+      const spec = (col === 5) ? pageStrips()[String(row)] : pageButtons()[row + ',' + col];
+      if (spec) setStyleBrush(spec);
+      hideContextMenu();
+    };
+  }
 
   $('cmSaveLib').onclick = () => {
     if (!cmTarget) return;
@@ -7120,10 +8193,33 @@ function initKeyboardShortcuts() {
     const tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) await performRedo();
+      else await performUndo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      await performRedo();
+      return;
+    }
+
     if (e.key === 'Escape') {
       hideContextMenu();
       closeIconPicker();
       closeCropper();
+      if (styleBrushSpec) {
+        setStyleBrush(null);
+        toast('已退出样式刷模式');
+        return;
+      }
+      if (multiSelected.size > 0) {
+        multiSelected.clear();
+        refreshGrid();
+        renderInspector();
+        return;
+      }
       if (selected) select(null);
       return;
     }
@@ -7177,6 +8273,48 @@ function initKeyboardShortcuts() {
 // ------------------------------------------------------------- shell wiring
 
 function bindShell() {
+  if ($('btnUndo')) $('btnUndo').onclick = () => performUndo();
+  if ($('btnRedo')) $('btnRedo').onclick = () => performRedo();
+  if ($('btnStyleBrush')) {
+    $('btnStyleBrush').onclick = () => {
+      if (styleBrushSpec) {
+        setStyleBrush(null);
+        toast('已关闭样式刷');
+        return;
+      }
+      if (!selected || selected.col === 5) {
+        toast('请先点选一个已经配好外观的按键，再点「🖌️ 样式刷」提取其样式');
+        return;
+      }
+      const spec = pageButtons()[`${selected.row},${selected.col}`];
+      if (!spec) {
+        toast('当前选中的格子是空的，请先选择一个已有按键提取样式');
+        return;
+      }
+      setStyleBrush(spec);
+    };
+  }
+
+  const weatherInput = $('prefWeatherCity');
+  if (weatherInput) {
+    weatherInput.value = cfg.weatherCity || 'Auto';
+    weatherInput.addEventListener('change', async () => {
+      cfg.weatherCity = weatherInput.value.trim() || 'Auto';
+      if (!DEMO) await saveConfig();
+      toast(`天气组件默认城市已设为：${cfg.weatherCity}`);
+    });
+  }
+  const pomoInput = $('prefPomodoroMin');
+  if (pomoInput) {
+    pomoInput.value = cfg.pomodoroMinutes || 25;
+    pomoInput.addEventListener('change', async () => {
+      cfg.pomodoroMinutes = Math.max(1, Math.min(180, Number(pomoInput.value) || 25));
+      pomoInput.value = cfg.pomodoroMinutes;
+      if (!DEMO) await saveConfig();
+      toast(`番茄钟默认时长已设为：${cfg.pomodoroMinutes} 分钟`);
+    });
+  }
+
   const panel = $('settingsPanel');
   const gear = $('settingsBtn');
   const closeBtn = $('settingsCloseBtn');
@@ -7492,62 +8630,71 @@ function bindShell() {
       updateLkmSwatch();
     };
 
-    // 专属音量控制绑定 (Key Studio Modal)
-    document.querySelectorAll('.lkm-vol-pill').forEach((btn) => {
-      btn.onclick = () => {
+    // 专属音量控制绑定 (#lkmVolAction + #lkmVolStep)
+    if ($('lkmVolAction')) {
+      $('lkmVolAction').onchange = (e) => {
         if (!currentLibModalSpec) return;
-        currentLibModalSpec.action = btn.dataset.act;
-        if (btn.dataset.act === 'up' || btn.dataset.act === 'down') {
-          currentLibModalSpec.step = currentLibModalSpec.step || 5;
-        } else if (btn.dataset.act === 'set' && (!currentLibModalSpec.target || isNaN(Number(currentLibModalSpec.target)))) {
-          currentLibModalSpec.target = '50';
+        currentLibModalSpec.action = e.target.value;
+        if (e.target.value === 'set') {
+          currentLibModalSpec.target = String(Number($('lkmVolStep') && $('lkmVolStep').value) || 50);
+        } else {
+          currentLibModalSpec.step = Number($('lkmVolStep') && $('lkmVolStep').value) || 5;
         }
         updateLkmActionUI();
         updateLkmSwatch();
       };
-    });
-    if ($('lkmVolStepRange')) {
-      $('lkmVolStepRange').oninput = (e) => {
-        if (!currentLibModalSpec) return;
-        currentLibModalSpec.step = Number(e.target.value) || 5;
-        if ($('lkmVolStepVal')) $('lkmVolStepVal').textContent = `${currentLibModalSpec.step}%`;
-        updateLkmActionUI();
-      };
     }
-    if ($('lkmVolTargetRange')) {
-      $('lkmVolTargetRange').oninput = (e) => {
+    if ($('lkmVolStep')) {
+      $('lkmVolStep').oninput = (e) => {
         if (!currentLibModalSpec) return;
-        currentLibModalSpec.target = String(e.target.value);
-        if ($('lkmVolTargetVal')) $('lkmVolTargetVal').textContent = `${e.target.value}%`;
-        updateLkmActionUI();
-      };
-    }
-    if ($('lkmVolDeviceInput')) {
-      $('lkmVolDeviceInput').oninput = (e) => {
-        if (!currentLibModalSpec) return;
-        currentLibModalSpec.target = e.target.value.trim();
+        const val = Math.max(1, Math.min(100, Number(e.target.value) || 5));
+        if (currentLibModalSpec.action === 'set') currentLibModalSpec.target = String(val);
+        else currentLibModalSpec.step = val;
         updateLkmActionUI();
       };
     }
 
-    // 专属翻页动作绑定 (Key Studio Modal)
-    document.querySelectorAll('.lkm-page-pill').forEach((btn) => {
-      btn.onclick = () => {
+    // 专属翻页动作绑定 (#lkmPageMode + #lkmPageTargetSelect)
+    if ($('lkmPageMode')) {
+      $('lkmPageMode').onchange = (e) => {
         if (!currentLibModalSpec) return;
-        currentLibModalSpec.mode = btn.dataset.mode;
+        currentLibModalSpec.mode = e.target.value;
         if (currentLibModalSpec.mode === 'goto' && !currentLibModalSpec.pageId) {
           currentLibModalSpec.pageId = (cfg && cfg.pages && cfg.pages[0] && cfg.pages[0].id) || 'p1';
         }
+        currentLibModalSpec.label = pageActionLabel(currentLibModalSpec);
         updateLkmActionUI();
         updateLkmSwatch();
       };
-    });
+    }
     if ($('lkmPageTargetSelect')) {
       $('lkmPageTargetSelect').onchange = (e) => {
         if (!currentLibModalSpec) return;
         currentLibModalSpec.pageId = e.target.value;
+        currentLibModalSpec.label = pageActionLabel(currentLibModalSpec);
         updateLkmActionUI();
         updateLkmSwatch();
+      };
+    }
+
+    // 专属实时动态组件绑定 (#lkmWidgetKind)
+    if ($('lkmWidgetKind')) {
+      $('lkmWidgetKind').onchange = (e) => {
+        if (!currentLibModalSpec) return;
+        currentLibModalSpec.widgetKind = e.target.value;
+        const info = WIDGET_KIND_INFOS.find(x => x.id === e.target.value);
+        if (info) {
+          currentLibModalSpec.action = info.act;
+          currentLibModalSpec.color = info.color;
+          currentLibModalSpec.label = info.name.split(' ')[0];
+        }
+        updateLkmActionUI();
+        updateLkmSwatch();
+      };
+    }
+    if ($('lkmSwapSyncCheck') && $('lkmSwapSyncTrack')) {
+      $('lkmSwapSyncCheck').onchange = () => {
+        $('lkmSwapSyncTrack').classList.toggle('on', $('lkmSwapSyncCheck').checked);
       };
     }
     $('lkmArgsInput').oninput = (e) => {
@@ -7938,12 +9085,15 @@ function demoConfig() {
           '0,3': { type: 'url', label: 'github.com', target: 'https://github.com', args: '', icon: '', color: '#0277bd' },
           '0,4': { type: 'ps1', label: '系统体检', target: 'Sys-Stats.ps1', args: '', icon: '', color: '#00838f' },
           '1,0': { type: 'command', label: '锁屏', target: 'rundll32.exe user32.dll,LockWorkStation', args: '', icon: '', color: '#c62828' },
+          '1,1': { type: 'widget', widgetKind: 'gpu', action: 'refresh', label: 'GPU 监控', color: '#0f291e' },
+          '1,2': { type: 'widget', widgetKind: 'pomodoro', action: 'pomodoro_toggle', label: '番茄钟', color: '#7f1d1d' },
+          '1,3': { type: 'widget', widgetKind: 'media_now', action: 'media_play_pause', label: '正在播放', color: '#3b0764' },
           '2,0': { type: 'page', mode: 'goto', pageId: 'p3', label: '娱乐', args: '', icon: '', color: '#455a64' },
           '2,1': { type: 'page', mode: 'next', label: '下一页', args: '', icon: '', color: '#455a64' },
         },
         strips: {
           '0': { type: 'clock', label: '', color: '#263238' },
-          '1': { type: 'text', label: 'AKP153\nDOCK', color: '#1a237e' },
+          '1': { type: 'net', label: '', color: '#0c1e35' },
           '2': { type: 'page', label: '', color: '#263238' },
         },
       },
@@ -7953,7 +9103,10 @@ function demoConfig() {
           '0,0': { type: 'app', label: '音乐', target: 'C:\\Music.exe', args: '', icon: '', color: '#6a1b9a' },
           '2,1': { type: 'page', mode: 'prev', label: '上一页', args: '', icon: '', color: '#455a64' },
         },
-        strips: { '2': { type: 'page', label: '', color: '#263238' } },
+        strips: {
+          '0': { type: 'sys', label: '', color: '#14202e' },
+          '2': { type: 'page', label: '', color: '#263238' },
+        },
       },
       {
         id: 'p3', name: '娱乐', parent: 'p1',
@@ -7995,6 +9148,7 @@ function bindDevice() {
   $('idle').value = String(cfg.idleSleepMinutes || 0);
   $('login').checked = !!cfg.openAtLogin;
   $('sleepMode').value = cfg.sleepMode || 'zeros-last';
+  if ($('rotate')) $('rotate').value = cfg.rotate || 'ccw';
 
   let _brightTimer = null;
   $('brightness').addEventListener('input', (e) => {
@@ -8011,7 +9165,11 @@ function bindDevice() {
     cfg.idleSleepMinutes = +e.target.value;
     await saveConfig();
   });
-  $('rotate').addEventListener('change', () => repaintAll());
+  $('rotate').addEventListener('change', async (e) => {
+    cfg.rotate = e.target.value;
+    await saveConfig();
+    await repaintAll(true);
+  });
   $('sleepMode').addEventListener('change', async (e) => {
     cfg.sleepMode = e.target.value;
     await saveConfig();
@@ -8035,6 +9193,41 @@ function bindDevice() {
   api.on('device:repaint', (opts) => { isDeviceAsleep = false; repaintAll(opts && opts.force); });
   api.on('device:repaint-strips', () => { if (!isDeviceAsleep) repaintStrips(); });
   api.on('audio:state', (data) => updateVolumeState(data));
+  api.on('telemetry:data', async (data) => {
+    if (!data) return;
+    lastTelemetry = Object.assign({}, lastTelemetry, data);
+    if (!cfg || isDeviceAsleep) return;
+    refreshGrid();
+    // Push any active widget keys or widget strips
+    const buttons = pageButtons();
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < KEY_COLS; c++) {
+        const sp = buttons[`${r},${c}`];
+        if (sp && sp.type === 'widget') await pushKey(r, c);
+      }
+      const st = pageStrips()[String(r)];
+      if (st && (WIDGET_KINDS.includes(st.type) || st.type === 'widget')) {
+        await pushStrip(r, false);
+      }
+    }
+  });
+  api.on('pomodoro:tick', async (pomo) => {
+    if (!pomo) return;
+    lastTelemetry.pomodoro = pomo;
+    if (!cfg || isDeviceAsleep) return;
+    refreshGrid();
+    const buttons = pageButtons();
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < KEY_COLS; c++) {
+        const sp = buttons[`${r},${c}`];
+        if (sp && sp.type === 'widget' && sp.widgetKind === 'pomodoro') await pushKey(r, c);
+      }
+      const st = pageStrips()[String(r)];
+      if (st && (st.type === 'pomodoro' || (st.type === 'widget' && st.widgetKind === 'pomodoro'))) {
+        await pushStrip(r, false);
+      }
+    }
+  });
   api.on('toast', (t) => toast(t && t.message));
   api.on('key:flash', (k) => {
     const cell = document.querySelector(`.cell[data-row="${k.row}"][data-col="${k.col}"]`);
@@ -8182,10 +9375,13 @@ async function boot() {
   initIconPicker();
   initCropper();
   initKeyboardShortcuts();
+  _lastHistoryHash = getPagesSnapshotHash();
+  updateUndoRedoUI();
   applyTheme();
   setDrawer(false);
   renderLibrary();
   renderPageTabs();
+  renderInspector();
 
   // 启动即时获取系统物理音量并初始化状态
   if (!DEMO && window.api && api.audioGetVolume) {
@@ -8260,7 +9456,11 @@ function setStatus(s) {
     el.textContent = '连接中…';
   }
   const devEl = $('settingsDevStatus');
-  if (devEl) devEl.textContent = el.textContent;
+  if (devEl) {
+    devEl.textContent = el.textContent;
+    devEl.className = 'device-status-indicator' +
+      (el.classList.contains('pill-err') ? ' err' : (el.classList.contains('pill-warn') ? ' warn' : ''));
+  }
 }
 
 boot().catch((e) => toast('初始化失败：' + (e && e.message)));

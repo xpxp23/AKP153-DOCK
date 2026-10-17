@@ -1,11 +1,11 @@
 'use strict';
 /**
- * native-input.js - 原生 1ms 零延迟键鼠、窗口、进程探测与音频驱动桥接
+ * native-input.js - 原生 1ms 零延迟键鼠、窗口、进程探测、图标提取、屏幕取色与音频驱动桥接
  *
  * 采用常驻子进程管道通信，将所有输入与窗口操作的延迟压缩至 0.1~1ms。
  * 具备：
  * 1. 自动按需编译更新：若检测到 native-input.cs 比 bin/akp-input.exe 更新，自动调用系统 .NET csc.exe 重编译；
- * 2. 异步流水号 + FIFO 双模守卫：支持 @id 异步乱序回调（耗时鼠标平滑移动绝不阻塞音量/窗口查询），同时向下兼容旧版二进制；
+ * 2. 异步流水号 + FIFO 双模守卫：支持 @id 异步乱序回调（耗时鼠标平滑移动或宏录制绝不阻塞音量/窗口查询），同时向下兼容旧版二进制；
  * 3. 安全参数隔离与多行清洗：降级模式采用 spawnSync 参数数组传递，彻底杜绝 cmd 命令行注入。
  */
 const { spawn, spawnSync } = require('child_process');
@@ -18,7 +18,7 @@ const CS_PATH = path.join(__dirname, 'native-input.cs');
 let daemonProc = null;
 let pendingQueue = []; // [{ id, resolve, timer }]
 let reqSeq = 0;
-let supportsIdPrefix = true; // 自动协商：若发现旧版二进制未编译支持 @id，则自动无缝回退
+let supportsIdPrefix = true;
 let compileChecked = false;
 
 /**
@@ -48,7 +48,11 @@ function ensureCompiledBinary() {
 
     fs.mkdirSync(path.dirname(BIN_PATH), { recursive: true });
     const tmpOut = BIN_PATH + '.new.exe';
-    const r = spawnSync(csc, ['/nologo', '/optimize+', '/target:exe', `/out:${tmpOut}`, CS_PATH], {
+    const r = spawnSync(csc, [
+      '/nologo', '/optimize+', '/target:exe',
+      '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll',
+      `/out:${tmpOut}`, CS_PATH,
+    ], {
       windowsHide: true,
       timeout: 8000,
     });
@@ -91,7 +95,6 @@ function ensureDaemon() {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        // 优先匹配 @<id> 异步完成回调
         if (trimmed.startsWith('@')) {
           const sp = trimmed.indexOf(' ');
           if (sp > 1) {
@@ -107,7 +110,6 @@ function ensureDaemon() {
           }
         }
 
-        // 若收到旧版二进制对 @id 的未知指令报错，自动降级为无前缀模式并重发
         if (trimmed.startsWith('ERR Unknown op: @') && pendingQueue.length > 0) {
           supportsIdPrefix = false;
           const item = pendingQueue.shift();
@@ -141,11 +143,7 @@ function ensureDaemon() {
   }
 }
 
-/**
- * 向常驻输入引擎发送一条单行指令并等待执行确认 (0.1~1ms)，具备超时与防换行截断保护
- */
 function sendCmd(cmdStr, timeoutMs = 4000) {
-  // 清洗任何意外的换行符，防止单条指令被拆成多行污染管道队列
   const sanitized = String(cmdStr || '').replace(/\r\n/g, '\\n').replace(/[\r\n]/g, '\\n').trim();
   if (!sanitized) return Promise.resolve('OK');
 
@@ -175,7 +173,6 @@ function sendCmd(cmdStr, timeoutMs = 4000) {
         resolve('ERR WRITE_FAILED');
       }
     } else {
-      // 安全降级：使用 spawnSync 参数数组传递，杜绝 shell 字符串拼接导致的命令注入
       try {
         const r = spawnSync(BIN_PATH, [sanitized], {
           encoding: 'utf8',
@@ -202,6 +199,113 @@ const NativeInput = {
       return { x: parseInt(parts[0], 10) || 0, y: parseInt(parts[1], 10) || 0 };
     }
     return { x: 0, y: 0 };
+  },
+
+  getPixelColor: async (x, y) => {
+    const res = await sendCmd(`get_pixel ${Math.round(Number(x) || 0)} ${Math.round(Number(y) || 0)}`);
+    if (res.startsWith('OK ')) {
+      return { ok: true, color: res.slice(3).trim().toLowerCase() };
+    }
+    return { ok: false, color: '' };
+  },
+
+  findColorInRegion: async (x, y, w, h, hexColor, tolerance = 16) => {
+    const cleanHex = String(hexColor || '#ffffff').trim();
+    const res = await sendCmd(`find_color ${Math.round(x || 0)} ${Math.round(y || 0)} ${Math.round(w || 100)} ${Math.round(h || 100)} ${cleanHex} ${Math.round(tolerance || 16)}`);
+    if (res.startsWith('OK ')) {
+      const parts = res.slice(3).trim().split(/\s+/);
+      const matched = parts[0] === '1';
+      const [fx, fy] = (parts[1] || '-1,-1').split(',').map((n) => parseInt(n, 10));
+      return { ok: true, matched, x: fx, y: fy, actualColor: parts[2] || '' };
+    }
+    return { ok: false, matched: false, x: -1, y: -1 };
+  },
+
+  extractIcon: async (filePath, iconIndex = 0) => {
+    if (!filePath) return null;
+    const res = await sendCmd(`extract_icon ${parseInt(iconIndex, 10) || 0} ${filePath}`, 3500);
+    if (res.startsWith('OK data:image/')) {
+      return res.slice(3).trim();
+    }
+    return null;
+  },
+
+  queryAppPath: async (exeName) => {
+    if (!exeName) return null;
+    const res = await sendCmd(`app_path ${exeName}`, 1500);
+    if (res.startsWith('OK ')) {
+      return res.slice(3).trim();
+    }
+    return null;
+  },
+
+  getNetworkStats: async () => {
+    const res = await sendCmd('net_stats', 1500);
+    if (res.startsWith('OK ')) {
+      const [rx, tx] = res.slice(3).trim().split('|').map((v) => parseFloat(v) || 0);
+      return { ok: true, rxKbps: rx, txKbps: tx };
+    }
+    return { ok: false, rxKbps: 0, txKbps: 0 };
+  },
+
+  getProcessWindowTitles: async (names) => {
+    const list = (Array.isArray(names) ? names : [names]).map((s) => String(s || '').trim()).filter(Boolean);
+    if (!list.length) return {};
+    const res = await sendCmd(`proc_titles ${list.join(',')}`, 1500);
+    const out = {};
+    if (res.startsWith('OK')) {
+      const raw = res.slice(2).trim();
+      if (!raw) return out;
+      for (const pair of raw.split(';;')) {
+        const idx = pair.indexOf('|');
+        if (idx > 0) {
+          const pName = pair.slice(0, idx).trim().toLowerCase();
+          const title = pair.slice(idx + 1).trim();
+          if (pName && title && !out[pName]) out[pName] = title;
+        }
+      }
+    }
+    return out;
+  },
+
+  beep: async (isSuccess = true) => {
+    await sendCmd(`beep ${isSuccess ? 'ok' : 'err'}`, 1000);
+  },
+
+  recordMacro: async (maxDurationMs = 15000) => {
+    const dur = Math.max(1000, Math.min(60000, parseInt(maxDurationMs, 10) || 15000));
+    const res = await sendCmd(`record_macro ${dur}`, dur + 3000);
+    if (res.startsWith('OK')) {
+      const raw = res.slice(2).trim();
+      if (!raw) return { ok: true, actions: [] };
+      const actions = [];
+      for (const token of raw.split(';')) {
+        if (!token) continue;
+        const parts = token.split(':');
+        const kind = parts[0];
+        if (kind === 'delay') {
+          actions.push({ type: 'delay', ms: Math.max(20, parseInt(parts[1], 10) || 100) });
+        } else if (kind === 'mouse_click') {
+          actions.push({
+            type: 'mouse_click',
+            button: parts[1] || 'left',
+            x: parseInt(parts[2], 10) || 0,
+            y: parseInt(parts[3], 10) || 0,
+            double: false,
+          });
+        } else if (kind === 'hotkey') {
+          const combo = parts.slice(1).join(':');
+          if (combo) actions.push({ type: 'hotkey', target: combo, combo });
+        }
+      }
+      return { ok: true, actions };
+    }
+    return { ok: false, actions: [], error: res };
+  },
+
+  stopMacroRecord: async () => {
+    await sendCmd('stop_record', 1500);
+    return { ok: true };
   },
 
   mouseClick: (button = 'left', x = -1, y = -1) => {
@@ -251,11 +355,6 @@ const NativeInput = {
     return null;
   },
 
-  /**
-   * 毫秒级批量查询进程是否存活（耗时 ~0.5ms，彻底替代阻塞主进程的 spawnSync('tasklist')）
-   * @param {string[]} names 进程名数组
-   * @returns {Promise<Set<string>>} 正在运行的进程名集合（小写、无 .exe 后缀）
-   */
   checkProcesses: async (names) => {
     const cleanList = Array.from(new Set(
       (Array.isArray(names) ? names : [names])
@@ -269,7 +368,7 @@ const NativeInput = {
       if (!raw) return new Set();
       return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
     }
-    return null; // null 表示守护进程不支持该指令，由调用方降级
+    return null;
   },
 
   activateOrToggleWindow: async (procName, allowMinimize = false) => {
@@ -297,7 +396,6 @@ const NativeInput = {
     return sendCmd(`media ${cmd}`);
   },
 
-  // 音频与音量原生控制接口 (0.1ms WASAPI CoreAudio)
   getVolume: async () => {
     const res = await sendCmd('vol_get');
     if (res.startsWith('OK ')) {

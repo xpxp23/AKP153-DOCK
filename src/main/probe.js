@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const NativeInput = require('./native-input');
 
 const DOCK_DIR = path.resolve(__dirname, '..', '..');
 
@@ -51,7 +52,7 @@ function expandPath(str) {
 }
 
 /**
- * 查询 Windows App Paths 注册表（采用参数化 spawnSync 替代 shell 字符串拼接）
+ * 查询 Windows App Paths 注册表（仅在异步守护进程未命中时作为兜底）
  */
 function queryAppPaths(exeName) {
   if (!exeName || process.platform !== 'win32') return null;
@@ -87,6 +88,15 @@ function queryAppPaths(exeName) {
  */
 const KNOWN_FINGERPRINTS = {
   steam: () => {
+    const candidates = [
+      'F:\\Game Program\\Steam\\steam.exe',
+      'C:\\Program Files (x86)\\Steam\\steam.exe',
+      'C:\\Program Files\\Steam\\steam.exe',
+      'D:\\Steam\\steam.exe',
+      'E:\\Steam\\steam.exe',
+    ];
+    const direct = candidates.find(c => fs.existsSync(c));
+    if (direct) return direct;
     try {
       const r = spawnSync('reg.exe', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamExe'], {
         encoding: 'utf8',
@@ -101,14 +111,7 @@ const KNOWN_FINGERPRINTS = {
         }
       }
     } catch (_) {}
-    const candidates = [
-      'F:\\Game Program\\Steam\\steam.exe',
-      'C:\\Program Files (x86)\\Steam\\steam.exe',
-      'C:\\Program Files\\Steam\\steam.exe',
-      'D:\\Steam\\steam.exe',
-      'E:\\Steam\\steam.exe',
-    ];
-    return candidates.find(c => fs.existsSync(c)) || null;
+    return null;
   },
   leigod: () => {
     const candidates = [
@@ -143,32 +146,20 @@ const KNOWN_FINGERPRINTS = {
 };
 
 /**
- * 软件全自动智能探针
- * @param {string} target 路径、进程名、协议或探针代号
- * @returns {string} 可直接唤起的有效路径或协议
+ * 异步无阻塞软件探针（优先通过 C# 常驻守护进程 0.5ms 查询注册表）
  */
-function probeApp(target) {
+async function probeAppAsync(target) {
   if (!target) return '';
   const trimmed = target.trim();
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return trimmed;
+  if (probeCache.has(trimmed)) return probeCache.get(trimmed);
 
-  // 1. 如果是标准 URL 协议（如 steam://open/main, https://...），直接返回
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
-    return trimmed;
-  }
-
-  // 2. 检查缓存（包含已解析路径与负缓存，防止轮询风暴）
-  if (probeCache.has(trimmed)) {
-    return probeCache.get(trimmed);
-  }
-
-  // 3. 展开宏路径（含 System32 系统自带工具自动识别），如果直接存在，命中
   const expanded = expandPath(trimmed);
   if (fs.existsSync(expanded)) {
     probeCache.set(trimmed, expanded);
     return expanded;
   }
 
-  // 4. 提取基准文件名（去除路径和拓展名），查找指纹库
   const baseName = path.basename(trimmed, path.extname(trimmed)).toLowerCase();
   if (KNOWN_FINGERPRINTS[baseName]) {
     const hit = KNOWN_FINGERPRINTS[baseName]();
@@ -178,14 +169,55 @@ function probeApp(target) {
     }
   }
 
-  // 5. 注册表 App Paths 检索
+  if (process.platform === 'win32') {
+    try {
+      const natHit = await NativeInput.queryAppPath(path.basename(trimmed));
+      if (natHit && fs.existsSync(natHit)) {
+        probeCache.set(trimmed, natHit);
+        return natHit;
+      }
+    } catch (_) {}
+  }
+
+  return probeApp(trimmed);
+}
+
+/**
+ * 软件全自动智能探针
+ */
+function probeApp(target) {
+  if (!target) return '';
+  const trimmed = target.trim();
+
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (probeCache.has(trimmed)) {
+    return probeCache.get(trimmed);
+  }
+
+  const expanded = expandPath(trimmed);
+  if (fs.existsSync(expanded)) {
+    probeCache.set(trimmed, expanded);
+    return expanded;
+  }
+
+  const baseName = path.basename(trimmed, path.extname(trimmed)).toLowerCase();
+  if (KNOWN_FINGERPRINTS[baseName]) {
+    const hit = KNOWN_FINGERPRINTS[baseName]();
+    if (hit) {
+      probeCache.set(trimmed, hit);
+      return hit;
+    }
+  }
+
   const regHit = queryAppPaths(path.basename(trimmed));
   if (regHit) {
     probeCache.set(trimmed, regHit);
     return regHit;
   }
 
-  // 6. 未找到时同样记入缓存，避免每 2 秒后台状态轮询反复拉起 3 个 reg.exe 子进程阻塞主线程
   probeCache.set(trimmed, expanded);
   return expanded;
 }
@@ -194,4 +226,5 @@ module.exports = {
   DOCK_DIR,
   expandPath,
   probeApp,
+  probeAppAsync,
 };

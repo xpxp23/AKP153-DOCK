@@ -9,7 +9,7 @@
  *
  * Talks JSON-RPC over stdin/stdout, one JSON object per line.
  *
- * Commands:  open | close | draw | batchDraw | clear | brightness | sleep | wake | ping | status
+ * Commands:  open | close | draw | batchDraw | clear | brightness | setDebounce | sleep | wake | ping | status
  * Events:    ready | opened | lost | error | down | up | wake
  */
 
@@ -66,16 +66,26 @@ class Device {
     this.broken = false;
     this.brightness = 80;
     this.savedBrightness = 80;
+    this.debounceMs = 100;
     this.lastSleepMode = 'zeros-last';
     this.queue = Promise.resolve();
     this.watchdog = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
     this.lastPress = new Map();
     this.lastFrames = new Map(); // "${row},${col}" -> jpegBase64 (Frame Diff Cache)
+    this._pktBuf = Buffer.alloc(PKT);
   }
 
   get isOpen() {
     return !!this.hid && !this.broken;
+  }
+
+  setDebounce(ms) {
+    const val = Number(ms);
+    if (!Number.isNaN(val) && val >= 20 && val <= 1000) {
+      this.debounceMs = Math.round(val);
+    }
+    return this.debounceMs;
   }
 
   lock(fn) {
@@ -151,7 +161,8 @@ class Device {
 
       const key = pos.row + ',' + pos.col;
       const now = Date.now();
-      if (now - (this.lastPress.get(key) || 0) < 120) return;
+      const threshold = Math.max(20, Number(this.debounceMs) || 100);
+      if (now - (this.lastPress.get(key) || 0) < threshold) return;
       this.lastPress.set(key, now);
 
       if (this.asleep) {
@@ -170,7 +181,10 @@ class Device {
   }
 
   pad(buf) {
-    return Buffer.concat([buf], PKT);
+    if (buf.length === PKT) return buf;
+    const out = Buffer.alloc(PKT);
+    buf.copy(out, 0, 0, Math.min(buf.length, PKT));
+    return out;
   }
 
   writeRaw(buf) {
@@ -212,6 +226,40 @@ class Device {
     await this.cmd([76, 66, 76, 73, 71, gamma(val)]);
   }
 
+  _drawUnlocked(row, col, jpegBase64, force = false) {
+    if (this.asleep) {
+      return { drawn: false, skipped: true };
+    }
+    const id = col === 5 ? stripId(row) : buttonId(row, col);
+    if (id === null) throw new Error('BAD_POSITION');
+    if (!jpegBase64) throw new Error('EMPTY_IMAGE');
+
+    const frameKey = `${row},${col}`;
+    if (!force && this.lastFrames.get(frameKey) === jpegBase64) {
+      return { drawn: false, skipped: true };
+    }
+
+    const img = Buffer.from(jpegBase64, 'base64');
+    const total = img.length;
+    if (total === 0) throw new Error('EMPTY_IMAGE');
+
+    const bat = Buffer.concat([
+      Buffer.from([0]), PREFIX,
+      Buffer.from([66, 65, 84, (total >> 24) & 255, (total >> 16) & 255, (total >> 8) & 255, total & 255, id]),
+    ]);
+    this.writeRaw(this.pad(bat));
+    for (let off = 0; off < total; off += PACKET) {
+      const chunk = img.subarray(off, off + PACKET);
+      const pkt = Buffer.alloc(PKT);
+      pkt[0] = 0;
+      chunk.copy(pkt, 1);
+      this.writeRaw(pkt);
+    }
+    this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), PREFIX, Buffer.from(CMD.STP)])));
+    this.lastFrames.set(frameKey, jpegBase64);
+    return { drawn: true, skipped: false };
+  }
+
   async draw(row, col, jpegBase64, force = false) {
     if (this.asleep) {
       const now = Date.now();
@@ -230,23 +278,31 @@ class Device {
       return { drawn: false, skipped: true };
     }
 
-    const img = Buffer.from(jpegBase64, 'base64');
-    const total = img.length;
-    if (total === 0) throw new Error('EMPTY_IMAGE');
+    return this.lock(async () => {
+      return this._drawUnlocked(row, col, jpegBase64, force);
+    });
+  }
+
+  async batchDraw(items) {
+    if (this.asleep) {
+      return { drawn: 0, skipped: Array.isArray(items) ? items.length : 0 };
+    }
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) return { drawn: 0, skipped: 0 };
 
     return this.lock(async () => {
-      const bat = Buffer.concat([
-        Buffer.from([0]), PREFIX,
-        Buffer.from([66, 65, 84, (total >> 24) & 255, (total >> 16) & 255, (total >> 8) & 255, total & 255, id]),
-      ]);
-      this.writeRaw(this.pad(bat));
-      for (let off = 0; off < total; off += PACKET) {
-        const chunk = img.subarray(off, off + PACKET);
-        this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), chunk])));
+      let drawn = 0;
+      let skipped = 0;
+      for (const it of list) {
+        if (!it || this.asleep) {
+          skipped++;
+          continue;
+        }
+        const r = this._drawUnlocked(it.row, it.col, it.data, !!it.force);
+        if (r && r.drawn) drawn++;
+        else skipped++;
       }
-      this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), PREFIX, Buffer.from(CMD.STP)])));
-      this.lastFrames.set(frameKey, jpegBase64);
-      return { drawn: true, skipped: false };
+      return { drawn, skipped };
     });
   }
 
@@ -391,11 +447,16 @@ async function handle(msg) {
       return reply(id, { pong: true });
     case 'open': {
       try {
+        if (msg.debounceMs !== undefined) device.setDebounce(msg.debounceMs);
         const info = device.open();
         return reply(id, { info: { path: info.path, product: info.product, manufacturer: info.manufacturer } });
       } catch (e) {
         return fail(id, e.message);
       }
+    }
+    case 'setDebounce': {
+      const d = device.setDebounce(msg.value !== undefined ? msg.value : msg.debounceMs);
+      return reply(id, { debounceMs: d });
     }
     case 'reset': {
       await device.reset(msg.brightness);
@@ -416,14 +477,8 @@ async function handle(msg) {
     }
     case 'batchDraw': {
       if (!device.isOpen) return fail(id, 'NOT_OPEN');
-      const items = Array.isArray(msg.items) ? msg.items : [];
-      let drawn = 0, skipped = 0;
-      for (const it of items) {
-        const r = await device.draw(it.row, it.col, it.data, !!it.force);
-        if (r && r.drawn) drawn++;
-        else skipped++;
-      }
-      return reply(id, { drawn, skipped });
+      const res = await device.batchDraw(msg.items);
+      return reply(id, res || { drawn: 0, skipped: 0 });
     }
     case 'clear':
       await device.clearScreen();
@@ -434,7 +489,12 @@ async function handle(msg) {
       await device.wake(msg.brightness, !!msg.force);
       return reply(id, {});
     case 'status':
-      return reply(id, { open: device.isOpen, asleep: device.asleep, brightness: device.brightness });
+      return reply(id, {
+        open: device.isOpen,
+        asleep: device.asleep,
+        brightness: device.brightness,
+        debounceMs: device.debounceMs,
+      });
     default:
       return fail(id, 'UNKNOWN_CMD ' + cmd);
   }

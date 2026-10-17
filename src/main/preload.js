@@ -2,11 +2,6 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  /**
-   * Electron 32 removed `File.path`, so a dropped file's real location must be
-   * looked up here in the preload (webUtils only exists outside the sandbox).
-   * Without this, drag & drop silently yields a bare filename.
-   */
   pathForFile: (file) => {
     try { return webUtils.getPathForFile(file); } catch (e) { return ''; }
   },
@@ -23,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   deviceDraw: (a) => ipcRenderer.invoke('device:draw', a),
   deviceBatchDraw: (items) => ipcRenderer.invoke('device:batchDraw', items),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
+  deviceSetDebounce: (ms) => ipcRenderer.invoke('device:setDebounce', ms),
   deviceSleep: () => ipcRenderer.invoke('device:sleep'),
   deviceWake: () => ipcRenderer.invoke('device:wake'),
   deviceReconnect: () => ipcRenderer.invoke('device:reconnect'),
@@ -47,6 +43,10 @@ contextBridge.exposeInMainWorld('api', {
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
   systemStats: () => ipcRenderer.invoke('system:stats'),
+  telemetryGet: (opts) => ipcRenderer.invoke('telemetry:get', opts),
+  pomodoroAction: (act, minutes) => ipcRenderer.invoke('pomodoro:action', { act, minutes }),
+  pluginsList: () => ipcRenderer.invoke('plugins:list'),
+  pageManualSwitch: (pageId) => ipcRenderer.invoke('page:manualSwitch', pageId),
 
   libraryExport: (a) => ipcRenderer.invoke('library:export', a),
   libraryImport: () => ipcRenderer.invoke('library:import'),
@@ -59,8 +59,14 @@ contextBridge.exposeInMainWorld('api', {
   audioSwitchDevice: (target) => ipcRenderer.invoke('audio:switchDevice', target),
 
   macroGetCursor: () => ipcRenderer.invoke('macro:getCursor'),
+  macroGetPixel: (x, y) => ipcRenderer.invoke('macro:getPixel', { x, y }),
+  macroRecordStart: (maxMs) => ipcRenderer.invoke('macro:recordStart', maxMs),
+  macroRecordStop: () => ipcRenderer.invoke('macro:recordStop'),
   macroStopAll: () => ipcRenderer.invoke('macro:stopAll'),
-  macroStopKey: (a) => ipcRenderer.invoke('macro:stopKey', a),
+  macroStopKey: (a, b, c) => ipcRenderer.invoke(
+    'macro:stopKey',
+    (a && typeof a === 'object') ? a : { pageId: a, row: b, col: c }
+  ),
   macroStopPage: (pageId) => ipcRenderer.invoke('macro:stopPage', pageId),
   macroActiveLoops: () => ipcRenderer.invoke('macro:activeLoops'),
 
@@ -69,7 +75,8 @@ contextBridge.exposeInMainWorld('api', {
       'host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
       'key:unconfigured', 'toast', 'page:changed', 'config:external',
       'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
-      'audio:state', 'app:runningStates', 'device:sleep-state'
+      'audio:state', 'app:runningStates', 'device:sleep-state', 'login:changed',
+      'telemetry:update', 'macro:recordState'
     ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);

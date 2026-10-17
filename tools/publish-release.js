@@ -14,18 +14,34 @@ function getGitHubToken() {
 
 const PKG = require(path.resolve(__dirname, '..', 'package.json'));
 const TAG = `v${PKG.version}`;
-const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (全架构深度优化 + 管道指令关联时序加固 + 批量绘图性能加速)`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (6大实时数据遥测 + 自定义JS插件引擎 + 番茄钟 + GPU/网速/天气/媒体监控 + 动态按键消抖)`;
 const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
 const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version}
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
-此版本包含全架构深度优化、管道请求关联时序加固、HID批量绘图性能加速与全量稳定性增强。
+此版本重磅推出 6 大内置实时数据遥测引擎、外部轻量级 JS 插件系统、番茄钟专注状态机、硬件动态按键防抖调节以及全量稳定性增强。
 
 ---
 
-## 🌟 v0.7.0 深度优化与架构演进
+## 🌟 v0.8.0 核心更新与架构升级
+
+### 🌐 1. 6 大内置实时数据源与动态看板 (Telemetry Engine)
+- **GPU 核心实时遥测**：异步无阻塞采样 GPU 核心负载、温度与显存使用率 (NVIDIA SMI / 性能计数器)；
+- **实时网络流量监视**：精确统计网卡实时上行/下行速率 (KB/s · MB/s)；
+- **实时城市天气与气温**：带 15 分钟智能缓存与离线平滑降级；
+- **番茄钟专注状态机 (Pomodoro)**：专注/休息循环状态机，支持按键启停、跳过与到点提示音；
+- **OBS Studio 推流/录制状态**：实时捕捉推流中/录制中状态并投射至按键微标；
+- **正在播放媒体提取 (Media Now Playing)**：实时提取 Spotify / 网易云音乐 / QQ音乐 曲名与艺术家。
+
+### 🧩 2. 轻量级外部 JS 插件生态系统 (Plugin System)
+- 在 \`plugins/*.plugin.js\` 放置单文件插件，控制台启动时自动扫描识别；
+- 插件具备动态渲染生命周期 (\`render({ os, now })\`) 与独立按键点击回调 (\`onPress({ NativeInput })\`)；
+- 内置开箱即用示例：\`plugins/uptime-greeting.plugin.js\`（系统开机运行时长与时段问候语看板）。
+
+### ⏱️ 3. 硬件按键动态防抖阈值 (Dynamic Debounce)
+- 支持按键级自定义消抖毫秒阈值（20ms~1000ms），完美适配不同批次轴体微动老化或极速敲击需求。
 
 ### 🛡️ 1. 独立供电拓展坞关机硬件彻底灭屏 + 定时休眠防频闪
 - **C# STA 关机灭屏守护**：新增独立 STA 消息泵窗口拦截系统 \`WM_QUERYENDSESSION\` (0x0011) 与 \`WM_ENDSESSION\` (0x0016)，通过 Win32 SetupAPI 直写 6 步硬件休眠指令，即使主机插在独立供电拓展坞上也能在关机瞬间彻底黑屏断流，杜绝电脑关机控制台常亮；

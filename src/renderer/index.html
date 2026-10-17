@@ -14,6 +14,11 @@
     <span id="status" class="pill pill-warn">连接中…</span>
   </div>
   <div class="actions">
+    <div class="history-btn-group">
+      <button id="btnUndo" class="ghost tool-pill-btn" title="撤销上一步修改 (Ctrl+Z)" disabled>↩ 撤销</button>
+      <button id="btnRedo" class="ghost tool-pill-btn" title="重做上一步修改 (Ctrl+Y)" disabled>↪ 重做</button>
+    </div>
+    <button id="btnStyleBrush" class="ghost tool-pill-btn" title="提取当前选中按键的底色/字号/缩放/对齐，点击其它按键一键刷入样式（Esc 退出）">🖌️ 样式刷</button>
     <button id="settingsBtn" class="ghost gear-btn" title="设备与控制台设置">⚙️ 设置</button>
   </div>
   <div id="winControls" class="win-controls">
@@ -133,8 +138,8 @@
             </div>
             <div class="pref-row" style="margin-top: 12px;">
               <div class="pref-info">
-                <span class="pref-name">前台应用感知自动切页 (Auto-Profile)</span>
-                <span class="pref-desc">当页面设置了关联进程（如 Code.exe）时，切到该软件自动切换硬件页面</span>
+                <span class="pref-name">前台应用感知自动切页 (Auto-Profile 2.0)</span>
+                <span class="pref-desc">支持进程名 + 窗口标题正则匹配，并内置多层级子页记忆栈，切走应用精准还原</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="prefAutoSwitchPage" checked />
@@ -148,9 +153,27 @@
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">按键连击防抖时间</span>
-                <span class="pref-desc">防止微动物理抖动导致的二次触发或异常重发</span>
+                <span class="pref-desc">实时同步至底层 HID 驱动，防止微动物理抖动导致的二次触发</span>
               </div>
-              <span class="inline"><input type="range" id="prefDebounce" min="50" max="300" step="10" value="100" /> <b id="prefDebounceVal">100</b>ms</span>
+              <span class="inline"><input type="range" id="prefDebounce" min="30" max="300" step="10" value="100" /> <b id="prefDebounceVal">100</b>ms</span>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h5 class="card-title">动态实时组件参数 (Widgets &amp; Plugins)</h5>
+            <div class="pref-row">
+              <div class="pref-info">
+                <span class="pref-name">天气组件默认城市</span>
+                <span class="pref-desc">填 Auto 自动定位，或填写城市名（如 Beijing / Shanghai / Shenzhen）</span>
+              </div>
+              <input id="prefWeatherCity" class="lkm-input" style="width: 150px;" value="Auto" placeholder="Auto 或城市名" />
+            </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">番茄钟默认专注时长</span>
+                <span class="pref-desc">按键或副屏番茄钟组件重置时的默认倒计时分钟数</span>
+              </div>
+              <span class="inline"><input type="number" id="prefPomodoroMin" class="lkm-input" style="width: 78px; text-align:center;" min="1" max="180" value="25" /> 分钟</span>
             </div>
           </div>
         </div>
@@ -222,11 +245,15 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.6.0 (独立便携免安装版)</span>
+                <span class="about-v">v0.8.0 (独立便携免安装版)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
                 <span class="about-v">AJAZZ AKP153 (15 键 LCD + 3 块副屏)</span>
+              </div>
+              <div class="about-item">
+                <span class="about-k">实时插件生态</span>
+                <span class="about-v">NVML GPU · 网速 · 天气 · 番茄钟 · OBS · 音乐 · JS 插件</span>
               </div>
               <div class="about-item">
                 <span class="about-k">开源仓库</span>
@@ -279,6 +306,7 @@
         <div class="device-brand-info">
           <span class="logo">AJAZZ</span>
           <span class="model">AKP-153</span>
+          <span id="multiSelectHint" class="multi-select-badge" hidden>已多选 0 格</span>
         </div>
         <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
       </div>
@@ -388,10 +416,12 @@
             <select id="lkmActType" class="lkm-select">
               <option value="app">运行本地应用程序或文件</option>
               <option value="folder">打开本地文件夹</option>
+              <option value="file">打开本地文件（默认程序）</option>
               <option value="url">在浏览器中打开网址</option>
               <option value="hotkey">模拟系统快捷键组合</option>
               <option value="volume">🔊 音频与音量控制 (WASAPI)</option>
               <option value="media">⏯️ 多媒体播放控制</option>
+              <option value="widget">📊 动态实时组件 (GPU/网速/番茄钟/天气/音乐/OBS)</option>
               <option value="command">执行控制台命令行 (cmd)</option>
               <option value="ps1">执行 PowerShell 脚本</option>
               <option value="page">页面跳转切换</option>
@@ -429,6 +459,22 @@
               <option value="up">⤴️ 返回上级</option>
               <option value="home">🏠 回到主页面</option>
               <option value="goto">🎯 跳到指定页</option>
+            </select>
+            <div id="lkmPageTargetWrap" style="margin-top:6px;" hidden>
+              <label class="lkm-label">目标跳转页面</label>
+              <select id="lkmPageTargetSelect" class="lkm-select"></select>
+            </div>
+          </div>
+          <div id="lkmWidgetWrap" class="lkm-form-row" hidden>
+            <label class="lkm-label">实时动态组件类型</label>
+            <select id="lkmWidgetKind" class="lkm-select">
+              <option value="gpu">🎮 GPU 温度 / 显存 / 负载 (NVML)</option>
+              <option value="net">🌐 实时网速上下行速率</option>
+              <option value="pomodoro">🍅 番茄钟专注倒计时 (点击启停/重置)</option>
+              <option value="weather">🌤️ 实时天气与温度</option>
+              <option value="media_now">🎵 网易云 / Spotify 当前播放曲目</option>
+              <option value="obs">🔴 OBS 推流 / 录制状态监控</option>
+              <option value="plugin">🧩 外部 JS 插件动态卡片</option>
             </select>
           </div>
           <div id="lkmArgsWrap" class="lkm-form-row">
@@ -554,9 +600,9 @@
             <div class="lkm-swap-row" style="margin-top:8px; display:flex; align-items:center; gap:8px;">
               <button type="button" id="lkmSwapDualActionBtn" class="ghost tiny" style="flex:1;">🔁 互换形态 1 与形态 2 动作</button>
               <label class="swap-mini-switch-wrap" id="lkmSwapSyncWrap" title="互换动作时同时对调角标">
-                <input type="checkbox" id="lkmSwapSyncCheck" checked />
-                <span class="swap-mini-switch"></span>
-                <span class="swap-mini-switch-label">联动对调角标</span>
+                <input type="checkbox" id="lkmSwapSyncCheck" hidden checked />
+                <span class="mini-switch-track on" id="lkmSwapSyncTrack"><span class="mini-switch-thumb"></span></span>
+                <span class="swap-switch-text">联动对调角标</span>
               </label>
             </div>
           </div>
@@ -652,6 +698,7 @@
   <button id="cmCopy" class="cm-item"><span class="cm-icon">📋</span> 复制按键 <kbd>Ctrl+C</kbd></button>
   <button id="cmCut" class="cm-item"><span class="cm-icon">✂️</span> 剪切按键 <kbd>Ctrl+X</kbd></button>
   <button id="cmPaste" class="cm-item"><span class="cm-icon">📥</span> 粘贴按键 <kbd>Ctrl+V</kbd></button>
+  <button id="cmCopyStyle" class="cm-item"><span class="cm-icon">🖌️</span> 提取外观样式刷</button>
   <div class="cm-divider"></div>
   <button id="cmSaveLib" class="cm-item"><span class="cm-icon">⭐</span> 存入按键库</button>
   <div class="cm-divider"></div>

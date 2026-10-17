@@ -2,9 +2,6 @@
 const fs = require('fs');
 const path = require('path');
 
-// AKP153_CONFIG lets a test (or an agent) point at a copy instead of the live
-// file - writing the real one while the app is running is a race we'd rather
-// avoid in tests.
 const FILE = process.env.AKP153_CONFIG
   ? path.resolve(process.env.AKP153_CONFIG)
   : path.join(__dirname, '..', '..', 'config.json');
@@ -27,6 +24,7 @@ const DEFAULT_GRADIENT = {
 const DEFAULTS = {
   version: 2,
   brightness: 80,
+  rotate: 'ccw',
   idleSleepMinutes: 5,
   sleepMode: 'zeros-last',
   openAtLogin: true,
@@ -37,7 +35,9 @@ const DEFAULTS = {
   appDropMode: 'dual',
   keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
   closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
-  autoSwitchPage: true,      // 按前台活动应用自动切换关联页面 (Auto-Profile Switching)
+  autoSwitchPage: true,      // 按前台活动应用或窗口标题正则自动切换关联页面 (Auto-Profile Switching)
+  weatherCity: 'Auto',       // 动态天气组件默认城市
+  pomodoroMinutes: 25,       // 番茄钟默认专注分钟数
   pages: [],
   currentPage: null,
   pageSnapshots: [],
@@ -77,6 +77,10 @@ function normalizeTags(v) {
 function normalize(rawObj) {
   const target = Object.assign({}, DEFAULTS, (rawObj && typeof rawObj === 'object') ? rawObj : {});
 
+  if (!['ccw', 'cw', 'none'].includes(target.rotate)) {
+    target.rotate = 'ccw';
+  }
+
   // --- migrate the flat single-page layout (v1: top-level buttons/strips) ---
   if (!Array.isArray(target.pages) || !target.pages.length) {
     target.pages = [{
@@ -95,16 +99,15 @@ function normalize(rawObj) {
     if (!p.name) p.name = '未命名页';
     if (p.parent === undefined) p.parent = null;
     if (typeof p.autoApp !== 'string') p.autoApp = '';
+    if (typeof p.autoTitle !== 'string') p.autoTitle = '';
     p.buttons = (p.buttons && typeof p.buttons === 'object') ? p.buttons : {};
     p.strips = Object.assign(clone(DEFAULT_STRIPS), p.strips || {});
     p.gradient = Object.assign(
       clone(DEFAULT_GRADIENT),
       (p.gradient && typeof p.gradient === 'object') ? p.gradient : {}
     );
-    // a page action without a mode is a key that does nothing - default it
     for (const s of Object.values(p.buttons)) {
       if (s && s.type === 'page' && !s.mode) s.mode = 'next';
-      // Migrate legacy flat dual-action fields (act2Type/act2Target) created by older Key Studio
       if (s && s.toggleAction && !s.action2 && (s.act2Target || s.act2Type)) {
         s.action2 = {
           type: s.act2Type || 'command',
@@ -221,6 +224,9 @@ function save(cfg) {
   const normalized = normalize(cfg);
   cache = normalized;
   const text = JSON.stringify(normalized, (key, value) => key.startsWith('_') ? undefined : value, 2);
+  if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
+    return true;
+  }
   const tmp = FILE + '.tmp';
   fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, FILE);

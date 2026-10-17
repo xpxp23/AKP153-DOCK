@@ -4,6 +4,14 @@
 
 核心交互只有一条：**把文件拖到格子里，按下设备上的键就执行。**
 
+
+## 🚀 v0.8.0 架构级演进与四大核心新特性
+
+- **📊 插件化与实时数据源生态（Dynamic Widgets & Plugins）**：开放轻量级 JS 插件钩子（`plugins/*.plugin.js`），支持 15 键主控区与 3 块副屏实时显示 **GPU 温度/显存（NVML）、实时上下行网速、实时天气、番茄钟专注倒计时（按键启停/重置）、OBS 推流/录制监控、Spotify/网易云音乐当前播放歌词与曲目卡片**，并支持 1:1 硬件级 Canvas 实时预览。
+- **⚡ 智能前台感知 2.0（进程名 + 窗口标题正则 + 多层级子页记忆栈）**：Auto-Profile 支持 **「进程名 + 窗口标题正则匹配」**（如浏览器打开 Bilibili / Figma 标签页时自动切页），并采用独立于持久化 `currentPage` 的运行时多层级子页记忆栈，确保进入子页后切走应用仍能精准还原。
+- **🎥 可视化宏录制器（Macro Recorder）与条件分支**：基于 `native-input.cs` 新增全局键鼠轨迹录制模式，并支持 `if_color`（屏幕区域/像素找色点击，含 3 秒坐标+颜色同步拾取器）、`if_qr`（扫码判定分支）、`if_process`（进程状态分支）。
+- **↩️ 撤销/重做栈（Undo/Redo）与多选批量样式刷**：支持 50 步 `Ctrl+Z` / `Ctrl+Y` 历史栈，支持 `Ctrl/Shift` 多选格子批量修改底色、渐变、字号、图标缩放与对齐方式，并配备一键 **🖌️ 样式刷**。
+
 ---
 
 ## 硬件事实
@@ -31,7 +39,7 @@ npm run build:portable
 ```
 将自动输出：
 - `dist/AKP153-Dock/`：绿色解压即用目录，内含独立的 `AKP153 控制台.exe`，免安装 Node.js 与环境；
-- `dist/AKP153-Dock-v0.7.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
+- `dist/AKP153-Dock-v0.8.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
 
 ## USB 热插拔自愈
 
@@ -439,4 +447,3 @@ node tools/config-cli.js strip 2 --type mem
 node tools/config-cli.js set-gradient --from "#8a2387" --to "#e94057" --angle 90
 ```
 所有命令修改均走原子写入，主进程监听并在 1 秒内无感热重载硬件，驱动在跑也无需重启。
-

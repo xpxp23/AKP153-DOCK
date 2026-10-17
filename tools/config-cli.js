@@ -51,15 +51,15 @@ function cellKey(v) {
   return null;
 }
 
-const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'hotkey', 'volume', 'audio', 'media', 'multi', 'macro', 'qr_decode'];
+const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'hotkey', 'volume', 'audio', 'media', 'multi', 'macro', 'qr_decode', 'widget'];
 const PAGE_MODES = ['next', 'prev', 'goto', 'up', 'home'];
-const STRIP_TYPES = ['clock', 'text', 'page', 'cpu', 'mem', 'sys', 'volume'];
+const STRIP_TYPES = ['clock', 'text', 'page', 'cpu', 'mem', 'sys', 'volume', 'gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
 
 const COLOR_FOR = {
   app: '#1565c0', folder: '#ef6c00', url: '#0277bd', command: '#4e342e',
   ps1: '#6a1b9a', page: '#455a64', file: '#37474f', hotkey: '#107c41',
   volume: '#1565c0', audio: '#1565c0', media: '#283593',
-  multi: '#1b5e20', macro: '#1b5e20', qr_decode: '#00838f',
+  multi: '#1b5e20', macro: '#1b5e20', qr_decode: '#00838f', widget: '#0f291e',
 };
 
 // ------------------------------------------------------------------ output
@@ -198,6 +198,10 @@ function buildSpec(f, opts) {
   } else if (type === 'qr_decode') {
     spec.target = 'qr_decode';
     if (!spec.label) spec.label = '扫码解码';
+  } else if (type === 'widget') {
+    spec.widgetKind = String(f.kind || f['widget-kind'] || 'gpu').toLowerCase();
+    spec.action = String(f.action || (spec.widgetKind === 'pomodoro' ? 'pomodoro_toggle' : 'refresh'));
+    if (!spec.label) spec.label = spec.widgetKind.toUpperCase();
   } else {
     if (!spec.target) die('这个类型需要 --target（程序路径 / 文件夹 / 网址 / 命令行）');
     if (!spec.label) {
@@ -298,9 +302,10 @@ switch (CMD) {
     if (f.to) page.gradient.to = String(f.to);
     if (f.angle !== undefined) page.gradient.angle = Number(f.angle);
     if (f['auto-app'] !== undefined) page.autoApp = String(f['auto-app'] === true ? '' : f['auto-app']).trim();
+    if (f['auto-title'] !== undefined) page.autoTitle = String(f['auto-title'] === true ? '' : f['auto-title']).trim();
     saveIt();
     say(`已更新「${page.name}」的整板渐变：${page.gradient.enabled ? '已开启' : '已关闭'} (${page.gradient.from} -> ${page.gradient.to}, ${page.gradient.angle}°)`);
-    done({ page: page.id, gradient: page.gradient, autoApp: page.autoApp });
+    done({ page: page.id, gradient: page.gradient, autoApp: page.autoApp, autoTitle: page.autoTitle });
     break;
   }
 

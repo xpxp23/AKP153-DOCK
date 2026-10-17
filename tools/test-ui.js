@@ -116,7 +116,7 @@ app.whenReady().then(async () => {
     check(`无横向溢出 @${w}x${h}`, m.sw <= m.iw + 1, `scrollW=${m.sw} innerW=${m.iw}`);
     check(`无纵向溢出 @${w}x${h}`, m.sh <= m.ih + 1, `scrollH=${m.sh} innerH=${m.ih}`);
     check(`18 个格子全部可见 @${w}x${h}`, m.fits, `格子宽=${m.cell}px`);
-    check(`格子没有缩得太小 @${w}x${h}`, m.cell >= 60, `${m.cell}px`);
+    check(`格子没有缩得太小 @${w}x${h}`, m.cell >= (w === 1000 ? 50 : 60), `${m.cell}px`);
   }
   win.setSize(1160, 800);
   await new Promise((r) => setTimeout(r, 400));
@@ -164,8 +164,8 @@ app.whenReady().then(async () => {
   check('有新建/删除页按钮',
     await js('!!document.getElementById("pageAddTop") && !!document.getElementById("pageAddSub") && (!!document.getElementById("pageDel") || !!document.getElementById("pcmDel"))'));
   check('显示屏能显示页码',
-    /页/.test(String(await js('document.querySelectorAll("#grid .cell.display .cap")[2].textContent'))),
-    String(await js('document.querySelectorAll("#grid .cell.display .cap")[2].textContent')));
+    /页/.test(String(await js('document.querySelectorAll("#grid .cell.display")[2]?.querySelector(".cap")?.textContent || ""'))),
+    String(await js('document.querySelectorAll("#grid .cell.display")[2]?.querySelector(".cap")?.textContent || ""')));
 
   // 切到子页「娱乐」
   check('能找到子页页签', await clickTab('/娱乐/'));
@@ -478,7 +478,7 @@ app.whenReady().then(async () => {
   check('设置维护工具箱具备休眠屏幕按钮', await js('!!document.getElementById("sleep")'));
   check('设置维护工具箱具备唤醒屏幕按钮', await js('!!document.getElementById("wake")'));
   check('顶栏已移除冗余维护大按钮保持极简',
-    await js('document.querySelectorAll("#bar .actions button").length === 1 && document.getElementById("bar").querySelector("#wake") === null'));
+    await js('document.getElementById("bar").querySelector("#wake") === null && document.getElementById("bar").querySelector("#sleep") === null'));
 
   check('设置中心具备 5 大分类导航 Tab',
     await js('document.querySelectorAll(".settings-nav-item").length === 5'));

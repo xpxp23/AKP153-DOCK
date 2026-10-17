@@ -149,6 +149,20 @@ updated = freshModule().load();
 check('cli lib-page 写入独立 pageSnapshots 数组',
   updated.pageSnapshots.some((s) => s.name === 'CLI测试快照'));
 
+
+runCli(['set-gradient', '--auto-title', 'Bilibili|Figma']);
+updated = freshModule().load();
+check('cli 支持配置 --auto-title 窗口标题正则匹配', updated.pages[0].autoTitle === 'Bilibili|Figma');
+
+runCli(['set', 'r0c4', '--type', 'widget', '--kind', 'pomodoro']);
+updated = freshModule().load();
+check('cli 支持配置 widget 动态组件按键 (pomodoro)',
+  updated.pages[0].buttons['0,4'] && updated.pages[0].buttons['0,4'].type === 'widget' && updated.pages[0].buttons['0,4'].widgetKind === 'pomodoro');
+
+runCli(['strip', '1', '--type', 'gpu']);
+updated = freshModule().load();
+check('cli 支持配置 gpu (NVML) 动态监控副屏', updated.pages[0].strips['1'].type === 'gpu');
+
 // ------------------------------------------------------------- 收尾 ------
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
 

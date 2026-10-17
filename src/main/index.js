@@ -8,13 +8,20 @@ const config = require('./config.js');
 const probe = require('./probe.js');
 const runner = require('./runner.js');
 const NativeInput = require('./native-input.js');
+const telemetry = require('./telemetry-plugins.js');
 
 runner.setLoopStateListener((keyId, isRunning, context) => {
   broadcast('macro:loopState', { keyId, isRunning, context });
   broadcast('device:repaint', {});
 });
 
-// Anything that would otherwise vanish into nowhere gets written here (with 2MB rotation & async buffering).
+telemetry.setPomodoroListener((snap, phaseCompleted) => {
+  broadcast('telemetry:update', { pomodoro: snap });
+  if (phaseCompleted) {
+    notify(snap.phase === 'break' ? '🍅 番茄专注完成！开始 5 分钟休息' : '☕ 休息结束！开始新一轮专注');
+  }
+});
+
 const LOG_DIR = path.join(__dirname, '..', '..', 'logs');
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 const LOG_FILE = path.join(LOG_DIR, 'main.log');
@@ -53,7 +60,6 @@ function log(...args) {
 process.on('uncaughtException', (e) => { log('UNCAUGHT', e); flushLogsSync(); });
 process.on('unhandledRejection', (e) => { log('UNHANDLED', e); });
 
-// Launched with --startup (autologin): boot straight to the tray, no window.
 const STARTUP = process.argv.includes('--startup');
 
 let tray = null;
@@ -67,11 +73,62 @@ let idleTimer = null;
 let lastActivity = Date.now();
 let deviceAsleep = false;
 let lastWakeTime = 0;
+const mainKeyDebounceMap = new Map();
 
-// Auto-profile switching state
-let autoSwitchedFromPageId = null;
-let autoSwitchedToPageId = null;
-let lastFgProcess = '';
+// ------------------------------------------------------------ 智能前台感知状态栈 (Runtime Page Stack)
+// manualBasePageId 记录用户手动选择的基准页面（持久化到磁盘的真实意愿页）
+// autoActiveRootPageId 记录当前由 Auto-Profile 触发的根页面 ID（支持用户在其下钻取多级子页后仍能精准退回）
+let manualBasePageId = null;
+let autoActiveRootPageId = null;
+let lastFgSignature = '';
+
+function isPageDescendantOrSame(cfg, targetPageId, ancestorPageId) {
+  if (!cfg || !targetPageId || !ancestorPageId) return false;
+  if (targetPageId === ancestorPageId) return true;
+  const visited = new Set();
+  let cur = cfg.pages.find((p) => p.id === targetPageId);
+  while (cur && cur.parent && !visited.has(cur.id)) {
+    visited.add(cur.id);
+    if (cur.parent === ancestorPageId) return true;
+    cur = cfg.pages.find((p) => p.id === cur.parent);
+  }
+  return false;
+}
+
+function matchProcessRule(procName, autoAppStr) {
+  if (!procName || !autoAppStr) return false;
+  const rules = String(autoAppStr)
+    .split(/[,;，；\s]+/)
+    .map((s) => s.trim().toLowerCase().replace(/\.exe$/i, ''))
+    .filter(Boolean);
+  for (const r of rules) {
+    if (r.includes('*')) {
+      const re = new RegExp('^' + r.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+      if (re.test(procName)) return true;
+    } else if (procName === r) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function matchTitleRule(winTitle, autoTitleStr) {
+  if (!winTitle || !autoTitleStr) return false;
+  const raw = String(autoTitleStr).trim();
+  if (!raw) return false;
+  try {
+    if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+      const lastSlash = raw.lastIndexOf('/');
+      const pattern = raw.slice(1, lastSlash);
+      const flags = raw.slice(lastSlash + 1) || 'i';
+      return new RegExp(pattern, flags).test(winTitle);
+    }
+    const re = new RegExp(raw, 'i');
+    return re.test(winTitle);
+  } catch (_) {
+    return winTitle.toLowerCase().includes(raw.toLowerCase());
+  }
+}
 
 // ------------------------------------------------------------ device host rpc
 
@@ -84,7 +141,7 @@ function spawnHost() {
     process.env.AKP153_NODE,
     'node',
     'C:\\Program Files\\nodejs\\node.exe',
-    process.execPath, // Fallback to Electron's built-in Node.js runtime
+    process.execPath,
   ].filter(Boolean);
 
   let idx = 0;
@@ -187,11 +244,6 @@ async function safeRpc(cmd, args) {
   try { return await rpc(cmd, args); } catch (e) { return { ok: false, error: e.message }; }
 }
 
-/**
- * Trigger a repaint on the renderer. With backgroundThrottling disabled and
- * Frame Diff Cache in device-host, we only need an immediate repaint plus one
- * fallback if the renderer is still loading its DOM.
- */
 function repaintSoon(force = false) {
   broadcast('device:repaint', { force: !!force });
   if (win && !win.isDestroyed() && win.webContents && win.webContents.isLoading()) {
@@ -228,19 +280,20 @@ async function prepareExitAndSleep() {
   log('prepareExitAndSleep: 正在关闭并休眠 AKP153 控制台硬件...');
   flushLogsSync();
   try {
-    if (process.platform === 'win32') {
-      // 1. C# 原生直写作为终极托底 (仅耗时 2~5ms，即使后续进程被杀也已完成物理灭屏)
+    let hostBlackoutOk = false;
+    if (host && hostReady) {
+      // 优先通过已持有 HID 句柄的 device-host 下发 blackout 并关闭句柄，避免双进程并发争抢同一 USB 端点
+      const res = await safeRpc('sleep', { mode: 'blackout', force: true });
+      await safeRpc('close', {});
+      hostBlackoutOk = !!(res && res.ok);
+    }
+
+    if (process.platform === 'win32' && !hostBlackoutOk) {
       try {
         await NativeInput.blackoutHardware();
       } catch (e) {
         log('NativeInput.blackoutHardware 异常:', e);
       }
-    }
-
-    if (host && hostReady) {
-      // 2. 双通道协同：device-host 进程也下发 blackout (强制执行)
-      await safeRpc('sleep', { mode: 'blackout', force: true });
-      await new Promise((r) => setTimeout(r, 60));
     }
   } catch (err) {
     log('prepareExitAndSleep 硬件休眠失败:', err);
@@ -259,7 +312,8 @@ async function prepareExitAndSleep() {
 }
 
 async function openDevice(hard) {
-  const r = await safeRpc('open', {});
+  const cfg = config.load();
+  const r = await safeRpc('open', { debounceMs: cfg.keyDebounceMs || 100 });
   if (r && r.ok === false) {
     if (r.error === 'DEVICE_BUSY') {
       hostError = 'DEVICE_BUSY';
@@ -278,13 +332,13 @@ async function openDevice(hard) {
     NativeInput.setDevicePath(r.info.path);
   }
   log('device opened OK' + (hard ? ' (hard reset)' : ''));
-  const cfg = config.load();
   if (hard) {
     await safeRpc('reset', { brightness: cfg.brightness });
   } else {
     await safeRpc('wake', { brightness: cfg.brightness, force: true });
   }
   await safeRpc('brightness', { value: cfg.brightness });
+  await safeRpc('setDebounce', { value: cfg.keyDebounceMs || 100 });
   hostError = null;
   deviceAsleep = false;
   broadcast('host:status', { ready: true, device: true, error: null });
@@ -295,10 +349,6 @@ async function openDevice(hard) {
 // -------------------------------------------------------------- key handling
 
 const BACK_ROW = 2, BACK_COL = 4;
-
-function pageById(id) {
-  return config.load().pages.find((p) => p.id === id) || null;
-}
 
 function resolvePageAction(spec, page) {
   const cfg = config.load();
@@ -319,16 +369,23 @@ async function goToPage(id, why, isAutoSwitch = false) {
   if (!id) return false;
   const target = cfg.pages.find((p) => p.id === id);
   if (!target) return false;
+
   if (!isAutoSwitch) {
-    // Manual page change clears auto-switch memory
-    autoSwitchedFromPageId = null;
-    autoSwitchedToPageId = null;
+    if (autoActiveRootPageId && isPageDescendantOrSame(cfg, id, autoActiveRootPageId)) {
+      // 用户在自动切入的页面内进一步钻取其子页，保留 autoActiveRootPageId 栈底以便离开软件后还原
+    } else {
+      manualBasePageId = id;
+      autoActiveRootPageId = null;
+    }
   }
+
   if (cfg.currentPage === id) return true;
   cfg.currentPage = id;
-  config.save(cfg);
+  if (!isAutoSwitch) {
+    config.save(cfg);
+  }
   log(`page -> 「${target.name}」${target.parent ? ' (子页)' : ''}${why ? '  via ' + why : ''}`);
-  broadcast('page:changed', { pageId: id });
+  broadcast('page:changed', { pageId: id, isAutoSwitch });
   return true;
 }
 
@@ -349,8 +406,10 @@ async function onKeyDown(row, col) {
   lastActivity = now;
 
   const cfgNow = config.load();
-  const cooldown = (cfgNow.keyDebounceMs !== undefined) ? cfgNow.keyDebounceMs : 50;
-  if (deviceAsleep || (now - lastWakeTime < cooldown)) {
+  const debounceMs = (cfgNow.keyDebounceMs !== undefined) ? Number(cfgNow.keyDebounceMs) : 100;
+  const wakeGuardMs = 180;
+
+  if (deviceAsleep || (now - lastWakeTime < wakeGuardMs)) {
     if (deviceAsleep) {
       deviceAsleep = false;
       lastWakeTime = now;
@@ -360,10 +419,19 @@ async function onKeyDown(row, col) {
       broadcast('key:flash', { row, col });
       log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
     } else {
-      log(`key r${row}c${col} suppressed (within ${cooldown}ms wake cooldown)`);
+      log(`key r${row}c${col} suppressed (within ${wakeGuardMs}ms wake guard)`);
     }
     return;
   }
+
+  // 同键连击物理防抖守卫（与设置面板 keyDebounceMs 实时联动）
+  const posKey = `${row},${col}`;
+  const prevPress = mainKeyDebounceMap.get(posKey) || 0;
+  if (now - prevPress < debounceMs) {
+    log(`key r${row}c${col} debounced (${now - prevPress}ms < ${debounceMs}ms)`);
+    return;
+  }
+  mainKeyDebounceMap.set(posKey, now);
 
   const page = config.currentPage();
   broadcast('key:flash', { row, col });
@@ -381,7 +449,8 @@ async function onKeyDown(row, col) {
   const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio');
   const isMedia = spec && (spec.type === 'media');
   const isPage = spec && (spec.type === 'page');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage)) {
+  const isWidget = spec && (spec.type === 'widget');
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isWidget)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
@@ -390,11 +459,10 @@ async function onKeyDown(row, col) {
 
   let actionToRun = spec;
   if (spec.badgeToggle && (!isVolume || spec.toggleAction)) {
-    // 若是 app 类型且启用了双态，优先通过 0.5ms 异步进程探测校准真实运行态，防止“盲切误杀”
     let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
     if (spec.type === 'app' && spec.target && spec.toggleAction) {
       try {
-        const procName = await runner.processNameFor(probe.probeApp(spec.target));
+        const procName = await runner.processNameFor(await probe.probeAppAsync(spec.target));
         if (procName) {
           curState = (await runner.isRunningAsync(procName)) ? 1 : 0;
         }
@@ -405,7 +473,7 @@ async function onKeyDown(row, col) {
       act2.target || act2.hotkey ||
       act2.type === 'volume' || act2.type === 'audio' ||
       act2.type === 'media' || act2.type === 'multi' ||
-      act2.type === 'macro' || act2.type === 'qr_decode' || act2.type === 'page'
+      act2.type === 'macro' || act2.type === 'qr_decode' || act2.type === 'page' || act2.type === 'widget'
     );
     if (hasAction2 && curState === 1) {
       actionToRun = act2;
@@ -427,13 +495,15 @@ async function onKeyDown(row, col) {
   }
 
   const actMulti = actionToRun && (actionToRun.type === 'multi' || actionToRun.type === 'macro');
-  log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || '')}`);
+  log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || actionToRun.widgetType || '')}`);
   const res = await runner.run(actionToRun, { row, col, pageId: page.id });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
-  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio' || actionToRun.type === 'media')))) {
+  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media') || res.action.startsWith('widget'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio' || actionToRun.type === 'media' || actionToRun.type === 'widget')))) {
     broadcast('device:repaint-strips', {});
-    broadcast('audio:state', res);
+    if (res.level !== undefined || res.isMute !== undefined) {
+      broadcast('audio:state', res);
+    }
   }
   if (isQr || (actionToRun && (actionToRun.type === 'qr_decode' || actionToRun.type === 'qr'))) {
     if (res.error !== 'CANCELLED') {
@@ -469,8 +539,8 @@ function resetIdleTimer() {
 
 /**
  * 后台智能态势引擎：
- * 1. 前台窗口感知自动切页 (Auto-Profile Switching)
- * 2. 当前页应用程序真实进程存活状态同步（单次批量管道查询耗时 < 1ms，零阻塞）
+ * 1. 前台窗口感知自动切页 (支持进程名精确/通配匹配 + 窗口标题正则匹配 + 多层级子页记忆栈)
+ * 2. 当前页应用程序真实进程存活状态同步
  */
 let isPollingState = false;
 async function pollForegroundAndProcessState() {
@@ -480,47 +550,59 @@ async function pollForegroundAndProcessState() {
     const cfg = config.load();
     if (!cfg || !Array.isArray(cfg.pages)) return;
 
-    // 1. 前台窗口感知自动切页
-    if (cfg.autoSwitchPage !== false && cfg.pages.some((p) => p.autoApp && p.autoApp.trim())) {
+    if (!manualBasePageId || !cfg.pages.some((p) => p.id === manualBasePageId)) {
+      manualBasePageId = cfg.currentPage || (cfg.pages[0] && cfg.pages[0].id);
+    }
+
+    const hasAutoRules = cfg.pages.some((p) => (p.autoApp && p.autoApp.trim()) || (p.autoTitle && p.autoTitle.trim()));
+    if (cfg.autoSwitchPage !== false && hasAutoRules) {
       try {
         const fg = await NativeInput.getForegroundWindow();
         const proc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
-        // 忽略控制台自身窗口与系统外壳
+        const winTitle = (fg && fg.title) ? fg.title.trim() : '';
         const isSelfOrShell = !proc || proc === 'electron' || proc === 'akp153 控制台' || proc === 'akp-input' || proc === 'searchhost' || proc === 'shellexperiencehost';
-        if (!isSelfOrShell && proc !== lastFgProcess) {
-          lastFgProcess = proc;
+        const sig = `${proc}|${winTitle}`;
+
+        if (!isSelfOrShell && sig !== lastFgSignature) {
+          lastFgSignature = sig;
           const matchedPage = cfg.pages.find((p) => {
-            if (!p.autoApp) return false;
-            const rules = p.autoApp.split(/[,;，；\s]+/).map((s) => s.trim().toLowerCase().replace(/\.exe$/i, '')).filter(Boolean);
-            return rules.some((r) => proc === r || proc.includes(r));
+            const hasApp = !!(p.autoApp && p.autoApp.trim());
+            const hasTitle = !!(p.autoTitle && p.autoTitle.trim());
+            if (!hasApp && !hasTitle) return false;
+            const appOk = !hasApp || matchProcessRule(proc, p.autoApp);
+            const titleOk = !hasTitle || matchTitleRule(winTitle, p.autoTitle);
+            return appOk && titleOk;
           });
 
           if (matchedPage) {
-            if (cfg.currentPage !== matchedPage.id) {
-              if (!autoSwitchedFromPageId) {
-                autoSwitchedFromPageId = cfg.currentPage;
-              }
-              autoSwitchedToPageId = matchedPage.id;
-              await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
+            if (!autoActiveRootPageId) {
+              manualBasePageId = cfg.currentPage;
             }
-          } else if (autoSwitchedFromPageId && cfg.currentPage === autoSwitchedToPageId) {
-            const restoreId = autoSwitchedFromPageId;
-            autoSwitchedFromPageId = null;
-            autoSwitchedToPageId = null;
+            if (autoActiveRootPageId !== matchedPage.id && !isPageDescendantOrSame(cfg, cfg.currentPage, matchedPage.id)) {
+              autoActiveRootPageId = matchedPage.id;
+              await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
+            } else {
+              autoActiveRootPageId = matchedPage.id;
+            }
+          } else if (autoActiveRootPageId && isPageDescendantOrSame(cfg, cfg.currentPage, autoActiveRootPageId)) {
+            const restoreId = (manualBasePageId && cfg.pages.some((p) => p.id === manualBasePageId))
+              ? manualBasePageId
+              : cfg.pages[0].id;
+            autoActiveRootPageId = null;
             await goToPage(restoreId, `auto-restore (left ${proc})`, true);
           }
         }
       } catch (_) {}
     }
 
-    // 2. 批量同步当前页面上绑定了进程双态角标的按键真实运行状态（免除逐个 spawnSync('tasklist') 阻塞）
+    // 2. 批量同步当前页面上绑定了进程双态角标的按键真实运行状态
     try {
       const page = config.currentPage();
       if (!page || !page.buttons) return;
       const entries = [];
       for (const [k, spec] of Object.entries(page.buttons)) {
         if (!spec || spec.type !== 'app' || !spec.badgeToggle || !spec.target) continue;
-        const procName = await runner.processNameFor(probe.probeApp(spec.target));
+        const procName = await runner.processNameFor(await probe.probeAppAsync(spec.target));
         if (!procName) continue;
         entries.push({ k, spec, procName: procName.replace(/\.exe$/i, '').toLowerCase() });
       }
@@ -544,7 +626,7 @@ async function pollForegroundAndProcessState() {
 
 // ------------------------------------------------------------------- window
 
-const WIN_DEFAULT = { width: 1160, height: 800 };
+const WIN_DEFAULT = { width: 1180, height: 820 };
 const WIN_MIN = { width: 1000, height: 660 };
 
 function restoreBounds() {
@@ -556,8 +638,8 @@ function restoreBounds() {
     if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) {
       const vis = screen.getAllDisplays().some((d) => {
         const w = d.workArea;
-        return saved.x < w.x + w.width - 80 && saved.x + b.width > w.x + 80
-          && saved.y >= w.y - 8 && saved.y < w.y + w.height - 60;
+        return saved.x < w.x + w.width - 100 && saved.x + b.width > w.x + 100
+          && saved.y >= w.y && saved.y < w.y + w.height - 80;
       });
       if (vis) { b.x = saved.x; b.y = saved.y; }
     }
@@ -579,7 +661,6 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // 严禁后台隐藏到托盘时节流定时器与 Canvas 重绘，保障静默启动和托盘态下时钟/监控/切页实时推图
       backgroundThrottling: false,
     },
   }));
@@ -599,7 +680,6 @@ function createWindow() {
   win.on('resize', rememberBounds);
   win.on('move', rememberBounds);
 
-  // 拦截系统级 Alt+F4 或任务栏右键关闭事件，遵循 closeToTray 或安全休眠硬件后退出
   win.on('close', (e) => {
     if (isQuitting) return;
     e.preventDefault();
@@ -611,7 +691,7 @@ function createWindow() {
     }
   });
   win.on('closed', () => { win = null; });
-  win.on('hide', () => { /* keep running */ });
+  win.on('hide', () => {});
 
   if (process.platform === 'win32') {
     try {
@@ -620,7 +700,7 @@ function createWindow() {
         mainHwndStr = handleBuf.length === 8 ? handleBuf.readBigInt64LE(0).toString() : handleBuf.readInt32LE(0).toString();
       }
       win.hookWindowMessage(0x0011, async () => {
-        log('收到 WM_QUERYENDSESSION 关机请求，执行 native shutdownBlock 并进入硬件灭屏...');
+        log('收到 WM_QUERYENDSESSION 关机请求...');
         await prepareExitAndSleep();
       });
       win.hookWindowMessage(0x0016, async () => {
@@ -640,10 +720,8 @@ function createWindow() {
   });
 }
 
-function createTray() {
-  const iconPath = path.join(__dirname, '..', '..', 'assets', 'tray.png');
-  tray = new Tray(nativeImage.createFromPath(iconPath));
-  tray.setToolTip('AKP153 控制台');
+function rebuildTrayMenu() {
+  if (!tray) return;
   const menu = Menu.buildFromTemplate([
     { label: '打开配置', click: () => showWindow() },
     { label: '重连设备（插拔 USB 后用这个）', click: () => openDevice(true) },
@@ -658,6 +736,7 @@ function createTray() {
       click: (item) => {
         config.set('openAtLogin', item.checked);
         setStartupRegistry(item.checked);
+        broadcast('login:changed', { openAtLogin: !!item.checked });
       },
     },
     { label: '打开配置文件', click: () => shell.openPath(config.FILE) },
@@ -666,6 +745,13 @@ function createTray() {
     { label: '退出', click: () => { prepareExitAndSleep(); } },
   ]);
   tray.setContextMenu(menu);
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, '..', '..', 'assets', 'tray.png');
+  tray = new Tray(nativeImage.createFromPath(iconPath));
+  tray.setToolTip('AKP153 控制台');
+  rebuildTrayMenu();
   tray.on('double-click', () => showWindow());
 }
 
@@ -684,6 +770,14 @@ ipcMain.handle('config:save', (e, cfg) => {
   return res;
 });
 ipcMain.handle('config:get', (e, key) => config.get(key));
+
+ipcMain.handle('page:manualSwitch', (e, pageId) => {
+  if (pageId) {
+    manualBasePageId = pageId;
+    autoActiveRootPageId = null;
+  }
+  return { ok: true };
+});
 
 const drawStats = { ok: 0, fail: 0, skipped: 0, lastError: null };
 
@@ -716,6 +810,7 @@ ipcMain.handle('device:batchDraw', async (e, items) => {
 });
 
 ipcMain.handle('device:brightness', (e, v) => safeRpc('brightness', { value: v }));
+ipcMain.handle('device:setDebounce', (e, ms) => safeRpc('setDebounce', { value: ms }));
 ipcMain.handle('device:sleep', () => doSleep());
 ipcMain.handle('device:wake', () => doWake());
 ipcMain.handle('device:reconnect', () => openDevice(true));
@@ -736,16 +831,18 @@ ipcMain.handle('action:run', async (e, spec) => {
   }
   const page = config.currentPage();
   const res = await runner.run(spec, { pageId: page && page.id });
-  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media'))) || (spec && (spec.type === 'volume' || spec.type === 'audio')))) {
+  if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media') || res.action.startsWith('widget'))) || (spec && (spec.type === 'volume' || spec.type === 'audio' || spec.type === 'widget')))) {
     let audioPayload = res;
-    if (res.level === undefined && res.volume === undefined) {
+    if (res.level === undefined && res.volume === undefined && spec && (spec.type === 'volume' || spec.type === 'audio')) {
       try {
         const curVol = await NativeInput.getVolume();
         if (curVol && curVol.level !== undefined) audioPayload = Object.assign({}, res, curVol);
       } catch (_) {}
     }
     broadcast('device:repaint-strips', {});
-    broadcast('audio:state', audioPayload);
+    if (audioPayload && (audioPayload.level !== undefined || audioPayload.isMute !== undefined)) {
+      broadcast('audio:state', audioPayload);
+    }
   }
   return res;
 });
@@ -798,7 +895,14 @@ function decodeIni(buf) {
   return buf.toString('latin1');
 }
 
-function extractIconFromResource(filePath, iconIndex = 0) {
+async function extractIconFromResource(filePath, iconIndex = 0) {
+  // 1. 优先走常驻 C# 守护进程 1ms 内存流提取，免除拉起 PowerShell 与磁盘临时文件
+  try {
+    const natUrl = await NativeInput.extractIcon(filePath, iconIndex);
+    if (natUrl) return natUrl;
+  } catch (_) {}
+
+  // 2. 兜底回退 PowerShell
   return new Promise((resolve) => {
     const tmp = path.join(os.tmpdir(), `akp153-res-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
     const psScript = `
@@ -882,7 +986,6 @@ let lastCpuPct = 0;
 
 function getCpuUsage() {
   const now = Date.now();
-  // 防并发采样吞噬守卫：1000ms 内多块副屏并发请求直接复用同一采样周期结果，杜绝 totalDiff=0 导致归零
   if (prevCpus && (now - lastCpuTime) < 1000) {
     return lastCpuPct;
   }
@@ -907,7 +1010,7 @@ function getCpuUsage() {
   return lastCpuPct;
 }
 
-function toSafeDataUrl(nat, maxDim = 1440) {
+function toSafeDataUrl(nat, maxDim = 512) {
   if (!nat || nat.isEmpty()) return null;
   const sz = nat.getSize();
   const m = Math.max(sz.width, sz.height);
@@ -937,7 +1040,7 @@ async function extractIcon(targetPath) {
   if (['.ico', '.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext) && fs.existsSync(p)) {
     try {
       const nat = nativeImage.createFromPath(p);
-      const url = toSafeDataUrl(nat, 1440);
+      const url = toSafeDataUrl(nat, 512);
       if (url) return url;
     } catch (_) {}
   }
@@ -952,7 +1055,7 @@ async function extractIcon(targetPath) {
           if (['.ico', '.png', '.jpg', '.jpeg', '.webp'].includes(iconExt)) {
             try {
               const nat = nativeImage.createFromPath(iconPath);
-              const url = toSafeDataUrl(nat, 1440);
+              const url = toSafeDataUrl(nat, 512);
               if (url) return url;
             } catch (_) {}
           }
@@ -1020,7 +1123,7 @@ async function extractIcon(targetPath) {
               if (['.ico', '.png', '.jpg', '.jpeg', '.webp'].includes(iconExt)) {
                 try {
                   const nat = nativeImage.createFromPath(iconPath);
-                  const url = toSafeDataUrl(nat, 1440);
+                  const url = toSafeDataUrl(nat, 512);
                   if (url) return url;
                 } catch (_) {}
               }
@@ -1044,9 +1147,7 @@ async function extractIcon(targetPath) {
   try {
     const img = await app.getFileIcon(p, { size: 'large' });
     if (img && !img.isEmpty()) return img.toDataURL();
-  } catch (err) {
-    // ignore
-  }
+  } catch (err) {}
 
   return null;
 }
@@ -1073,7 +1174,24 @@ ipcMain.handle('system:stats', async () => {
     const v = await NativeInput.getVolume();
     if (v && v.ok) { volume = v.level; isMute = v.isMute; }
   } catch (_) {}
-  return { cpu, mem, memUsedGb, memTotalGb, volume, isMute };
+  const cfg = config.load();
+  const extTelemetry = await telemetry.gatherTelemetry({
+    weatherCity: cfg.weatherCity || 'Auto',
+  });
+  return Object.assign({ cpu, mem, memUsedGb, memTotalGb, volume, isMute }, extTelemetry);
+});
+
+ipcMain.handle('telemetry:get', async (e, opts) => {
+  const cfg = config.load();
+  return await telemetry.gatherTelemetry(Object.assign({ weatherCity: cfg.weatherCity || 'Auto' }, opts || {}));
+});
+
+ipcMain.handle('pomodoro:action', (e, { act, minutes } = {}) => {
+  return telemetry.controlPomodoro(act, minutes);
+});
+
+ipcMain.handle('plugins:list', () => {
+  return telemetry.listAvailablePlugins();
 });
 
 ipcMain.handle('dialog:pick', async (e, opts) => {
@@ -1089,13 +1207,31 @@ ipcMain.handle('macro:getCursor', async () => {
   return await runner.NativeInput.getCursor();
 });
 
+ipcMain.handle('macro:getPixel', async (e, { x, y } = {}) => {
+  const pt = (x !== undefined && y !== undefined) ? { x, y } : await runner.NativeInput.getCursor();
+  const px = await runner.NativeInput.getPixelColor(pt.x, pt.y);
+  return { ok: !!(px && px.ok), x: pt.x, y: pt.y, color: (px && px.color) || '#ffffff' };
+});
+
+ipcMain.handle('macro:recordStart', async (e, maxMs = 15000) => {
+  broadcast('macro:recordState', { recording: true });
+  const res = await runner.NativeInput.recordMacro(maxMs);
+  broadcast('macro:recordState', { recording: false });
+  return res;
+});
+
+ipcMain.handle('macro:recordStop', async () => {
+  return await runner.NativeInput.stopMacroRecord();
+});
+
 ipcMain.handle('macro:stopAll', () => {
   runner.stopAllMacros();
   notify('⚠️ 已中止所有正在运行的宏');
   return { ok: true };
 });
 
-ipcMain.handle('macro:stopKey', (e, { pageId, row, col } = {}) => {
+ipcMain.handle('macro:stopKey', (e, payload = {}) => {
+  const { pageId, row, col } = (payload && typeof payload === 'object') ? payload : {};
   runner.stopMacroForKey(pageId, row, col);
   return { ok: true };
 });
@@ -1145,6 +1281,7 @@ async function setStartupRegistry(enable) {
 ipcMain.handle('app:setLogin', async (e, v) => {
   config.set('openAtLogin', !!v);
   await setStartupRegistry(!!v);
+  rebuildTrayMenu();
   return true;
 });
 
@@ -1183,17 +1320,17 @@ async function fetchFaviconForUrl(inputUrl) {
     target = 'https://' + target.replace(/^\/+/, '');
   }
 
-  let host = '';
+  let hostName = '';
   let origin = '';
   try {
     const parsed = new URL(target);
-    host = parsed.hostname;
+    hostName = parsed.hostname;
     origin = parsed.origin;
   } catch (err) {
     return { ok: false, error: '无效网址格式' };
   }
 
-  const { net, nativeImage } = require('electron');
+  const { net } = require('electron');
 
   const fetchBuffer = (url, timeoutMs = 4000) => {
     return new Promise((resolve) => {
@@ -1268,9 +1405,9 @@ async function fetchFaviconForUrl(inputUrl) {
   } catch (_) {}
 
   const mirrors = [
-    `https://api.iowen.cn/favicon/${host}.png`,
-    `https://icons.duckduckgo.com/ip3/${host}.ico`,
-    `https://icon.horse/icon/${host}`,
+    `https://api.iowen.cn/favicon/${hostName}.png`,
+    `https://icons.duckduckgo.com/ip3/${hostName}.ico`,
+    `https://icon.horse/icon/${hostName}`,
   ];
   for (const mirrorUrl of mirrors) {
     try {
@@ -1322,6 +1459,8 @@ ipcMain.handle('config:import', async () => {
     runner.stopAllMacros();
     config.save(parsed);
     const normalized = config.load();
+    manualBasePageId = normalized.currentPage;
+    autoActiveRootPageId = null;
     resetIdleTimer();
     log('config backup imported from', res.filePaths[0]);
     broadcast('config:external', normalized);
@@ -1353,6 +1492,8 @@ ipcMain.handle('config:reset', async () => {
       strips: JSON.parse(JSON.stringify(config.DEFAULT_STRIPS)),
     }];
     def.currentPage = 'p1';
+    manualBasePageId = 'p1';
+    autoActiveRootPageId = null;
     config.save(def);
     resetIdleTimer();
     broadcast('config:external', def);
@@ -1408,6 +1549,8 @@ function watchConfig() {
     try {
       config.invalidate();
       const cfg = config.load();
+      manualBasePageId = cfg.currentPage;
+      autoActiveRootPageId = null;
       resetIdleTimer();
       const page = config.currentPage();
       log(`config.json 被外部修改 -> 已重载（当前页「${page.name}」）`);
@@ -1456,12 +1599,10 @@ if (!gotLock) {
       if (!deviceAsleep) broadcast('device:repaint-strips', {});
     }, 30000);
 
-    // 后台前台应用自动切页与进程运行状态同步轮询
     setInterval(() => {
       pollForegroundAndProcessState();
     }, 2000);
 
-    // 三重安全急停熔断快捷键
     try {
       globalShortcut.register('Ctrl+Alt+Escape', () => {
         log('EMERGENCY STOP by Ctrl+Alt+Escape');
