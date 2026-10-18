@@ -1,7 +1,7 @@
 'use strict';
 /**
- * Runs whatever a button points at.
- * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode | widget
+ * Runs whatever a button points at. (v0.9)
+ * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode | widget | window_toggle
  */
 const { spawn, spawnSync } = require('child_process');
 let shell = null;
@@ -12,7 +12,7 @@ const NativeInput = require('./native-input');
 const telemetry = require('./telemetry-plugins');
 
 const EXT_EXEC = new Set(['.exe', '.bat', '.cmd', '.com', '.msi', '.ps1']);
-
+const EXT_SCRIPT = new Set(['.bat', '.cmd', '.ps1', '.vbs', '.py', '.sh']);
 const FOCUSABLE = new Set(['.exe', '.lnk']);
 
 const PS_TIMEOUT = 8000;
@@ -26,6 +26,11 @@ function looksLikeUrl(s) {
 
 function exists(p) {
   try { return require('fs').existsSync(p); } catch (e) { return false; }
+}
+
+function isScriptTarget(target) {
+  const ext = path.extname(String(target || '').trim()).toLowerCase();
+  return EXT_SCRIPT.has(ext);
 }
 
 /**
@@ -135,6 +140,7 @@ function runPowerShell(script, timeout) {
 const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'";
 
 async function processNameFor(target) {
+  if (!target) return '';
   const ext = path.extname(target).toLowerCase();
   if (ext !== '.lnk' && ext !== '.url') {
     return path.basename(target, path.extname(target));
@@ -386,7 +392,7 @@ async function runSingleAction(action) {
       const h = Number(action.h) || 0;
       const targetColor = String(action.color || '#ffffff').trim();
       const tol = Math.max(0, Math.min(255, Number(action.tolerance !== undefined ? action.tolerance : 20)));
-      const thenAct = String(action.thenAction || 'click').toLowerCase();
+      const thenAct = String(action.thenAction || 'click_found').toLowerCase();
 
       let matched = false;
       let hitX = x;
@@ -404,22 +410,38 @@ async function runSingleAction(action) {
       }
 
       if (matched) {
-        if (thenAct === 'click') {
+        if (thenAct === 'click' || thenAct === 'click_found') {
           await NativeInput.mouseClick(action.button || 'left', hitX, hitY);
+          return { ok: true, matched: true, control: 'continue' };
+        }
+        if (thenAct === 'abort') {
+          // "满足该颜色时立即停止整个宏"
+          return { ok: true, matched: true, control: 'abort' };
         }
         return { ok: true, matched: true, control: 'continue' };
       } else {
-        if (thenAct === 'abort') return { ok: true, matched: false, control: 'abort' };
-        if (thenAct === 'skip_next') return { ok: true, matched: false, control: 'skip_next' };
+        if (thenAct === 'continue') {
+          // "满足则继续执行后续步骤，不满足则中止"
+          return { ok: true, matched: false, control: 'abort' };
+        }
+        if (thenAct === 'skip_next') {
+          return { ok: true, matched: false, control: 'skip_next' };
+        }
         return { ok: true, matched: false, control: 'continue' };
       }
     }
     case 'if_process': {
       const proc = String(action.target || '').trim();
-      const expectRunning = (action.expect || 'running') !== 'stopped';
-      const thenAct = String(action.thenAction || 'abort').toLowerCase();
+      const expectRunning = action.expectRunning !== undefined
+        ? Boolean(action.expectRunning)
+        : ((action.expect || 'running') !== 'stopped');
+      const thenAct = String(action.thenAction || 'continue').toLowerCase();
       const alive = proc ? await isRunningAsync(proc) : false;
       const matched = expectRunning ? alive : !alive;
+      if (thenAct === 'abort') {
+        // "进程运行中则立即中止宏"
+        return { ok: true, matched, control: matched ? 'abort' : 'continue' };
+      }
       if (matched) {
         return { ok: true, matched: true, control: 'continue' };
       }
@@ -428,14 +450,28 @@ async function runSingleAction(action) {
     case 'if_qr': {
       const qrEngine = require('./qr-engine');
       const res = await qrEngine.runDecode();
-      const thenAct = String(action.thenAction || 'abort').toLowerCase();
+      const thenAct = String(action.thenAction || 'open').toLowerCase();
       if (res && res.ok && res.text) {
-        if (action.openUrl && looksLikeUrl(res.text) && shell) {
-          await shell.openExternal(res.text);
+        if (thenAct === 'click') {
+          const cx = Number(action.clickX);
+          const cy = Number(action.clickY);
+          if (!isNaN(cx) && !isNaN(cy)) {
+            await NativeInput.mouseClick('left', cx, cy);
+          }
+        } else if (thenAct === 'open' || action.openUrl) {
+          if (looksLikeUrl(res.text) && shell) {
+            await shell.openExternal(res.text);
+          } else {
+            await NativeInput.sendText(res.text);
+          }
         }
         return { ok: true, matched: true, text: res.text, control: 'continue' };
       }
-      return { ok: true, matched: false, control: thenAct === 'skip_next' ? 'skip_next' : 'abort' };
+      return {
+        ok: true,
+        matched: false,
+        control: thenAct === 'skip_next' ? 'skip_next' : (thenAct === 'abort' ? 'abort' : 'continue'),
+      };
     }
     case 'mouse_click': {
       const btn = action.double ? 'double' : (action.button || 'left');
@@ -623,14 +659,42 @@ async function run(spec, context) {
   }
 
   if (type === 'widget') {
-    const wKind = String(spec.widgetType || spec.subType || spec.target || 'pomodoro').toLowerCase();
-    if (wKind === 'pomodoro') {
-      const pAct = String(spec.action || 'toggle').toLowerCase();
+    const wKind = String(spec.widgetKind || spec.widgetType || spec.subType || spec.target || 'pomodoro').toLowerCase();
+    const act = String(spec.action || 'refresh').toLowerCase();
+    const spanCols = Math.max(1, Number((context && context.spanCols) || spec.spanCols) || 1);
+    const spanOffset = Math.max(0, Number(context && context.spanOffset) || 0);
+
+    // 跨格宽屏联屏按键分区智能动作：
+    // 例如 3 格宽屏音乐播放器：左键上一曲、中键播放/暂停、右键下一曲
+    if (wKind === 'media_now' && spanCols >= 2) {
+      if (spanCols === 3) {
+        const subCmd = spanOffset === 0 ? 'prev' : (spanOffset === 2 ? 'next' : 'play_pause');
+        await NativeInput.sendMedia(subCmd);
+        return { ok: true, action: 'widget_media_' + subCmd };
+      } else if (spanCols === 2) {
+        const subCmd = spanOffset === 1 ? 'next' : 'play_pause';
+        await NativeInput.sendMedia(subCmd);
+        return { ok: true, action: 'widget_media_' + subCmd };
+      }
+    }
+    if (wKind === 'pomodoro' && spanCols >= 2 && spanOffset > 0) {
+      const subAct = (spanCols === 3 && spanOffset === 1) ? 'skip' : 'reset';
+      const snap = telemetry.controlPomodoro(subAct, spec.minutes || 25);
+      return { ok: true, action: 'widget_pomodoro', pomodoro: snap };
+    }
+
+    if (act === 'open_taskmgr') {
+      spawnQuiet('taskmgr.exe', []);
+      return { ok: true, action: 'widget_taskmgr' };
+    }
+    if (wKind === 'pomodoro' || act.startsWith('pomodoro_')) {
+      const pAct = act.replace(/^pomodoro_/, '') || 'toggle';
       const snap = telemetry.controlPomodoro(pAct, spec.minutes || 25);
       return { ok: true, action: 'widget_pomodoro', pomodoro: snap };
     }
-    if (wKind === 'media_now') {
-      await NativeInput.sendMedia(spec.action || 'play_pause');
+    if (wKind === 'media_now' || act.startsWith('media_')) {
+      const mCmd = act.replace(/^media_/, '') || 'play_pause';
+      await NativeInput.sendMedia(mCmd);
       return { ok: true, action: 'widget_media' };
     }
     if (wKind === 'obs') {
@@ -639,11 +703,28 @@ async function run(spec, context) {
       else await focusExisting('obs64.exe', false);
       return { ok: true, action: 'widget_obs' };
     }
-    if (wKind === 'plugin' && spec.pluginId) {
-      await telemetry.triggerPluginPress(spec.pluginId, spec.args);
-      return { ok: true, action: 'widget_plugin' };
+    if (wKind === 'plugin' || act === 'plugin_click') {
+      const pid = spec.pluginId || 'uptime_greeting';
+      const pRes = await telemetry.triggerPluginPress(pid, spec.args);
+      return Object.assign({ ok: true, action: 'widget_plugin' }, pRes || {});
     }
     return { ok: true, action: 'widget_refresh' };
+  }
+
+  if (type === 'window_toggle') {
+    const rawProc = String(spec.watchProcess || spec.target || '').trim();
+    const procName = rawProc.includes('\\') || rawProc.includes('/')
+      ? await processNameFor(await probe.probeAppAsync(rawProc))
+      : rawProc.replace(/\.exe$/i, '');
+    if (!procName) return { ok: false, error: '未指定目标窗口进程名' };
+    const winRes = await activateWindow(procName, true);
+    if (winRes) {
+      return { ok: true, action: 'window_' + winRes, windowState: winRes };
+    }
+    if (spec.launchTarget || (spec.target && (spec.target.includes('\\') || spec.target.includes('/')))) {
+      return await run(Object.assign({}, spec, { type: 'app', target: spec.launchTarget || spec.target }));
+    }
+    return { ok: false, error: '目标程序尚未运行：' + procName };
   }
 
   if (type === 'volume' || type === 'audio') {
@@ -702,13 +783,19 @@ async function run(spec, context) {
       }
       case 'command': {
         const rawCmd = String(target || '').trim();
-        if (rawCmd.toLowerCase().startsWith('wm_close:')) {
+        const lowerCmd = rawCmd.toLowerCase();
+        if (lowerCmd.startsWith('wm_close:')) {
           const procName = rawCmd.slice('wm_close:'.length).trim();
           const closed = await NativeInput.closeWindowGracefully(procName);
           if (!closed || !closed.ok) {
             runShell(`taskkill /IM "${procName.replace(/\.exe$/i, '')}.exe"`);
           }
           return { ok: true, action: 'graceful_close' };
+        }
+        if (lowerCmd.startsWith('window_toggle:') || lowerCmd.startsWith('smart_window:')) {
+          const procName = rawCmd.replace(/^(window_toggle|smart_window):/i, '').trim().replace(/\.exe$/i, '');
+          const winRes = await activateWindow(procName, true);
+          return { ok: true, action: 'window_' + (winRes || 'none'), windowState: winRes || 'none' };
         }
         if (rawCmd.includes('[char]175')) {
           const step = computeVolStep(5);
@@ -831,7 +918,6 @@ async function sendHotkey(combo) {
     return;
   }
 
-  // 1. 优先调用原生 0.5ms SendInput 引擎
   try {
     const nat = await NativeInput.sendHotkey(norm);
     if (nat && nat.ok) return;
@@ -924,17 +1010,19 @@ function classify(p) {
       type: 'app',
       label: path.basename(full, ext),
       processName: procName,
+      isScript: EXT_SCRIPT.has(procExt),
     });
   }
   if (ext === '.url') {
     return Object.assign(base, { type: 'app', label: path.basename(full, ext), processName: '' });
   }
-  if (ext === '.ps1') return Object.assign(base, { type: 'ps1', label: path.basename(full, ext), processName: path.basename(full, ext) });
+  if (ext === '.ps1') return Object.assign(base, { type: 'ps1', label: path.basename(full, ext), processName: path.basename(full, ext), isScript: true });
   const isExec = EXT_EXEC.has(ext);
   return Object.assign(base, {
     type: isExec ? 'app' : 'file',
     label: path.basename(full, ext) || full,
     processName: isExec ? path.basename(full, ext) : '',
+    isScript: EXT_SCRIPT.has(ext),
   });
 }
 
@@ -971,10 +1059,12 @@ module.exports = {
   probe,
   classify,
   looksLikeUrl,
+  isScriptTarget,
   diagnose,
   isRunning,
   isRunningAsync,
   checkProcessesRunning,
   processNameFor,
   focusExisting,
+  activateWindow,
 };

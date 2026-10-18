@@ -1,12 +1,13 @@
 'use strict';
 /**
- * native-input.js - 原生 1ms 零延迟键鼠、窗口、进程探测、图标提取、屏幕取色与音频驱动桥接
+ * native-input.js - 原生 1ms 零延迟键鼠、窗口、进程探测、图标提取、屏幕取色与音频驱动桥接 (v0.9)
  *
  * 采用常驻子进程管道通信，将所有输入与窗口操作的延迟压缩至 0.1~1ms。
  * 具备：
  * 1. 自动按需编译更新：若检测到 native-input.cs 比 bin/akp-input.exe 更新，自动调用系统 .NET csc.exe 重编译；
  * 2. 异步流水号 + FIFO 双模守卫：支持 @id 异步乱序回调（耗时鼠标平滑移动或宏录制绝不阻塞音量/窗口查询），同时向下兼容旧版二进制；
  * 3. 安全参数隔离与多行清洗：降级模式采用 spawnSync 参数数组传递，彻底杜绝 cmd 命令行注入。
+ * 4. HWND 级窗口状态探测与一键唤醒/最小化切换支持。
  */
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
@@ -191,6 +192,9 @@ function sendCmd(cmdStr, timeoutMs = 4000) {
   });
 }
 
+// 进程列表短期缓存（避免 pollForegroundAndProcessState 与 telemetry 高频并发枚举）
+let procTitlesCache = { ts: 0, key: '', data: {} };
+
 const NativeInput = {
   getCursor: async () => {
     const res = await sendCmd('get_cursor');
@@ -249,22 +253,29 @@ const NativeInput = {
   },
 
   getProcessWindowTitles: async (names) => {
-    const list = (Array.isArray(names) ? names : [names]).map((s) => String(s || '').trim()).filter(Boolean);
+    const list = (Array.isArray(names) ? names : [names]).map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
     if (!list.length) return {};
-    const res = await sendCmd(`proc_titles ${list.join(',')}`, 1500);
+    const key = list.join(',');
+    const now = Date.now();
+    if (procTitlesCache.key === key && (now - procTitlesCache.ts) < 1200) {
+      return procTitlesCache.data;
+    }
+    const res = await sendCmd(`proc_titles ${key}`, 1500);
     const out = {};
     if (res.startsWith('OK')) {
       const raw = res.slice(2).trim();
-      if (!raw) return out;
-      for (const pair of raw.split(';;')) {
-        const idx = pair.indexOf('|');
-        if (idx > 0) {
-          const pName = pair.slice(0, idx).trim().toLowerCase();
-          const title = pair.slice(idx + 1).trim();
-          if (pName && title && !out[pName]) out[pName] = title;
+      if (raw) {
+        for (const pair of raw.split(';;')) {
+          const idx = pair.indexOf('|');
+          if (idx > 0) {
+            const pName = pair.slice(0, idx).trim().toLowerCase();
+            const title = pair.slice(idx + 1).trim();
+            if (pName && title && !out[pName]) out[pName] = title;
+          }
         }
       }
     }
+    procTitlesCache = { ts: now, key, data: out };
     return out;
   },
 
@@ -273,7 +284,10 @@ const NativeInput = {
   },
 
   recordMacro: async (maxDurationMs = 15000) => {
-    const dur = Math.max(1000, Math.min(60000, parseInt(maxDurationMs, 10) || 15000));
+    const rawMs = (maxDurationMs && typeof maxDurationMs === 'object')
+      ? ((Number(maxDurationMs.maxMs) || (Number(maxDurationMs.maxSec) * 1000)) || 15000)
+      : maxDurationMs;
+    const dur = Math.max(1000, Math.min(60000, parseInt(rawMs, 10) || 15000));
     const res = await sendCmd(`record_macro ${dur}`, dur + 3000);
     if (res.startsWith('OK')) {
       const raw = res.slice(2).trim();
@@ -373,12 +387,30 @@ const NativeInput = {
 
   activateOrToggleWindow: async (procName, allowMinimize = false) => {
     if (!procName) return { ok: false, state: 'EMPTY' };
-    const res = await sendCmd(`win_activate ${procName} ${allowMinimize ? '1' : '0'}`);
+    const clean = String(procName).trim().replace(/\.exe$/i, '');
+    const res = await sendCmd(`win_activate ${clean} ${allowMinimize ? '1' : '0'}`);
     if (res.startsWith('OK ')) {
       const state = res.slice(3).trim();
       return { ok: state === 'FOCUSED' || state === 'MINIMIZED', state };
     }
     return { ok: false, state: 'UNSUPPORTED', raw: res };
+  },
+
+  queryWindowState: async (procName) => {
+    if (!procName) return 'NOT_RUNNING';
+    const clean = String(procName).trim().replace(/\.exe$/i, '').toLowerCase();
+    const res = await sendCmd(`win_state ${clean}`);
+    if (res.startsWith('OK ')) {
+      return res.slice(3).trim();
+    }
+    // 兼容未重编译旧版二进制的无缝回退判断
+    const set = await NativeInput.checkProcesses([clean]);
+    if (!set || !set.has(clean)) return 'NOT_RUNNING';
+    const fg = await NativeInput.getForegroundWindow();
+    if (fg && fg.processName && fg.processName.toLowerCase().replace(/\.exe$/i, '') === clean) {
+      return 'FOREGROUND';
+    }
+    return 'BACKGROUND';
   },
 
   closeWindowGracefully: async (procName) => {
@@ -393,7 +425,14 @@ const NativeInput = {
   },
 
   sendMedia: (cmd) => {
-    return sendCmd(`media ${cmd}`);
+    const raw = String(cmd || 'play_pause').toLowerCase();
+    const mapped = raw.includes('next') ? 'next'
+      : raw.includes('prev') ? 'prev'
+      : raw.includes('mute') ? 'mute'
+      : raw.includes('vol_up') ? 'vol_up'
+      : raw.includes('vol_down') ? 'vol_down'
+      : 'play_pause';
+    return sendCmd(`media ${mapped}`);
   },
 
   getVolume: async () => {
@@ -467,9 +506,9 @@ const NativeInput = {
     return { ok: false, error: res.replace(/^ERR\s*/, '') };
   },
 
-  setDevicePath: (path) => {
-    if (!path) return Promise.resolve('OK');
-    return sendCmd(`set_device_path ${path}`);
+  setDevicePath: (devPath) => {
+    if (!devPath) return Promise.resolve('OK');
+    return sendCmd(`set_device_path ${devPath}`);
   },
 
   blackoutHardware: () => {

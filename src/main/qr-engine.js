@@ -1,6 +1,6 @@
 'use strict';
 /**
- * AKP153 二维码智能解码引擎 (v0.8.0)
+ * AKP153 二维码智能解码引擎 (v0.9.0)
  * 支持：剪贴板优先秒解 -> 交互式半透明屏幕框选 -> 全屏扫描 -> 自动静默区白边增强识别 -> 自动回写剪贴板并触发原生提示音
  */
 const { clipboard, desktopCapturer, screen, BrowserWindow, ipcMain, shell } = require('electron');

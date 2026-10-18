@@ -536,23 +536,23 @@ app.whenReady().then(async () => {
   check('双态面板包含试切按钮',
     await js('!!document.getElementById("i-toggle-try-btn")'));
 
-  // 初始状态验证：DOM 格子徽标为 ON
+  // 初始状态验证：DOM 格子徽标为状态 1（待机 / ON）
   const initialBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
-  check('初始状态下 DOM 格子角标微标为 ON', initialBadgeText === 'ON', initialBadgeText);
+  check('初始状态下 DOM 格子角标微标为状态 1 (待机/ON)', initialBadgeText === '待机' || initialBadgeText === 'ON', initialBadgeText);
 
-  // 点击试切预览按钮 -> 翻转为 OFF
+  // 点击试切预览按钮 -> 翻转为状态 2（运行中 / OFF）
   await js('document.getElementById("i-toggle-try-btn").click()');
   await sleep2(150);
   const toggledBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
-  check('点击试切按钮后角标翻转为状态 2 (OFF)', toggledBadgeText === 'OFF', toggledBadgeText);
+  check('点击试切按钮后角标翻转为状态 2 (运行中/OFF)', toggledBadgeText === '运行中' || toggledBadgeText === 'OFF', toggledBadgeText);
   check('状态 2 卡片高亮当前激活状态',
     await js('document.querySelectorAll(".badge-toggle-card")[1].classList.contains("active-state")'));
 
-  // 再次点击试切按钮 -> 翻转回 ON
+  // 再次点击试切按钮 -> 翻转回状态 1（待机 / ON）
   await js('document.getElementById("i-toggle-try-btn").click()');
   await sleep2(150);
   const backBadgeText = await js('document.querySelectorAll("#grid .cell.filled")[0].querySelector(".badge-overlay").textContent');
-  check('再次点击试切按钮角标翻转回状态 1 (ON)', backBadgeText === 'ON', backBadgeText);
+  check('再次点击试切按钮角标翻转回状态 1 (待机/ON)', backBadgeText === '待机' || backBadgeText === 'ON', backBadgeText);
 
   // 点击预设胶囊「🟢 开 / 🔴 关」
   await js('Array.from(document.querySelectorAll("#i-toggle-presets .badge-toggle-preset-pill")).find(b => b.textContent.includes("开 / 🔴 关")).click()');

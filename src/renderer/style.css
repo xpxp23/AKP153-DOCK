@@ -1297,12 +1297,15 @@ body[data-theme="dark"] .minigrid i.empty { background: #2b323b; }
 }
 
 .toast {
-  /* 放顶部：底部会同时挡住"按键库抽屉"和"库展开面板的底部按钮" */
-  position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
-  background: #1f2430; color: #fff; padding: 9px 16px; border-radius: 8px;
-  font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s;
-  max-width: 70vw; text-align: center; z-index: 10000;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  /* 置于顶部标题栏中央安全区：绝不遮挡模态弹窗标题栏、画布顶部流光按钮或底部抽屉 */
+  position: fixed; top: 8px; left: 42%; transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.94); color: #fff; padding: 6px 16px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  font-size: 12px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .2s;
+  max-width: 56vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-align: center; z-index: 10000;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
 }
 .toast.show { opacity: 1; }
 
@@ -4219,4 +4222,48 @@ body[data-theme="dark"] .macro-card.cond-card {
   align-items: center;
   justify-content: center;
   gap: 3px;
+}
+
+
+/* =========================================================================
+   v0.9 Upgrades: Multi-Key Span Canvas, Plugin Marketplace, HWND Dual-State
+   & Inspector Ergonomics Polish
+   ========================================================================= */
+
+details.sec > .body {
+  padding-bottom: 14px;
+}
+
+.cell.span-master,
+.cell.span-slave {
+  border-color: rgba(56, 189, 248, 0.65) !important;
+  box-shadow: 0 0 0 1.5px rgba(56, 189, 248, 0.35), 0 4px 12px rgba(15, 23, 42, 0.22);
+}
+.cell.span-left {
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+.cell.span-mid {
+  border-radius: 4px;
+}
+.cell.span-right {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+
+.plugin-market-card {
+  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.plugin-market-card:hover {
+  border-color: var(--accent) !important;
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 16px rgba(0, 168, 150, 0.14);
+}
+body[data-theme="dark"] .plugin-market-card {
+  background: #0d1117 !important;
+  border-color: #30363d !important;
+}
+body[data-theme="dark"] .dual-sync-policy-card {
+  background: #0d1117 !important;
+  border-color: #30363d !important;
 }

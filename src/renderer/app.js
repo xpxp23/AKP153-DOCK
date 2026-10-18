@@ -28,16 +28,113 @@ const MAX_HISTORY = 50;
 let _isApplyingHistory = false;
 let _lastHistoryHash = '';
 
+const BUILTIN_MARKET_PLUGINS = [
+  {
+    id: 'uptime_greeting',
+    name: '系统运行时长与负载看板',
+    category: '系统监控',
+    icon: '✨',
+    color: '#0f172a',
+    accent: '#38bdf8',
+    title: '⚡ 下午好',
+    value: '3h 42m',
+    sub: '内存 48% · 连续运行',
+    subValue: '内存 48% · 连续运行',
+    badge: { text: 'RUN', bg: '#0284c7' },
+    progress: 48,
+    sparkline: [22, 26, 24, 31, 28, 35, 30, 27, 33, 29, 25, 32],
+    features: ['📈 Sparkline 折线', '📊 Progress 进度', '🏷️ Badge 角标'],
+    description: '实时展示本机开机累计运行时长、时段问候语与内存负载趋势折线，按击切换监控维度'
+  },
+  {
+    id: 'stock_crypto_ticker',
+    name: '金融行情与 K 线趋势监控',
+    category: '金融行情',
+    icon: '🪙',
+    color: '#06221c',
+    accent: '#10b981',
+    title: '🪙 BTC 比特币',
+    value: '$68,420',
+    sub: 'BTC/USD +2.45%',
+    subValue: 'BTC/USD +2.45%',
+    badge: { text: '+2.45%', bg: '#059669' },
+    sparkline: [67800, 67950, 68120, 68040, 68290, 68180, 68350, 68510, 68400, 68620, 68490, 68420],
+    features: ['📈 K 线趋势图', '🏷️ 涨跌角标', '🔄 按击切标的'],
+    description: '实时展示 BTC / ETH / NVDA / AAPL 价格走势与迷你 K 线折线图，按击一键切换标的'
+  },
+  {
+    id: 'home_assistant_switch',
+    name: 'HomeAssistant 智能家居开关',
+    category: '智能家居',
+    icon: '💡',
+    color: '#1e1b4b',
+    accent: '#f59e0b',
+    title: '💡 工作室桌面灯带',
+    value: '85%',
+    sub: '书房 · 暖白光',
+    subValue: '书房 · 暖白光',
+    badge: { text: 'ON', bg: '#10b981' },
+    progress: 85,
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>',
+    features: ['🎨 SVG 矢量图标', '📊 亮度进度条', '⚡ 按击开关'],
+    description: '控制与监控智能家居灯光/空调/插座状态，支持自定义 SVG 图标与亮度进度条'
+  },
+  {
+    id: 'github_pr_monitor',
+    name: 'GitHub PR 与 CI 构建监控',
+    category: '开发者工具',
+    icon: '🐙',
+    color: '#0d1117',
+    accent: '#2ea043',
+    title: '🐙 akp153-dock',
+    value: '3 PRs',
+    sub: 'main · CI 通过',
+    subValue: 'main · CI 通过',
+    badge: { text: 'PASS', bg: '#238636' },
+    sparkline: [4, 7, 5, 9, 12, 8, 14],
+    features: ['📈 Commit 活跃线', '🏷️ CI 状态标', '🔄 多仓库切换'],
+    description: '实时监控 GitHub 仓库待审 PR 数量、Actions CI 构建状态与近期提交活跃度趋势'
+  },
+  {
+    id: 'audio_fader_meter',
+    name: '声卡多路推子电平表',
+    category: '音频与直播',
+    icon: '🎚️',
+    color: '#0f172a',
+    accent: '#06b6d4',
+    title: '🎚️ 混音推子监控',
+    value: '68%',
+    sub: 'MIC 52% · BGM 58%',
+    subValue: 'MIC 52% · BGM 58%',
+    badge: { text: 'LIVE', bg: '#0891b2' },
+    bars: [
+      { label: 'MAIN', value: 68, color: '#06b6d4' },
+      { label: 'MIC', value: 52, color: '#10b981' },
+      { label: 'BGM', value: 58, color: '#8b5cf6' },
+      { label: 'GAME', value: 46, color: '#f59e0b' }
+    ],
+    features: ['📊 4 路推子柱图', '🏷️ 直播状态标', '🔇 按击一键静音'],
+    description: '四通道实时混音推子柱状图（MAIN / MIC / BGM / GAME），按击一键切换主通道静音'
+  }
+];
+
 let lastTelemetry = {
-  gpu: { available: true, name: 'NVIDIA RTX', temp: 48, load: 22, memUsedMb: 2450, memTotalMb: 8192, memPct: 30 },
-  net: { rxSec: 184320, txSec: 40960, downText: '180.0K/s', upText: '40.0K/s' },
-  weather: { city: 'Local', temp: '24', desc: '晴间多云', icon: '⛅', humidity: '56' },
-  obs: { running: false, streaming: false, recording: false, statusText: '未启动' },
-  media: { playing: true, app: '网易云音乐', title: '晴天 - 周杰伦', artist: '叶惠美', lyric: '故事的小黄花 从出生那年就飘着' },
-  pomodoro: { running: false, phase: 'work', remainSec: 25 * 60, totalSec: 25 * 60, formatted: '25:00', progressPct: 0 },
-  plugins: [
-    { id: 'uptime-greeting', name: '工作台时段问候与运行时长', icon: '✨', color: '#1e293b', title: '☀️ 专注时刻', value: 'RUN 2.4h', subValue: 'AKP153 插件引擎就绪', barPct: 48 }
-  ]
+  gpu: { available: true, name: 'NVIDIA RTX', temp: 48, load: 22, memUsedMb: 2450, memTotalMb: 8192, memPct: 30, history: [24, 28, 26, 32, 30, 35, 29, 25, 28, 24, 22, 24] },
+  net: { rxKbps: 180, txKbps: 40, rxSec: 184320, txSec: 40960, rxText: '180 KB/s', txText: '40 KB/s', downText: '180 KB/s', upText: '40 KB/s', history: [110, 145, 132, 190, 168, 210, 175, 160, 195, 180] },
+  weather: { city: '本地', temp: '24°C', tempNum: 24, condition: '晴间多云', desc: '晴间多云', icon: '⛅', humidity: '56%', humidityNum: 56, wind: '东南风 2级' },
+  obs: { running: false, streaming: false, recording: false, statusText: 'OBS 待命', scene: '主场景' },
+  media: {
+    active: true, playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦', album: '叶惠美',
+    lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
+    positionSec: 42, durationSec: 269, progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+  },
+  media_now: {
+    active: true, playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦', album: '叶惠美',
+    lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
+    positionSec: 42, durationSec: 269, progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+  },
+  pomodoro: { running: false, phase: 'work', remainSec: 25 * 60, remainingSec: 25 * 60, totalSec: 25 * 60, formatted: '25:00', progressPct: 0 },
+  plugins: BUILTIN_MARKET_PLUGINS.map(p => Object.assign({}, p))
 };
 
 function getPagesSnapshotHash() {
@@ -226,7 +323,7 @@ if (typeof api !== 'undefined' && api.on) {
 const $ = (id) => document.getElementById(id);
 
 const ACTION_TEMPLATES = [
-  { id: '', name: '⚡ 常用快捷动作模板…' },
+  { id: '', name: '⚡ 快捷动作模板…' },
   {
     id: 'media_play', name: '⏯️ 播放 / 暂停',
     spec: {
@@ -693,15 +790,24 @@ function getActiveBadge(spec) {
   }
 
   if (spec.badgeToggle) {
-    const s1 = spec.badgeState1 || { text: 'ON', bg: '#107c41', color: '#ffffff' };
-    const s2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935', color: '#ffffff' };
+    const s1 = spec.badgeState1 || { text: '待机', bg: '#546e7a', color: '#ffffff' };
+    const s2 = spec.badgeState2 || { text: '运行中', bg: '#107c41', color: '#ffffff' };
     const stateIdx = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
+    if (stateIdx === 1 && spec.toggleSyncMode === 'window' && spec._windowSubState === 'minimized') {
+      return {
+        text: '后台',
+        bg: '#0284c7',
+        color: '#ffffff',
+        state: 1,
+        isToggle: true,
+      };
+    }
     const sObj = stateIdx === 1 ? s2 : s1;
     const text = String(sObj.text || '').trim();
     if (!text) return null;
     return {
       text,
-      bg: sObj.bg || (stateIdx === 1 ? '#e53935' : '#107c41'),
+      bg: sObj.bg || (stateIdx === 1 ? '#107c41' : '#546e7a'),
       color: sObj.color || '#ffffff',
       state: stateIdx,
       isToggle: true,
@@ -718,9 +824,36 @@ function getActiveBadge(spec) {
   };
 }
 
+function findSpanMasterCell(buttons, row, col) {
+  if (!buttons || col >= KEY_COLS || col < 0) return null;
+  for (let c = 0; c < col; c++) {
+    const cand = buttons[row + ',' + c];
+    if (cand) {
+      const span = Math.max(1, Math.min(KEY_COLS - c, Number(cand.spanCols) || 1));
+      if (c + span > col) {
+        return { masterCol: c, spanCols: span, spanOffset: col - c, spec: cand };
+      }
+    }
+  }
+  return null;
+}
+
 async function paintKey(spec, size, keyPos) {
+  if (keyPos && keyPos.col !== undefined && keyPos.col < KEY_COLS) {
+    const master = findSpanMasterCell(pageButtons(), keyPos.row, keyPos.col);
+    if (master) {
+      return paintWidgetCanvas(
+        master.spec,
+        size,
+        { row: keyPos.row, col: keyPos.col, masterCol: master.masterCol, spanCols: master.spanCols, spanOffset: master.spanOffset }
+      );
+    }
+  }
   if (spec && spec.type === 'widget') {
-    return paintWidgetCanvas(spec, size, keyPos || { row: 0, col: 0 });
+    const spanCols = (keyPos && keyPos.col < KEY_COLS)
+      ? Math.max(1, Math.min(KEY_COLS - keyPos.col, Number(spec.spanCols) || 1))
+      : 1;
+    return paintWidgetCanvas(spec, size, Object.assign({ row: 0, col: 0, spanCols, spanOffset: 0 }, keyPos || {}));
   }
   const c = document.createElement('canvas');
   c.width = c.height = size;
@@ -900,11 +1033,39 @@ const DEMO = typeof api === 'undefined';
 
 async function pushKey(row, col, force = false) {
   if (!cfg || DEMO) return;
+  if (col < KEY_COLS) {
+    const master = findSpanMasterCell(pageButtons(), row, col);
+    if (master) {
+      return await pushKey(row, master.masterCol, force);
+    }
+    const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
+    const spanCols = (spec && spec.type === 'widget')
+      ? Math.max(1, Math.min(KEY_COLS - col, Number(spec.spanCols) || 1))
+      : 1;
+    if (spanCols > 1) {
+      const items = [];
+      const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+      for (let k = 0; k < spanCols; k++) {
+        const targetCol = col + k;
+        if (isBackCell(row, targetCol)) continue;
+        const c = await paintKey(spec, 96, { row, col: targetCol });
+        const rotated = rotateCanvas(c, rotMode);
+        const dataUrl = toJpegUnder(rotated, 10240);
+        items.push({ row, col: targetCol, data: dataUrl.split(',')[1], force: !!force });
+      }
+      if (api.deviceBatchDraw && items.length > 1) {
+        await api.deviceBatchDraw(items);
+      } else {
+        for (const it of items) await api.deviceDraw(it);
+      }
+      return;
+    }
+  }
   const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
   const size = col === 5 ? 80 : 96;
   const blank = { color: '#20262e', label: '' };
   const c = await paintKey(spec || blank, size, { row, col });
-  const rotated = rotateCanvas(c, $('rotate').value);
+  const rotated = rotateCanvas(c, $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw'));
   const dataUrl = toJpegUnder(rotated, 10240);
   await api.deviceDraw({ row, col, data: dataUrl.split(',')[1], force: !!force });
 }
@@ -1173,7 +1334,356 @@ function paintMetricStrip(spec, size, row, mode, stats) {
 
 const WIDGET_KINDS = ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
 
+function resolvePluginData(spec) {
+  const rawId = String((spec && spec.pluginId) || 'uptime_greeting').trim();
+  const normId = rawId.replace(/-/g, '_');
+  const plugins = (lastTelemetry && lastTelemetry.plugins) || BUILTIN_MARKET_PLUGINS;
+  let found = null;
+  if (Array.isArray(plugins)) {
+    found = plugins.find(p => p && (p.id === rawId || p.id === normId || (p.id && p.id.replace(/-/g, '_') === normId)));
+  }
+  if (!found && plugins && typeof plugins === 'object') {
+    found = plugins[rawId] || plugins[normId];
+  }
+  if (!found) {
+    found = BUILTIN_MARKET_PLUGINS.find(p => p.id === normId || p.id === rawId) || BUILTIN_MARKET_PLUGINS[0];
+  }
+  return found;
+}
+
+function drawSparklineChart(ctx, data, x, y, w, h, strokeColor, fillTopColor) {
+  if (!Array.isArray(data) || data.length < 2) return;
+  const vals = data.map(v => Number(v) || 0);
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if (max - min < 1e-3) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.12;
+  min -= pad;
+  max += pad;
+
+  const pts = vals.map((v, i) => ({
+    px: x + (i / (vals.length - 1)) * w,
+    py: y + h - ((v - min) / (max - min)) * h,
+  }));
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].px, y + h);
+  for (const p of pts) ctx.lineTo(p.px, p.py);
+  ctx.lineTo(pts[pts.length - 1].px, y + h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, y, 0, y + h);
+  grad.addColorStop(0, fillTopColor || 'rgba(56, 189, 248, 0.38)');
+  grad.addColorStop(1, 'rgba(15, 23, 42, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  pts.forEach((p, idx) => {
+    if (idx === 0) ctx.moveTo(p.px, p.py);
+    else ctx.lineTo(p.px, p.py);
+  });
+  ctx.strokeStyle = strokeColor || '#38bdf8';
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  const last = pts[pts.length - 1];
+  ctx.fillStyle = strokeColor || '#38bdf8';
+  ctx.beginPath();
+  ctx.arc(last.px, last.py, 2.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBarsChart(ctx, bars, x, y, w, h, scale = 1) {
+  if (!Array.isArray(bars) || !bars.length) return;
+  const count = Math.min(5, bars.length);
+  const gap = Math.max(4, Math.round(5 * scale));
+  const barW = Math.max(6, Math.floor((w - gap * (count - 1)) / count));
+  const labelH = Math.round(10 * scale);
+  const trackH = Math.max(8, h - labelH - 2);
+
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const b = bars[i];
+    const bx = x + i * (barW + gap);
+    const pct = Math.max(0, Math.min(100, Number(b.value) || 0));
+    const fillH = Math.max(2, Math.round((trackH * pct) / 100));
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, y, barW, trackH, 3);
+    else ctx.rect(bx, y, barW, trackH);
+    ctx.fill();
+
+    ctx.fillStyle = b.color || '#38bdf8';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, y + trackH - fillH, barW, fillH, 3);
+    else ctx.rect(bx, y + trackH - fillH, barW, fillH);
+    ctx.fill();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `bold ${Math.max(7, Math.round(7.5 * scale))}px "Segoe UI", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(String(b.label || '').slice(0, 4), bx + barW / 2, y + h);
+  }
+  ctx.restore();
+}
+
+function drawPillBadge(ctx, text, bg, rightX, topY, scale = 1) {
+  if (!text) return;
+  ctx.save();
+  const h = Math.max(12, Math.round(13 * scale));
+  ctx.font = `bold ${Math.max(8, Math.round(8.5 * scale))}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+  const tw = ctx.measureText(text).width;
+  const w = Math.max(h + 4, Math.round(tw + 8 * scale));
+  const x = rightX - w;
+  ctx.fillStyle = bg || '#0284c7';
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, topY, w, h, h / 2);
+  else ctx.rect(x, topY, w, h);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, topY + h / 2 + 0.5);
+  ctx.restore();
+}
+
+function drawClampedLine(ctx, text, cx, y, maxW, align = 'center') {
+  const s = String(text || '').trim();
+  if (!s) return;
+  ctx.save();
+  ctx.textAlign = align;
+  if (ctx.measureText(s).width <= maxW) {
+    ctx.fillText(s, cx, y);
+    ctx.restore();
+    return;
+  }
+  let clipped = s;
+  while (clipped.length > 1 && ctx.measureText(clipped + '…').width > maxW) {
+    clipped = clipped.slice(0, -1);
+  }
+  ctx.fillText(clipped + '…', cx, y);
+  ctx.restore();
+}
+
+function paintWideWidgetMasterCanvas(spec, size, spanCols, keyPos) {
+  const fullW = size * spanCols;
+  const fullH = size;
+  const master = document.createElement('canvas');
+  master.width = fullW;
+  master.height = fullH;
+  const ctx = master.getContext('2d');
+  const kind = (spec && (spec.widgetKind || (WIDGET_KINDS.includes(spec.type) ? spec.type : ''))) || 'gpu';
+  const scale = size / 80;
+
+  const drawWideBg = (topCol, botCol, borderCol) => {
+    const g = ctx.createLinearGradient(0, 0, fullW, fullH);
+    g.addColorStop(0, (spec && spec.customColor && spec.color) ? spec.color : topCol);
+    g.addColorStop(1, botCol);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, fullW, fullH);
+
+    // Subtle key boundary ticks so each physical key slice aligns harmoniously
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 1;
+    for (let k = 1; k < spanCols; k++) {
+      ctx.beginPath();
+      ctx.moveTo(k * size, 8);
+      ctx.lineTo(k * size, fullH - 8);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = borderCol || 'rgba(56, 189, 248, 0.35)';
+    ctx.strokeRect(0.5, 0.5, fullW - 1, fullH - 1);
+  };
+
+  if (kind === 'media_now') {
+    const m = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
+      playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦',
+      lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
+      progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+    };
+    drawWideBg('#2e1065', '#0f172a', 'rgba(232, 121, 249, 0.38)');
+
+    // Key 1 (0..size): Vinyl Record Disc & Time strictly centered within Key 1
+    const discCx = Math.round(size * 0.50);
+    const discCy = Math.round(size * 0.41);
+    const discR = Math.round(size * 0.28);
+    ctx.save();
+    ctx.fillStyle = '#090d16';
+    ctx.beginPath();
+    ctx.arc(discCx, discCy, discR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    ctx.fillStyle = m.coverColor || '#ec4899';
+    ctx.beginPath();
+    ctx.arc(discCx, discCy, Math.round(discR * 0.48), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(10 * scale)}px "Segoe UI", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(m.playing === false ? '⏸' : '▶', discCx, discCy + 0.5);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = `${Math.round(8.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(m.timeText || '00:42 / 04:29', discCx, fullH - Math.round(6 * scale));
+    ctx.restore();
+
+    // Key 2..N (size..fullW): Title, Artist, Dual-Line Synchronized Desktop Lyrics & Progress Bar strictly inside Key 2+
+    const rx = size + Math.round(7 * scale);
+    const rw = fullW - rx - Math.round(7 * scale);
+
+    ctx.fillStyle = '#f0abfc';
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const trackTitle = m.track || m.title || '晴天';
+    const artistStr = m.artist ? ` · ${m.artist}` : '';
+    drawClampedLine(ctx, `🎵 ${m.app || 'SMTC'}  |  ${trackTitle}${artistStr}`, rx, Math.round(8 * scale), rw, 'left');
+
+    // Line 1: Active Lyric (Highlighted)
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(12 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    drawClampedLine(ctx, m.lyric || '故事的小黄花 从出生那年就飘着', rx, Math.round(37 * scale), rw, 'left');
+
+    // Line 2: Upcoming Sub-Lyric
+    ctx.fillStyle = '#c4b5fd';
+    ctx.font = `${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    drawClampedLine(ctx, m.subLyric || '童年的荡秋千 随记忆一直晃到现在', rx, Math.round(56 * scale), rw, 'left');
+
+    // Progress Bar
+    const py = fullH - Math.round(12 * scale);
+    const ph = Math.max(4, Math.round(4.5 * scale));
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(rx, py, rw, ph);
+    const pct = Math.max(6, Math.min(100, Number(m.progressPct) || 26));
+    const gradBar = ctx.createLinearGradient(rx, 0, rx + rw, 0);
+    gradBar.addColorStop(0, '#e879f9');
+    gradBar.addColorStop(1, '#38bdf8');
+    ctx.fillStyle = gradBar;
+    ctx.fillRect(rx, py, Math.round((rw * pct) / 100), ph);
+    return master;
+  }
+
+  if (kind === 'gpu' || kind === 'net') {
+    const isGpu = kind === 'gpu';
+    const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 48, load: 22, memPct: 30, history: [24, 28, 32, 30, 35, 28, 24] };
+    const net = (lastTelemetry && lastTelemetry.net) || { rxText: '180 KB/s', txText: '40 KB/s', history: [120, 160, 140, 210, 180] };
+    drawWideBg(isGpu ? '#0f291e' : '#0c1e35', '#07111d', isGpu ? 'rgba(74, 222, 128, 0.35)' : 'rgba(56, 189, 248, 0.35)');
+
+    // Left panel metrics strictly inside Key 1 (0..size)
+    const padX = Math.round(7 * scale);
+    const key1MaxW = size - Math.round(14 * scale);
+    ctx.fillStyle = isGpu ? '#4ade80' : '#38bdf8';
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    drawClampedLine(ctx, isGpu ? '🎮 GPU 遥测' : '🌐 实时网速', padX, Math.round(7 * scale), key1MaxW, 'left');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round((isGpu ? 19 : 13) * scale)}px "Segoe UI", Consolas, sans-serif`;
+    ctx.textBaseline = 'middle';
+    drawClampedLine(ctx, isGpu ? `${gpu.temp || 46}°C` : `↓ ${net.rxText || net.downText || '180 KB/s'}`, padX, Math.round(36 * scale), key1MaxW, 'left');
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `bold ${Math.round(8.5 * scale)}px "Segoe UI", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    drawClampedLine(
+      ctx,
+      isGpu ? `C:${gpu.load || 22}% V:${gpu.memPct || 30}%` : `↑ ${net.txText || net.upText || '40 KB/s'}`,
+      padX,
+      fullH - Math.round(8 * scale),
+      key1MaxW,
+      'left'
+    );
+
+    // Right wide sparkline waveform inside Key 2..N
+    const chartX = size + Math.round(7 * scale);
+    const chartW = fullW - chartX - Math.round(8 * scale);
+    const chartY = Math.round(16 * scale);
+    const chartH = fullH - chartY - Math.round(12 * scale);
+    drawSparklineChart(
+      ctx,
+      isGpu ? (gpu.history || [24, 28, 26, 32, 30, 35, 28]) : (net.history || [120, 180, 150, 210, 180]),
+      chartX,
+      chartY,
+      chartW,
+      chartH,
+      isGpu ? '#34d399' : '#38bdf8',
+      isGpu ? 'rgba(52, 211, 153, 0.35)' : 'rgba(56, 189, 248, 0.35)'
+    );
+    return master;
+  }
+
+  if (kind === 'plugin') {
+    const plg = resolvePluginData(spec);
+    drawWideBg(plg.color || '#0f172a', '#090d16', 'rgba(56, 189, 248, 0.35)');
+    const padX = Math.round(7 * scale);
+    const key1MaxW = size - Math.round(14 * scale);
+
+    ctx.fillStyle = plg.accent || '#38bdf8';
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    drawClampedLine(ctx, plg.title || '🧩 插件看板', padX, Math.round(8 * scale), key1MaxW, 'left');
+
+    if (plg.badge && plg.badge.text) {
+      drawPillBadge(ctx, plg.badge.text, plg.badge.bg, fullW - Math.round(7 * scale), Math.round(7 * scale), scale);
+    }
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(16 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    drawClampedLine(ctx, plg.value || 'READY', padX, Math.round(39 * scale), key1MaxW, 'left');
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `${Math.round(8.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'bottom';
+    drawClampedLine(ctx, plg.sub || plg.subValue || '', padX, fullH - Math.round(8 * scale), key1MaxW, 'left');
+
+    const chartX = size + Math.round(7 * scale);
+    const chartW = fullW - chartX - Math.round(8 * scale);
+    const chartY = Math.round(22 * scale);
+    const chartH = fullH - chartY - Math.round(10 * scale);
+    if (Array.isArray(plg.bars) && plg.bars.length) {
+      drawBarsChart(ctx, plg.bars, chartX, chartY, chartW, chartH, scale);
+    } else if (Array.isArray(plg.sparkline) && plg.sparkline.length > 1) {
+      drawSparklineChart(ctx, plg.sparkline, chartX, chartY, chartW, chartH, plg.accent || '#38bdf8', 'rgba(56, 189, 248, 0.32)');
+    }
+    return master;
+  }
+
+  // Fallback wide layout for pomodoro / weather / obs
+  const single = paintWidgetCanvas(Object.assign({}, spec, { spanCols: 1 }), size, { row: keyPos.row, col: keyPos.masterCol || 0 });
+  for (let k = 0; k < spanCols; k++) {
+    ctx.drawImage(single, k * size, 0);
+  }
+  return master;
+}
+
 function paintWidgetCanvas(spec, size, keyPos) {
+  const spanCols = Math.max(1, Number((keyPos && keyPos.spanCols) || (spec && spec.spanCols) || 1));
+  const spanOffset = Math.max(0, Number(keyPos && keyPos.spanOffset) || 0);
+  if (spanCols > 1 && (!keyPos || keyPos.col < KEY_COLS)) {
+    const master = paintWideWidgetMasterCanvas(spec, size, spanCols, keyPos || { row: 0, col: 0 });
+    const slice = document.createElement('canvas');
+    slice.width = slice.height = size;
+    const sctx = slice.getContext('2d');
+    sctx.drawImage(master, spanOffset * size, 0, size, size, 0, 0, size, size);
+    return slice;
+  }
+
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const ctx = c.getContext('2d');
@@ -1203,62 +1713,74 @@ function paintWidgetCanvas(spec, size, keyPos) {
     ctx.fillRect(0, 0, size, size);
   };
 
-  const scale = size / 80;
+  const fontBoost = (spec && spec.fontSize) ? Math.max(0.8, Math.min(1.3, Number(spec.fontSize) / 20)) : 1;
+  const scale = (size / 80) * fontBoost;
+  const geomScale = size / 80;
   ctx.save();
 
   if (kind === 'gpu') {
     drawBg('#0f291e', '#07140e');
-    const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 18, memPct: 25, memUsedMb: 2048 };
+    const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 22, memPct: 30, history: [22, 26, 24, 30, 28, 25] };
+    if (Array.isArray(gpu.history) && gpu.history.length > 1) {
+      drawSparklineChart(ctx, gpu.history, 4, Math.round(size * 0.52), size - 8, Math.round(size * 0.42), 'rgba(52, 211, 153, 0.45)', 'rgba(52, 211, 153, 0.16)');
+    }
     ctx.fillStyle = '#4ade80';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('🎮 GPU 监控', size / 2, Math.round(6 * scale));
+    ctx.fillText('🎮 GPU 监控', size / 2, Math.round(5 * geomScale));
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(20 * scale)}px "Segoe UI", sans-serif`;
+    ctx.font = `bold ${Math.round(19 * scale)}px "Segoe UI", sans-serif`;
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${gpu.temp || 45}°C`, size / 2, Math.round(32 * scale));
+    ctx.fillText(`${gpu.temp || 46}°C`, size / 2, Math.round(30 * geomScale));
 
     const drawMini = (lbl, pct, y, colHex) => {
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = `bold ${Math.round(9.5 * scale)}px "Segoe UI", sans-serif`;
+      ctx.font = `bold ${Math.round(9 * geomScale)}px "Segoe UI", sans-serif`;
       ctx.textAlign = 'left';
-      ctx.fillText(lbl, Math.round(7 * scale), y);
+      ctx.fillText(lbl, Math.round(7 * geomScale), y);
       ctx.fillStyle = colHex;
       ctx.textAlign = 'right';
-      ctx.fillText(`${pct}%`, size - Math.round(7 * scale), y);
-      const bx = Math.round(7 * scale), by = y + Math.round(7 * scale), bw = size - Math.round(14 * scale), bh = Math.max(4, Math.round(4.5 * scale));
+      ctx.fillText(`${pct}%`, size - Math.round(7 * geomScale), y);
+      const bx = Math.round(7 * geomScale), by = y + Math.round(6.5 * geomScale), bw = size - Math.round(14 * geomScale), bh = Math.max(3, Math.round(4 * geomScale));
       ctx.fillStyle = 'rgba(255,255,255,0.14)';
       ctx.fillRect(bx, by, bw, bh);
       ctx.fillStyle = colHex;
       ctx.fillRect(bx, by, Math.max(2, Math.round((bw * Math.min(100, Math.max(0, pct))) / 100)), bh);
     };
-    drawMini('CORE', gpu.load || 0, Math.round(48 * scale), '#34d399');
-    drawMini('VRAM', gpu.memPct || 0, Math.round(63 * scale), '#38bdf8');
+    drawMini('CORE', gpu.load !== undefined ? gpu.load : 22, Math.round(47 * geomScale), '#34d399');
+    drawMini('VRAM', gpu.memPct !== undefined ? gpu.memPct : 30, Math.round(62 * geomScale), '#38bdf8');
     ctx.strokeStyle = 'rgba(74, 222, 128, 0.28)';
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   } else if (kind === 'net') {
     drawBg('#0c1e35', '#07111f');
-    const net = (lastTelemetry && lastTelemetry.net) || { downText: '120K/s', upText: '32K/s' };
+    const net = (lastTelemetry && lastTelemetry.net) || { rxText: '180 KB/s', txText: '40 KB/s', rxKbps: 180 };
+    const downStr = net.rxText || net.downText || '0.0 KB/s';
+    const upStr = net.txText || net.upText || '0.0 KB/s';
+
+    if (Array.isArray(net.history) && net.history.length > 1) {
+      drawSparklineChart(ctx, net.history, 5, Math.round(size * 0.62), size - 10, Math.round(size * 0.30), '#38bdf8', 'rgba(56, 189, 248, 0.25)');
+    }
+
     ctx.fillStyle = '#38bdf8';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('🌐 实时网速', size / 2, Math.round(6 * scale));
+    ctx.fillText('🌐 实时网速', size / 2, Math.round(5 * geomScale));
 
     ctx.textAlign = 'left';
     ctx.fillStyle = '#34d399';
-    ctx.font = `bold ${Math.round(12.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
-    ctx.fillText(`↓ ${net.downText || '0B/s'}`, Math.round(7 * scale), Math.round(28 * scale));
+    ctx.font = `bold ${Math.round(11.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    drawClampedLine(ctx, `↓ ${downStr}`, Math.round(7 * geomScale), Math.round(26 * geomScale), size - Math.round(14 * geomScale), 'left');
 
     ctx.fillStyle = '#c084fc';
-    ctx.font = `bold ${Math.round(12.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
-    ctx.fillText(`↑ ${net.upText || '0B/s'}`, Math.round(7 * scale), Math.round(48 * scale));
+    ctx.font = `bold ${Math.round(11.5 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    drawClampedLine(ctx, `↑ ${upStr}`, Math.round(7 * geomScale), Math.round(44 * geomScale), size - Math.round(14 * geomScale), 'left');
 
-    // Activity wave bar
-    const rxPct = Math.min(100, Math.round(Math.log10(Math.max(10, (net.rxSec || 1000))) * 15));
-    const bx = Math.round(8 * scale), by = size - Math.round(12 * scale), bw = size - Math.round(16 * scale), bh = Math.max(4, Math.round(5 * scale));
+    const rxBytes = net.rxSec !== undefined ? net.rxSec : ((Number(net.rxKbps) || 100) * 1024);
+    const rxPct = Math.min(100, Math.round(Math.log10(Math.max(10, rxBytes)) * 15));
+    const bx = Math.round(8 * geomScale), by = size - Math.round(10 * geomScale), bw = size - Math.round(16 * geomScale), bh = Math.max(3, Math.round(4 * geomScale));
     ctx.fillStyle = 'rgba(255,255,255,0.14)';
     ctx.fillRect(bx, by, bw, bh);
     ctx.fillStyle = '#38bdf8';
@@ -1267,39 +1789,43 @@ function paintWidgetCanvas(spec, size, keyPos) {
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   } else if (kind === 'weather') {
     drawBg('#102a43', '#091826');
-    const w = (lastTelemetry && lastTelemetry.weather) || { icon: '⛅', temp: '24', desc: '晴朗', city: 'Local' };
+    const w = (lastTelemetry && lastTelemetry.weather) || { icon: '⛅', temp: '24°C', condition: '晴间多云', city: '本地', humidity: '55%' };
+    const tempFormatted = String(w.temp !== undefined ? w.temp : '24°C').replace(/°C$/i, '') + '°C';
+    const humFormatted = String(w.humidity !== undefined ? w.humidity : '55%').replace(/%$/, '') + '%';
+    const condStr = String(w.condition || w.desc || '晴').slice(0, 5);
+
     ctx.fillStyle = '#7dd3fc';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(`${w.icon || '🌤️'} ${String(w.city || '天气').slice(0, 6)}`, size / 2, Math.round(6 * scale));
+    ctx.fillText(`${w.icon || '🌤️'} ${String(w.city || '本地').slice(0, 5)}`, size / 2, Math.round(6 * geomScale));
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(22 * scale)}px "Segoe UI", sans-serif`;
+    ctx.font = `bold ${Math.round(21 * scale)}px "Segoe UI", sans-serif`;
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${w.temp !== undefined ? w.temp : 24}°C`, size / 2, Math.round(39 * scale));
+    ctx.fillText(tempFormatted, size / 2, Math.round(39 * geomScale));
 
     ctx.fillStyle = '#bae6fd';
-    ctx.font = `${Math.round(10.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `${Math.round(9.5 * geomScale)}px "Microsoft YaHei", sans-serif`;
     ctx.textBaseline = 'bottom';
-    ctx.fillText(`${String(w.desc || '晴').slice(0, 5)} · 湿${w.humidity || 50}%`, size / 2, size - Math.round(7 * scale));
+    drawClampedLine(ctx, `${condStr} · 湿${humFormatted}`, size / 2, size - Math.round(7 * geomScale), size - 10, 'center');
     ctx.strokeStyle = 'rgba(125, 211, 252, 0.28)';
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   } else if (kind === 'pomodoro') {
     const p = (lastTelemetry && lastTelemetry.pomodoro) || { running: false, formatted: '25:00', progressPct: 0, phase: 'work' };
     drawBg(p.running ? '#7f1d1d' : '#27272a', p.running ? '#450a0a' : '#18181b');
     ctx.fillStyle = p.running ? '#fca5a5' : '#fbbf24';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(p.running ? '🍅 专注中' : '🍅 番茄钟', size / 2, Math.round(7 * scale));
+    ctx.fillText(p.running ? (p.phase === 'break' ? '☕ 休息中' : '🍅 专注中') : '🍅 番茄钟', size / 2, Math.round(7 * geomScale));
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(21 * scale)}px Consolas, "Segoe UI", sans-serif`;
+    ctx.font = `bold ${Math.round(20 * scale)}px Consolas, "Segoe UI", sans-serif`;
     ctx.textBaseline = 'middle';
-    ctx.fillText(p.formatted || '25:00', size / 2, Math.round(41 * scale));
+    ctx.fillText(p.formatted || '25:00', size / 2, Math.round(41 * geomScale));
 
-    const bx = Math.round(9 * scale), by = size - Math.round(15 * scale), bw = size - Math.round(18 * scale), bh = Math.max(5, Math.round(6 * scale));
+    const bx = Math.round(9 * geomScale), by = size - Math.round(14 * geomScale), bw = size - Math.round(18 * geomScale), bh = Math.max(4, Math.round(5.5 * geomScale));
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
     ctx.fillRect(bx, by, bw, bh);
     ctx.fillStyle = p.running ? '#f87171' : '#fbbf24';
@@ -1308,70 +1834,108 @@ function paintWidgetCanvas(spec, size, keyPos) {
     ctx.strokeStyle = p.running ? 'rgba(248, 113, 113, 0.45)' : 'rgba(251, 191, 36, 0.25)';
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   } else if (kind === 'obs') {
-    const obs = (lastTelemetry && lastTelemetry.obs) || { running: false, streaming: false, recording: false, statusText: '未启动' };
+    const obs = (lastTelemetry && lastTelemetry.obs) || { running: false, streaming: false, recording: false, statusText: 'OBS 待命' };
     drawBg(obs.streaming || obs.recording ? '#4c0519' : '#1e293b', '#0f172a');
     ctx.fillStyle = obs.streaming ? '#fb7185' : '#94a3b8';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText('🔴 OBS 监控', size / 2, Math.round(7 * scale));
-
-    ctx.fillStyle = obs.streaming ? '#ff4d6d' : (obs.running ? '#34d399' : '#cbd5e1');
-    ctx.font = `bold ${Math.round(14 * scale)}px "Microsoft YaHei", sans-serif`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(obs.streaming ? 'LIVE 推流' : (obs.running ? '已就绪' : '未运行'), size / 2, Math.round(40 * scale));
-
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(obs.statusText || '待命', size / 2, size - Math.round(8 * scale));
-    ctx.strokeStyle = 'rgba(251, 113, 133, 0.28)';
-    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
-  } else if (kind === 'media_now') {
-    drawBg('#3b0764', '#1e1b4b');
-    const m = (lastTelemetry && lastTelemetry.media) || { playing: false, app: '音乐', title: '暂无播放', lyric: '等待播放…' };
-    ctx.fillStyle = '#e879f9';
     ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(`🎵 ${m.app || '正在播放'}`, size / 2, Math.round(6 * scale));
+    ctx.fillText('🔴 OBS 监控', size / 2, Math.round(7 * geomScale));
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(11.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.fillStyle = obs.streaming ? '#ff4d6d' : (obs.running ? '#34d399' : '#cbd5e1');
+    ctx.font = `bold ${Math.round(13.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textBaseline = 'middle';
-    const titleStr = String(m.title || '暂无曲目').slice(0, 8);
-    ctx.fillText(titleStr, size / 2, Math.round(35 * scale));
-
-    ctx.fillStyle = '#c4b5fd';
-    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
-    const subStr = String(m.lyric || m.artist || '点击播放/暂停').slice(0, 9);
-    ctx.fillText(subStr, size / 2, Math.round(54 * scale));
-
-    ctx.strokeStyle = 'rgba(232, 121, 249, 0.32)';
-    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
-  } else {
-    // External JS plugin card
-    const plugins = (lastTelemetry && lastTelemetry.plugins) || [];
-    const plg = plugins.find(p => p.id === spec.pluginId) || plugins[0] || {
-      title: spec.label || 'JS 插件', value: 'READY', subValue: 'Plugin v0.8', barPct: 50, color: '#1e293b'
-    };
-    drawBg(plg.color || '#1e293b', '#0f172a');
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = `bold ${Math.round(10 * scale)}px "Microsoft YaHei", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(String(plg.title || '🧩 插件').slice(0, 8), size / 2, Math.round(7 * scale));
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(16 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(plg.value || 'OK').slice(0, 8), size / 2, Math.round(38 * scale));
+    ctx.fillText(obs.streaming ? 'LIVE 推流' : (obs.running ? '已就绪' : '未运行'), size / 2, Math.round(40 * geomScale));
 
     ctx.fillStyle = '#94a3b8';
-    ctx.font = `${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `${Math.round(9.5 * geomScale)}px "Microsoft YaHei", sans-serif`;
     ctx.textBaseline = 'bottom';
-    ctx.fillText(String(plg.subValue || '').slice(0, 9), size / 2, size - Math.round(8 * scale));
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+    drawClampedLine(ctx, obs.statusText || '待命', size / 2, size - Math.round(8 * geomScale), size - 10, 'center');
+    ctx.strokeStyle = 'rgba(251, 113, 133, 0.28)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'media_now') {
+    drawBg('#2e1065', '#0f172a');
+    const m = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
+      playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦',
+      lyric: '故事的小黄花 从出生那年就飘着', progressPct: 26
+    };
+    ctx.fillStyle = '#f0abfc';
+    ctx.font = `bold ${Math.round(9 * geomScale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    drawClampedLine(ctx, `🎵 ${m.app || '音乐'}`, Math.round(6 * geomScale), Math.round(6 * geomScale), size - Math.round(24 * geomScale), 'left');
+
+    ctx.fillStyle = m.playing === false ? '#94a3b8' : '#34d399';
+    ctx.textAlign = 'right';
+    ctx.fillText(m.playing === false ? '⏸' : '▶', size - Math.round(6 * geomScale), Math.round(6 * geomScale));
+
+    const songLine = (m.track || m.title || '晴天') + (m.artist && !(m.title || '').includes(m.artist) ? ` - ${m.artist}` : '');
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(11 * scale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textBaseline = 'middle';
+    drawClampedLine(ctx, songLine, size / 2, Math.round(33 * geomScale), size - Math.round(12 * geomScale), 'center');
+
+    // Synchronized desktop lyric line (high contrast + clean fitting, never cuts half character)
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = `bold ${Math.round(9.5 * geomScale)}px "Microsoft YaHei", sans-serif`;
+    drawClampedLine(ctx, m.lyric || m.subLyric || '故事的小黄花', size / 2, Math.round(53 * geomScale), size - Math.round(10 * geomScale), 'center');
+
+    // Bottom progress bar
+    const bx = Math.round(7 * geomScale), by = size - Math.round(10 * geomScale), bw = size - Math.round(14 * geomScale), bh = Math.max(3, Math.round(3.8 * geomScale));
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(bx, by, bw, bh);
+    const pct = Math.max(8, Math.min(100, Number(m.progressPct) || 26));
+    ctx.fillStyle = '#e879f9';
+    ctx.fillRect(bx, by, Math.round((bw * pct) / 100), bh);
+
+    ctx.strokeStyle = 'rgba(232, 121, 249, 0.35)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else {
+    // External JS plugin card (supports sparkline, bars, progress, badge)
+    const plg = resolvePluginData(spec);
+    drawBg(plg.color || '#0f172a', '#090d16');
+    const accent = plg.accent || '#38bdf8';
+
+    if (Array.isArray(plg.sparkline) && plg.sparkline.length > 1 && !plg.bars) {
+      drawSparklineChart(ctx, plg.sparkline, 4, Math.round(size * 0.55), size - 8, Math.round(size * 0.38), accent, 'rgba(56, 189, 248, 0.18)');
+    }
+
+    ctx.fillStyle = accent;
+    ctx.font = `bold ${Math.round(9 * geomScale)}px "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = (plg.badge && plg.badge.text) ? 'left' : 'center';
+    ctx.textBaseline = 'top';
+    const titleX = (plg.badge && plg.badge.text) ? Math.round(6 * geomScale) : size / 2;
+    const titleMaxW = (plg.badge && plg.badge.text) ? size - Math.round(34 * geomScale) : size - Math.round(12 * geomScale);
+    drawClampedLine(ctx, plg.title || '🧩 插件', titleX, Math.round(6 * geomScale), titleMaxW, ctx.textAlign);
+
+    if (plg.badge && plg.badge.text) {
+      drawPillBadge(ctx, plg.badge.text, plg.badge.bg, size - Math.round(5 * geomScale), Math.round(5 * geomScale), geomScale * 0.9);
+    }
+
+    if (Array.isArray(plg.bars) && plg.bars.length) {
+      drawBarsChart(ctx, plg.bars, Math.round(7 * geomScale), Math.round(23 * geomScale), size - Math.round(14 * geomScale), size - Math.round(29 * geomScale), geomScale * 0.9);
+    } else {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${Math.round(15.5 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.textBaseline = 'middle';
+      drawClampedLine(ctx, plg.value || 'OK', size / 2, Math.round(36 * geomScale), size - Math.round(10 * geomScale), 'center');
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = `${Math.round(9 * geomScale)}px "Microsoft YaHei", sans-serif`;
+      ctx.textBaseline = 'bottom';
+      const subY = (plg.progress !== undefined) ? size - Math.round(13 * geomScale) : size - Math.round(6 * geomScale);
+      drawClampedLine(ctx, plg.sub || plg.subValue || '', size / 2, subY, size - Math.round(10 * geomScale), 'center');
+
+      if (plg.progress !== undefined) {
+        const bx = Math.round(7 * geomScale), by = size - Math.round(9 * geomScale), bw = size - Math.round(14 * geomScale), bh = Math.max(3, Math.round(3.5 * geomScale));
+        ctx.fillStyle = 'rgba(255,255,255,0.14)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = accent;
+        ctx.fillRect(bx, by, Math.round((bw * Math.max(0, Math.min(100, Number(plg.progress) || 0))) / 100), bh);
+      }
+    }
+
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   }
 
@@ -1636,6 +2200,10 @@ function buildGrid() {
           return;
         }
         multiSelected.clear();
+        if (col < KEY_COLS) {
+          const sm = findSpanMasterCell(pageButtons(), row, col);
+          if (sm) { select(row, sm.masterCol); return; }
+        }
         select(row, col);
       });
 
@@ -1756,7 +2324,7 @@ function renderStripCellContent(cell, row, page, grad) {
     return;
   }
 
-  const txt = s.type === 'page' ? pageStripLabel().replace('\n', ' · ') : (s.label || '（空）');
+  const txt = s.type === 'page' ? pageStripLabel() : (s.label || '（空）');
   const gl = '▢';
 
   const isStripGrad = grad && grad.enabled && !s.customColor;
@@ -1777,7 +2345,7 @@ function renderStripCellContent(cell, row, page, grad) {
   }
 
   cell.appendChild(el('span', 'glyph', gl));
-  const capEl = el('span', 'cap', String(txt).replace(/\n/g, '/'));
+  const capEl = el('span', 'cap', String(txt));
   if (s.fontSize) {
     const fsPx = Math.max(9, Math.min(20, Math.round(76 * (Number(s.fontSize) / 100) * 0.65)));
     capEl.style.fontSize = `${fsPx}px`;
@@ -1842,6 +2410,25 @@ function refreshGrid() {
     }
     cell.classList.remove('back');
 
+    cell.classList.remove('span-master', 'span-slave', 'span-left', 'span-mid', 'span-right');
+    const spanMaster = findSpanMasterCell(pageButtons(), row, col);
+    if (spanMaster) {
+      cell.classList.add('filled', 'has-canvas', 'span-slave');
+      cell.classList.add(spanMaster.spanOffset === spanMaster.spanCols - 1 ? 'span-right' : 'span-mid');
+      const wc = paintWidgetCanvas(spanMaster.spec, 96, {
+        row,
+        col,
+        masterCol: spanMaster.masterCol,
+        spanCols: spanMaster.spanCols,
+        spanOffset: spanMaster.spanOffset,
+      });
+      wc.className = 'cell-canvas-preview';
+      cell.appendChild(wc);
+      cell.appendChild(el('span', 'tag', `r${row}c${col}`));
+      cell.appendChild(el('span', 'badge', `🔗 ${spanMaster.spanOffset + 1}/${spanMaster.spanCols}`));
+      return;
+    }
+
     const spec = pageButtons()[row + ',' + col];
     const isGrad = grad && grad.enabled && (!spec || !spec.customColor);
 
@@ -1876,12 +2463,14 @@ function refreshGrid() {
     }
 
     if (spec.type === 'widget') {
+      const spanCols = Math.max(1, Math.min(KEY_COLS - col, Number(spec.spanCols) || 1));
       cell.classList.add('has-canvas');
-      const wc = paintWidgetCanvas(spec, 96, { row, col });
+      if (spanCols > 1) cell.classList.add('span-master', 'span-left');
+      const wc = paintWidgetCanvas(spec, 96, { row, col, masterCol: col, spanCols, spanOffset: 0 });
       wc.className = 'cell-canvas-preview';
       cell.appendChild(wc);
       cell.appendChild(el('span', 'tag', `r${row}c${col}`));
-      cell.appendChild(el('span', 'badge', '组件'));
+      cell.appendChild(el('span', 'badge', spanCols > 1 ? `🔗 ${spanCols}联屏` : '组件'));
       const x = document.createElement('button');
       x.className = 'clear';
       x.textContent = '×';
@@ -1971,18 +2560,28 @@ function applyAppDualStateDefaults(spec, cls, targetPath) {
   const rawTarget = targetPath || (spec && spec.target) || '';
   const procName = cls.processName || (rawTarget ? rawTarget.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '');
   if (!procName) return;
+  const isScript = /\.(bat|cmd|ps1|vbs|py|sh)$/i.test(rawTarget);
 
   if (mode === 'smart') {
     spec.smartToggle = true;
-    spec.toggleAction = false;
-    delete spec.action2;
+    spec.toggleAction = true;
+    spec.toggleSyncMode = 'window';
+    spec.watchProcess = procName;
+    spec.action2 = {
+      type: 'window_toggle',
+      target: procName,
+      watchProcess: procName,
+      args: ''
+    };
     spec.badgeToggle = true;
     spec.badgeState1 = { text: '', bg: '#546e7a' };
-    spec.badgeState2 = { text: '运行中', bg: '#107c41' };
+    spec.badgeState2 = { text: '前台', bg: '#107c41' };
     return;
   }
 
   spec.toggleAction = true;
+  spec.toggleSyncMode = isScript ? 'manual' : 'auto';
+  spec.watchProcess = procName;
   spec.action2 = {
     type: 'command',
     target: mode === 'graceful' ? `wm_close:${procName}` : `taskkill /F /IM ${procName}.exe`,
@@ -2381,9 +2980,15 @@ function startColorCoordPicker(btnEl, onPicked) {
       try {
         const pt = (!DEMO && api.macroGetCursor) ? await api.macroGetCursor() : { x: 640, y: 360 };
         let hex = '#00e676';
-        if (!DEMO && api.pixelGetColor && pt && pt.x !== undefined) {
-          const cRes = await api.pixelGetColor(pt.x, pt.y);
-          if (cRes && cRes.hex) hex = cRes.hex;
+        if (!DEMO && pt && pt.x !== undefined) {
+          if (api.macroGetPixel) {
+            const pRes = await api.macroGetPixel(pt.x, pt.y);
+            if (pRes && (pRes.color || pRes.hex)) hex = pRes.color || pRes.hex;
+          } else if (api.pixelGetColor) {
+            const cRes = await api.pixelGetColor(pt.x, pt.y);
+            if (typeof cRes === 'string' && cRes.startsWith('#')) hex = cRes;
+            else if (cRes && (cRes.hex || cRes.color)) hex = cRes.hex || cRes.color;
+          }
         }
         if (pt && pt.x !== undefined && pt.y !== undefined) {
           onPicked(pt.x, pt.y, hex);
@@ -3665,19 +4270,71 @@ function isActionConfigured(act) {
 }
 
 const WIDGET_KIND_INFOS = [
-  { id: 'gpu', icon: '🎮', name: 'GPU 温度/显存 (NVML)', desc: '实时显示核心温度、负载与显存占用', color: '#0f291e', act: 'refresh' },
-  { id: 'net', icon: '🌐', name: '实时网速上下行', desc: '实时监控网卡下行/上行吞吐速率', color: '#0c1e35', act: 'refresh' },
+  { id: 'gpu', icon: '🎮', name: 'GPU 温度与显存', desc: '实时显示核心温度、负载、显存与趋势线', color: '#0f291e', act: 'refresh' },
+  { id: 'net', icon: '🌐', name: '实时网速上下行', desc: '实时监控网卡吞吐速率与历史波形', color: '#0c1e35', act: 'refresh' },
   { id: 'pomodoro', icon: '🍅', name: '番茄钟专注倒计时', desc: '按键即启停/重置专注倒计时进度', color: '#7f1d1d', act: 'pomodoro_toggle' },
-  { id: 'weather', icon: '🌤️', name: '实时天气与温湿度', desc: '自动或指定城市天气状况与温度', color: '#102a43', act: 'refresh' },
-  { id: 'media_now', icon: '🎵', name: '当前播放音乐/歌词', desc: '感知网易云/Spotify/QQ音乐曲目', color: '#3b0764', act: 'media_play_pause' },
+  { id: 'weather', icon: '🌤️', name: '实时天气与温湿度', desc: '自动或指定城市天气状况与温湿度', color: '#102a43', act: 'refresh' },
+  { id: 'media_now', icon: '🎵', name: 'SMTC 音乐与桌面歌词', desc: '系统媒体会话、黑胶封面与同步歌词', color: '#2e1065', act: 'media_play_pause' },
   { id: 'obs', icon: '🔴', name: 'OBS 推流/录制监控', desc: '实时监控 OBS Studio 在线与直播态', color: '#1e293b', act: 'refresh' },
-  { id: 'plugin', icon: '🧩', name: '外部 JS 插件钩子', desc: '加载 plugins/*.plugin.js 自定义数据源', color: '#1e293b', act: 'plugin_click' },
+  { id: 'plugin', icon: '🧩', name: '可视化画布插件', desc: '支持折线图/推子柱图/SVG 的插件市场', color: '#0f172a', act: 'plugin_click' },
 ];
+
+function openPluginMarketModal(onSelectPlugin) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal';
+  wrap.id = 'pluginMarketModal';
+  const catalog = BUILTIN_MARKET_PLUGINS;
+
+  wrap.innerHTML = `
+    <div class="modalbox" style="width: 680px; max-width: 94vw; padding: 16px 20px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
+        <div>
+          <h3 style="margin:0; font-size:15px;">🛍️ AKP153 可视化画布插件中心 (v0.9 Plugin API)</h3>
+          <div style="font-size:11.5px; color:var(--muted); margin-top:3px;">支持 Sparkline 折线图、Bars 多路推子、SVG 矢量图标与 Badge 状态角标渲染</div>
+        </div>
+        <button type="button" class="ghost tiny" id="pmCloseBtn">✕ 关闭</button>
+      </div>
+      <div class="plugin-market-grid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; max-height: 76vh; overflow-y:auto; padding-right:4px;">
+        ${catalog.map(p => `
+          <div class="plugin-market-card" data-pid="${escapeAttr(p.id)}" style="background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:11px 12px; display:flex; flex-direction:column; gap:7px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-weight:700; font-size:13px; color:var(--ink);">${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name)}</span>
+              <span style="font-size:10px; padding:2px 7px; border-radius:999px; background:var(--accent-subtle); color:var(--accent); font-weight:600;">${escapeHtml(p.category)}</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--muted); line-height:1.45;">${escapeHtml(p.description)}</div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:auto;">
+              ${(p.features || []).map(f => `<span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(56,189,248,0.12); color:var(--ink);">${escapeHtml(f)}</span>`).join('')}
+            </div>
+            <button type="button" class="primary tiny pm-use-btn" data-pid="${escapeAttr(p.id)}" style="margin-top:4px; width:100%;">⚡ 立即绑定此插件</button>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.querySelector('#pmCloseBtn').onclick = close;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelectorAll('.pm-use-btn').forEach(btn => {
+    btn.onclick = () => {
+      const pid = btn.dataset.pid;
+      const meta = catalog.find(x => x.id === pid) || catalog[0];
+      close();
+      if (onSelectPlugin) onSelectPlugin(meta);
+    };
+  });
+}
 
 function renderWidgetEditorHtml(spec) {
   const kind = spec.widgetKind || 'gpu';
-  const act = spec.action || (kind === 'pomodoro' ? 'pomodoro_toggle' : (kind === 'media_now' ? 'media_play_pause' : 'refresh'));
-  const plugins = (lastTelemetry && lastTelemetry.plugins) || [];
+  const act = spec.action || (kind === 'pomodoro' ? 'pomodoro_toggle' : (kind === 'media_now' ? 'media_play_pause' : (kind === 'plugin' ? 'plugin_click' : 'refresh')));
+  const curCol = (selected && selected.col !== undefined && selected.col < KEY_COLS) ? selected.col : 0;
+  const maxSpan = Math.max(1, Math.min(3, KEY_COLS - curCol));
+  const curSpan = Math.max(1, Math.min(maxSpan, Number(spec.spanCols) || 1));
+  const rawPlugins = (lastTelemetry && Array.isArray(lastTelemetry.plugins) && lastTelemetry.plugins.length)
+    ? lastTelemetry.plugins
+    : BUILTIN_MARKET_PLUGINS;
+  const curPluginId = String(spec.pluginId || 'uptime_greeting').replace(/-/g, '_');
 
   return `
     <div class="widget-editor-card">
@@ -3694,31 +4351,48 @@ function renderWidgetEditorHtml(spec) {
       </div>
 
       <div class="row" style="margin-top: 6px; margin-bottom: 0;">
+        <label>📏 跨格联合画布宽度 (Multi-Key Span 宽屏模式)</label>
+        <div class="color-capsule-group" id="i-widget-span-group">
+          <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 1 ? 'active' : ''}" data-span="1">1×1 标准单格</button>
+          <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 2 ? 'active' : ''}" data-span="2" ${maxSpan < 2 ? 'disabled title="右侧剩余格子不足 2 格"' : ''}>2×1 双联宽屏</button>
+          <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 3 ? 'active' : ''}" data-span="3" ${maxSpan < 3 ? 'disabled title="右侧剩余格子不足 3 格"' : ''}>3×1 三联超宽</button>
+        </div>
+        ${curSpan > 1 ? `<div style="font-size:11px; color:var(--accent); margin-top:4px;">🔗 已开启 ${curSpan}×1 跨格宽屏联屏（自动展开实时趋势折线图 / 双行桌面歌词）</div>` : ''}
+      </div>
+
+      <div class="row" style="margin-top: 6px; margin-bottom: 0;">
         <label>按下该组件按键时的交互动作</label>
         <select id="i-widget-action">
           <option value="pomodoro_toggle" ${act === 'pomodoro_toggle' ? 'selected' : ''}>🍅 番茄钟：开始 / 暂停倒计时</option>
           <option value="pomodoro_reset" ${act === 'pomodoro_reset' ? 'selected' : ''}>🔄 番茄钟：重置倒计时</option>
-          <option value="media_play_pause" ${act === 'media_play_pause' ? 'selected' : ''}>⏯️ 音乐：播放 / 暂停切换</option>
+          <option value="media_play_pause" ${act === 'media_play_pause' ? 'selected' : ''}>⏯️ 音乐：播放 / 暂停切换 (3联屏支持左/中/右切歌)</option>
           <option value="media_next" ${act === 'media_next' ? 'selected' : ''}>⏭️ 音乐：切到下一首</option>
           <option value="refresh" ${act === 'refresh' ? 'selected' : ''}>⚡ 立即刷新实时监控数据</option>
-          <option value="plugin_click" ${act === 'plugin_click' ? 'selected' : ''}>🧩 触发 JS 插件 onAction 钩子</option>
+          <option value="open_taskmgr" ${act === 'open_taskmgr' ? 'selected' : ''}>📊 打开系统任务管理器 (taskmgr)</option>
+          <option value="plugin_click" ${act === 'plugin_click' ? 'selected' : ''}>🧩 触发 JS 插件 onPress 交互钩子</option>
         </select>
       </div>
 
       ${kind === 'plugin' ? `
-        <div class="row" style="margin-top: 4px; margin-bottom: 0;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-            <label style="margin:0;">选择外部 JS 插件 (plugins/*.plugin.js)</label>
-            <button type="button" class="ghost tiny" id="i-widget-reload-plugins">🔄 重载插件</button>
+        <div class="row" style="margin-top: 6px; margin-bottom: 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; gap:6px;">
+            <label style="margin:0;">选择可视化画布插件</label>
+            <div style="display:flex; gap:4px;">
+              <button type="button" class="primary tiny" id="i-widget-open-market">🛍️ 插件市场 (${BUILTIN_MARKET_PLUGINS.length})</button>
+              <button type="button" class="ghost tiny" id="i-widget-reload-plugins">🔄 重载</button>
+            </div>
           </div>
           <select id="i-widget-plugin-id">
-            ${plugins.length ? plugins.map(p => `<option value="${escapeAttr(p.id)}" ${spec.pluginId === p.id ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.id)}</option>`).join('') : '<option value="uptime-greeting">✨ 工作台时段问候与运行时长 (内置示例)</option>'}
+            ${rawPlugins.map(p => {
+              const pid = String(p.id || '').replace(/-/g, '_');
+              return `<option value="${escapeAttr(pid)}" ${curPluginId === pid ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.title || pid)}</option>`;
+            }).join('')}
           </select>
         </div>
       ` : ''}
 
       ${kind === 'pomodoro' ? `
-        <div class="btnrow" style="margin-top: 4px; margin-bottom: 0;">
+        <div class="btnrow" style="margin-top: 6px; margin-bottom: 0;">
           <button type="button" class="ghost tiny" id="i-pomo-toggle" style="flex:1;">⏯️ 启停番茄钟</button>
           <button type="button" class="ghost tiny" id="i-pomo-reset" style="flex:1;">↺ 重置 (${(cfg && cfg.pomodoroMinutes) || 25}分钟)</button>
         </div>
@@ -3735,12 +4409,27 @@ function wireWidgetEditor(box, spec) {
       const info = WIDGET_KIND_INFOS.find(x => x.id === kind) || WIDGET_KIND_INFOS[0];
       spec.widgetKind = kind;
       spec.action = info.act;
+      if (kind === 'plugin' && !spec.pluginId) spec.pluginId = 'uptime_greeting';
       spec.label = info.name.split(' ')[0];
       spec.color = info.color;
       await commit(true);
       renderInspector();
     };
   });
+
+  box.querySelectorAll('.widget-span-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      const span = Math.max(1, Math.min(3, Number(btn.dataset.span) || 1));
+      pushHistory(`设置组件跨格联屏 ${span}×1`);
+      if (span === 1) delete spec.spanCols;
+      else spec.spanCols = span;
+      await commit(true);
+      renderInspector();
+      toast(span > 1 ? `🔗 已合并为 ${span}×1 跨格联合宽屏画布` : '已恢复为 1×1 标准单格组件');
+    };
+  });
+
   const actSel = box.querySelector('#i-widget-action');
   if (actSel) {
     actSel.onchange = async () => {
@@ -3752,30 +4441,55 @@ function wireWidgetEditor(box, spec) {
   if (plgSel) {
     plgSel.onchange = async () => {
       spec.pluginId = plgSel.value;
+      const meta = BUILTIN_MARKET_PLUGINS.find(x => x.id === plgSel.value);
+      if (meta) {
+        spec.label = meta.name;
+        spec.color = meta.color;
+      }
       await commit(true);
+      renderInspector();
+    };
+  }
+  const btnMarket = box.querySelector('#i-widget-open-market');
+  if (btnMarket) {
+    btnMarket.onclick = () => {
+      openPluginMarketModal(async (meta) => {
+        spec.widgetKind = 'plugin';
+        spec.pluginId = meta.id;
+        spec.action = 'plugin_click';
+        spec.label = meta.name;
+        spec.color = meta.color;
+        await commit(true);
+        renderInspector();
+        toast(`✅ 已绑定插件：「${meta.name}」`);
+      });
     };
   }
   const btnReloadPlg = box.querySelector('#i-widget-reload-plugins');
   if (btnReloadPlg) {
     btnReloadPlg.onclick = async () => {
       if (!DEMO && api.pluginsReload) {
-        const res = await api.pluginsReload();
-        toast(`已重新扫描加载 ${(res && res.plugins && res.plugins.length) || 0} 个外部 JS 插件`);
+        const list = await api.pluginsReload();
+        toast(`已重新扫描加载 ${Array.isArray(list) ? list.length : BUILTIN_MARKET_PLUGINS.length} 个外部 JS 插件`);
         renderInspector();
       } else {
-        toast('已重新扫描外部 JS 插件目录');
+        toast(`已加载内置与社区插件共 ${BUILTIN_MARKET_PLUGINS.length} 个`);
       }
     };
   }
   const btnPomoToggle = box.querySelector('#i-pomo-toggle');
   if (btnPomoToggle) {
     btnPomoToggle.onclick = async () => {
-      if (!DEMO && api.pomodoroControl) {
-        await api.pomodoroControl('toggle', (cfg && cfg.pomodoroMinutes) || 25);
+      const mins = (cfg && cfg.pomodoroMinutes) || 25;
+      if (!DEMO && (api.pomodoroControl || api.pomodoroAction)) {
+        const fn = api.pomodoroControl || api.pomodoroAction;
+        const snap = await fn('toggle', mins);
+        if (snap) lastTelemetry.pomodoro = snap;
       } else {
         lastTelemetry.pomodoro.running = !lastTelemetry.pomodoro.running;
-        refreshGrid();
       }
+      refreshGrid();
+      if (selected) await pushKey(selected.row, selected.col);
       toast(lastTelemetry.pomodoro.running ? '🍅 番茄专注已启动' : '⏸ 番茄专注已暂停');
     };
   }
@@ -3783,12 +4497,15 @@ function wireWidgetEditor(box, spec) {
   if (btnPomoReset) {
     btnPomoReset.onclick = async () => {
       const mins = (cfg && cfg.pomodoroMinutes) || 25;
-      if (!DEMO && api.pomodoroControl) {
-        await api.pomodoroControl('reset', mins);
+      if (!DEMO && (api.pomodoroControl || api.pomodoroAction)) {
+        const fn = api.pomodoroControl || api.pomodoroAction;
+        const snap = await fn('reset', mins);
+        if (snap) lastTelemetry.pomodoro = snap;
       } else {
-        lastTelemetry.pomodoro = { running: false, phase: 'work', remainSec: mins * 60, totalSec: mins * 60, formatted: `${String(mins).padStart(2, '0')}:00`, progressPct: 0 };
-        refreshGrid();
+        lastTelemetry.pomodoro = { running: false, phase: 'work', remainSec: mins * 60, remainingSec: mins * 60, totalSec: mins * 60, formatted: `${String(mins).padStart(2, '0')}:00`, progressPct: 0 };
       }
+      refreshGrid();
+      if (selected) await pushKey(selected.row, selected.col);
       toast('↺ 番茄钟已重置');
     };
   }
@@ -4224,6 +4941,24 @@ function renderInspector() {
               ` : ''}
             </div>
 
+            <!-- 双态状态切换策略 (解决瞬态脚本自动回弹 & 支持 HWND 任务栏唤醒/最小化) -->
+            <div class="dual-sync-policy-card" style="background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:8px 0;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:5px;">
+                <label style="font-size:11.5px; font-weight:600; color:var(--ink); margin:0;">🧠 状态切换与进程同步策略</label>
+                <span style="font-size:10px; color:var(--accent);">v0.9 智能状态机</span>
+              </div>
+              <select id="i-toggle-sync-mode" style="font-size:12px;">
+                <option value="auto" ${(!spec.toggleSyncMode || spec.toggleSyncMode === 'auto') ? 'selected' : ''}>🧠 智能混合模式 (推荐：常驻软件同步进程，脚本/启动器自动保持双态)</option>
+                <option value="window" ${spec.toggleSyncMode === 'window' ? 'selected' : ''}>🪟 任务栏窗口模式 (未启动则启动 → 后台则置顶 → 前台则最小化隐藏)</option>
+                <option value="manual" ${spec.toggleSyncMode === 'manual' ? 'selected' : ''}>🔄 纯手动乒乓切换 (适合批处理脚本/开关命令，严格按击交替形态 1 ⇄ 2)</option>
+                <option value="process" ${spec.toggleSyncMode === 'process' ? 'selected' : ''}>📡 严格绑定进程存活 (仅当目标或指定监测进程运行时处于形态 2)</option>
+              </select>
+              <div style="margin-top:6px; ${(spec.toggleSyncMode === 'process' || spec.toggleSyncMode === 'window') ? '' : 'display:none;'}">
+                <label style="font-size:11px; color:var(--muted);">自定义监测进程名（可选，适合启动器与主程序不同名场景，如 leigod.exe）</label>
+                <input id="i-watch-process" placeholder="留空则自动解析形态 1 目标进程名" value="${escapeAttr(spec.watchProcess || '')}" style="font-size:12px;" />
+              </div>
+            </div>
+
             <!-- 互换动作胶囊 -->
             <div class="dual-action-swap-card">
               <div class="dual-swap-main-row">
@@ -4250,6 +4985,7 @@ function renderInspector() {
                 <span class="dual-tag tag-state2">触发态 (运行中)</span>
               </div>
               <div class="btnrow" style="margin-top: 6px;">
+                <button class="ghost tiny" id="i-act2-pickwin" title="未启动则启动，后台则置顶激活，已处前台则最小化隐藏（类 Windows 任务栏行为）">🪟 唤醒/最小化</button>
                 <button class="ghost tiny" id="i-act2-pickkill" title="提取主进程名一键填充 taskkill 退出命令">⚡ 设为退出命令</button>
                 <button class="ghost tiny" id="i-act2-pickapp">选择程序…</button>
                 <button class="ghost tiny" id="i-act2-pickhk">设为快捷键</button>
@@ -4258,6 +4994,7 @@ function renderInspector() {
               <div class="row" style="margin-top: 6px;">
                 <label style="font-size: 11px;">形态 2 动作类型</label>
                 <select id="i-toggle-action2-type">
+                  <option value="window_toggle" ${(spec.action2 && spec.action2.type === 'window_toggle') ? 'selected' : ''}>🪟 激活/最小化窗口切换 (HWND 任务栏模式)</option>
                   <option value="command" ${((spec.action2 && spec.action2.type) === 'command' || (!spec.action2 && spec.type === 'app')) ? 'selected' : ''}>命令行 (CMD / taskkill / wm_close)</option>
                   <option value="hotkey" ${(spec.action2 && spec.action2.type === 'hotkey') ? 'selected' : ''}>虚拟快捷键 (Hotkey)</option>
                   <option value="volume" ${(spec.action2 && spec.action2.type === 'volume') ? 'selected' : ''}>🔊 音频与音量控制 (Volume)</option>
@@ -4378,8 +5115,8 @@ function renderInspector() {
                   ${curBadgeState === 0 ? '<span class="badge-current-tag">当前激活</span>' : ''}
                 </div>
                 <div class="badge-toggle-card-inputs">
-                  <input id="i-toggle-s1-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState1 && spec.badgeState1.text) || 'ON')}" />
-                  <input id="i-toggle-s1-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState1 && spec.badgeState1.bg) || '#107c41'}" />
+                  <input id="i-toggle-s1-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState1 && spec.badgeState1.text !== undefined) ? spec.badgeState1.text : '待机')}" />
+                  <input id="i-toggle-s1-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState1 && spec.badgeState1.bg) || '#546e7a'}" />
                 </div>
               </div>
               <div class="badge-toggle-card ${curBadgeState === 1 ? 'active-state' : ''}">
@@ -4389,8 +5126,8 @@ function renderInspector() {
                   ${curBadgeState === 1 ? '<span class="badge-current-tag">当前激活</span>' : ''}
                 </div>
                 <div class="badge-toggle-card-inputs">
-                  <input id="i-toggle-s2-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState2 && spec.badgeState2.text) || 'OFF')}" />
-                  <input id="i-toggle-s2-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState2 && spec.badgeState2.bg) || '#e53935'}" />
+                  <input id="i-toggle-s2-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState2 && spec.badgeState2.text !== undefined) ? spec.badgeState2.text : '运行中')}" />
+                  <input id="i-toggle-s2-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState2 && spec.badgeState2.bg) || '#107c41'}" />
                 </div>
               </div>
             </div>
@@ -4678,11 +5415,11 @@ function renderInspector() {
   if (btnBadgeModeToggle) {
     btnBadgeModeToggle.onclick = async () => {
       spec.badgeToggle = true;
-      if (!spec.badgeState1) spec.badgeState1 = { text: 'ON', bg: '#107c41', color: '#ffffff' };
-      if (!spec.badgeState2) spec.badgeState2 = { text: 'OFF', bg: '#e53935', color: '#ffffff' };
+      if (!spec.badgeState1) spec.badgeState1 = { text: '待机', bg: '#546e7a', color: '#ffffff' };
+      if (!spec.badgeState2) spec.badgeState2 = { text: '运行中', bg: '#107c41', color: '#ffffff' };
       if (!spec.badgeState1.text && !spec.badgeState2.text) {
-        spec.badgeState1.text = 'ON';
-        spec.badgeState2.text = 'OFF';
+        spec.badgeState1.text = '待机';
+        spec.badgeState2.text = '运行中';
       }
       if (spec._activeState === undefined) spec._activeState = 0;
       await commit(true);
@@ -4798,10 +5535,13 @@ function renderInspector() {
         }
         spec.action2 = { type: targetKill ? 'command' : 'hotkey', target: targetKill || 'Alt+F4', hotkey: targetKill ? '' : 'Alt+F4', args: '' };
       }
+      if (!spec.toggleSyncMode) {
+        spec.toggleSyncMode = /\.(bat|cmd|ps1|vbs|py|sh)$/i.test(spec.target || '') ? 'manual' : 'auto';
+      }
       if (!spec.badgeToggle) {
         spec.badgeToggle = true;
-        spec.badgeState1 = spec.badgeState1 || { text: 'ON', bg: '#107c41' };
-        spec.badgeState2 = spec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+        spec.badgeState1 = spec.badgeState1 || { text: '待机', bg: '#546e7a' };
+        spec.badgeState2 = spec.badgeState2 || { text: '运行中', bg: '#107c41' };
       }
       await commit(false);
       renderInspector();
@@ -4889,7 +5629,56 @@ function renderInspector() {
   bindFaviconBtn('i-fetch-favicon', () => ($('i-target') && $('i-target').value.trim()) || spec.target || '');
   bindFaviconBtn('i-act2-fetch-favicon', () => ($('i-toggle-action2-target') && $('i-toggle-action2-target').value.trim()) || (spec.action2 && spec.action2.target) || '');
 
+  // 双态同步策略与自定义监测进程绑定
+  const selSyncMode = $('i-toggle-sync-mode');
+  if (selSyncMode) {
+    selSyncMode.onchange = async () => {
+      spec.toggleSyncMode = selSyncMode.value;
+      delete spec._downgradedToManual;
+      if (selSyncMode.value === 'window') {
+        const proc = (spec.watchProcess || (spec.target ? spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '')) || '';
+        spec.action2 = { type: 'window_toggle', target: proc, watchProcess: proc, args: '' };
+        if (spec.badgeToggle) {
+          spec.badgeState1 = { text: '', bg: '#546e7a' };
+          spec.badgeState2 = { text: '前台', bg: '#107c41' };
+        }
+      }
+      await commit(true);
+      renderInspector();
+    };
+  }
+  const iptWatchProc = $('i-watch-process');
+  if (iptWatchProc) {
+    iptWatchProc.addEventListener('change', async () => {
+      spec.watchProcess = iptWatchProc.value.trim();
+      await commit(false);
+    });
+  }
+
   // 状态 2 快捷辅助按钮
+  const btnAct2Win = $('i-act2-pickwin');
+  if (btnAct2Win) {
+    btnAct2Win.onclick = async () => {
+      let proc = spec.watchProcess || '';
+      if (!proc && spec.target) {
+        proc = spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+      }
+      spec.toggleSyncMode = 'window';
+      spec.watchProcess = proc;
+      spec.action2 = {
+        type: 'window_toggle',
+        target: proc || 'app',
+        watchProcess: proc || 'app',
+        args: ''
+      };
+      spec.badgeToggle = true;
+      spec.badgeState1 = { text: '', bg: '#546e7a' };
+      spec.badgeState2 = { text: '前台', bg: '#107c41' };
+      await commit(true);
+      renderInspector();
+      toast('🪟 已设为任务栏唤醒/最小化切换模式');
+    };
+  }
   const btnAct2Kill = $('i-act2-pickkill');
   if (btnAct2Kill) {
     btnAct2Kill.onclick = async () => {
@@ -5210,18 +5999,19 @@ function renderInspector() {
   };
   $('i-test').onclick = async () => {
     let act = spec;
-    if (spec.badgeToggle) {
+    const isDual = Boolean(spec.toggleAction || spec.badgeToggle);
+    if (isDual) {
       const cur = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-      if (spec.toggleAction && spec.action2 && isActionConfigured(spec.action2) && cur === 1) {
+      if (spec.toggleAction && spec.action2 && (isActionConfigured(spec.action2) || spec.action2.type === 'window_toggle') && cur === 1) {
         act = spec.action2;
       }
-      spec._activeState = (cur === 1 ? 0 : 1);
+      spec._activeState = (spec.toggleSyncMode === 'window') ? 1 : (cur === 1 ? 0 : 1);
       refreshGrid();
       await pushKey(selected.row, selected.col);
       renderInspector();
     }
-    const r = !DEMO ? await api.actionRun(act) : { ok: true };
-    toast(r && r.ok ? '已启动' : '启动失败：' + (r && r.error));
+    const r = !DEMO ? await api.actionRun(act, { row: selected.row, col: selected.col, activeState: spec._activeState }) : { ok: true };
+    toast(r && r.ok ? '✅ 已触发执行' : '启动失败：' + (r && r.error));
   };
   $('i-push').onclick = () => repaintSelected();
   $('i-iconfile').onclick = async () => {
@@ -5501,12 +6291,18 @@ function renderStripInspector(box) {
   const s = pageStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const page = curPage();
   const grad = page && page.gradient;
+  const rawPlugins = (lastTelemetry && Array.isArray(lastTelemetry.plugins) && lastTelemetry.plugins.length)
+    ? lastTelemetry.plugins
+    : BUILTIN_MARKET_PLUGINS;
+  const curPluginId = String(s.pluginId || 'uptime_greeting').replace(/-/g, '_');
+
   box.className = 'inspector';
   box.innerHTML = `
     <details class="sec" data-sec="action" ${secOpen.action ? 'open' : ''}>
       <summary>显示内容</summary>
       <div class="body">
         <div class="row">
+          <label>副屏数据源模式</label>
           <select id="s-type">
             <option value="clock" ${s.type === 'clock' ? 'selected' : ''}>⏰ 时钟与星期（自动刷新）</option>
             <option value="page" ${s.type === 'page' ? 'selected' : ''}>📑 页码 + 页名（随翻页自动更新）</option>
@@ -5514,18 +6310,40 @@ function renderStripInspector(box) {
             <option value="mem" ${s.type === 'mem' ? 'selected' : ''}>📊 内存占用率（实时动态监控）</option>
             <option value="sys" ${s.type === 'sys' ? 'selected' : ''}>📈 系统态势仪表（CPU + 内存组合）</option>
             <option value="volume" ${s.type === 'volume' ? 'selected' : ''}>🔊 声学监听与音量监控（实时动态）</option>
-            <option value="gpu" ${s.type === 'gpu' ? 'selected' : ''}>🎮 GPU 温度/显存/负载 (NVML)</option>
-            <option value="net" ${s.type === 'net' ? 'selected' : ''}>🌐 实时网速上下行监控</option>
+            <option value="gpu" ${s.type === 'gpu' ? 'selected' : ''}>🎮 GPU 温度/显存/趋势线 (NVML)</option>
+            <option value="net" ${s.type === 'net' ? 'selected' : ''}>🌐 实时网速上下行与波形监控</option>
             <option value="pomodoro" ${s.type === 'pomodoro' ? 'selected' : ''}>🍅 番茄钟专注倒计时</option>
             <option value="weather" ${s.type === 'weather' ? 'selected' : ''}>🌤️ 实时天气与温湿度</option>
-            <option value="media_now" ${s.type === 'media_now' ? 'selected' : ''}>🎵 网易云 / Spotify 当前播放歌词与曲目</option>
+            <option value="media_now" ${s.type === 'media_now' ? 'selected' : ''}>🎵 SMTC 音乐与同步桌面歌词</option>
             <option value="obs" ${s.type === 'obs' ? 'selected' : ''}>🔴 OBS 推流 / 录制状态监控</option>
-            <option value="plugin" ${s.type === 'plugin' ? 'selected' : ''}>🧩 外部 JS 插件动态卡片 (plugins/*.plugin.js)</option>
+            <option value="plugin" ${s.type === 'plugin' ? 'selected' : ''}>🧩 可视化画布插件 (plugins/*.plugin.js)</option>
             <option value="text" ${s.type === 'text' ? 'selected' : ''}>✍️ 自定义静态文字</option>
           </select>
         </div>
-        <div class="row"><label>文字（回车换行，时钟模式下忽略）</label>
-          <textarea id="s-label">${escapeHtml(s.label || '')}</textarea></div>
+        <div class="row" id="s-label-row" style="${s.type === 'text' ? '' : 'display:none;'}">
+          <label>自定义显示文字（支持回车换行）</label>
+          <textarea id="s-label" placeholder="输入要在副屏显示的静态文字...">${escapeHtml(s.label || '')}</textarea>
+        </div>
+        ${s.type === 'plugin' ? `
+          <div class="row">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+              <label style="margin:0;">绑定可视化画布插件</label>
+              <button type="button" class="primary tiny" id="s-open-plugin-market">🛍️ 插件市场 (${BUILTIN_MARKET_PLUGINS.length})</button>
+            </div>
+            <select id="s-plugin-id">
+              ${rawPlugins.map(p => {
+                const pid = String(p.id || '').replace(/-/g, '_');
+                return `<option value="${escapeAttr(pid)}" ${curPluginId === pid ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.title || pid)}</option>`;
+              }).join('')}
+            </select>
+          </div>
+        ` : ''}
+        ${s.type === 'pomodoro' ? `
+          <div class="btnrow" style="margin-top:4px;">
+            <button type="button" class="ghost tiny" id="s-pomo-toggle" style="flex:1;">⏯️ 启停番茄钟</button>
+            <button type="button" class="ghost tiny" id="s-pomo-reset" style="flex:1;">↺ 重置倒计时</button>
+          </div>
+        ` : ''}
       </div>
     </details>
     <details class="sec" data-sec="look" ${secOpen.look ? 'open' : ''}>
@@ -5551,14 +6369,17 @@ function renderStripInspector(box) {
       </div>
     </details>
     <div class="btnrow" style="margin-top: 14px;">
-      <button class="ghost" id="s-push">重画这块屏</button>
-      <button class="ghost" id="s-save">存进按键库</button>
+      <button class="ghost" id="s-push">↻ 重画这块屏</button>
+      <button class="ghost" id="s-save">⭐ 存为组件模板</button>
     </div>
   `;
   wireSections(box);
   const el = (id) => $(id);
   el('s-type').addEventListener('change', async () => {
-    pageStrips()[String(row)] = Object.assign({}, s, { type: el('s-type').value });
+    const nextType = el('s-type').value;
+    const nextSpec = Object.assign({}, s, { type: nextType });
+    if (nextType === 'plugin' && !nextSpec.pluginId) nextSpec.pluginId = 'uptime_greeting';
+    pageStrips()[String(row)] = nextSpec;
     await commit(true);
     renderInspector();
   });
@@ -5566,6 +6387,54 @@ function renderStripInspector(box) {
     pageStrips()[String(row)] = Object.assign({}, s, { label: el('s-label').value });
     await commit(true);
   });
+  const sPlgSel = el('s-plugin-id');
+  if (sPlgSel) {
+    sPlgSel.addEventListener('change', async () => {
+      pageStrips()[String(row)] = Object.assign({}, s, { pluginId: sPlgSel.value });
+      await commit(true);
+      renderInspector();
+    });
+  }
+  const sMarketBtn = el('s-open-plugin-market');
+  if (sMarketBtn) {
+    sMarketBtn.onclick = () => {
+      openPluginMarketModal(async (meta) => {
+        pageStrips()[String(row)] = Object.assign({}, s, { type: 'plugin', pluginId: meta.id, color: meta.color });
+        await commit(true);
+        renderInspector();
+        toast(`✅ 副屏 ${row + 1} 已绑定插件：「${meta.name}」`);
+      });
+    };
+  }
+  const sPomoToggle = el('s-pomo-toggle');
+  if (sPomoToggle) {
+    sPomoToggle.onclick = async () => {
+      const mins = (cfg && cfg.pomodoroMinutes) || 25;
+      if (!DEMO && (api.pomodoroControl || api.pomodoroAction)) {
+        const snap = await (api.pomodoroControl || api.pomodoroAction)('toggle', mins);
+        if (snap) lastTelemetry.pomodoro = snap;
+      } else {
+        lastTelemetry.pomodoro.running = !lastTelemetry.pomodoro.running;
+      }
+      refreshGrid();
+      await pushStrip(row);
+    };
+  }
+  const sPomoReset = el('s-pomo-reset');
+  if (sPomoReset) {
+    sPomoReset.onclick = async () => {
+      const mins = (cfg && cfg.pomodoroMinutes) || 25;
+      if (!DEMO && (api.pomodoroControl || api.pomodoroAction)) {
+        const snap = await (api.pomodoroControl || api.pomodoroAction)('reset', mins);
+        if (snap) lastTelemetry.pomodoro = snap;
+      } else {
+        lastTelemetry.pomodoro = { running: false, phase: 'work', remainSec: mins * 60, remainingSec: mins * 60, totalSec: mins * 60, formatted: `${String(mins).padStart(2, '0')}:00`, progressPct: 0 };
+      }
+      refreshGrid();
+      await pushStrip(row);
+    };
+  }
+
   const chkCustom = el('s-customcolor');
   const btnModeGrad = el('s-colormode-grad');
   const btnModeCustom = el('s-colormode-custom');
@@ -5618,7 +6487,22 @@ function renderStripInspector(box) {
     await commit(true);
   });
   el('s-push').onclick = () => pushStrip(row);
-  el('s-save').onclick = () => libraryAdd(s);
+  el('s-save').onclick = () => {
+    // 若副屏是实时组件类，存入按键库时自动封装为标准 widget 规格，拖到主键即可正常渲染！
+    if (WIDGET_KINDS.includes(s.type)) {
+      const info = WIDGET_KIND_INFOS.find(x => x.id === s.type);
+      libraryAdd({
+        type: 'widget',
+        widgetKind: s.type,
+        pluginId: s.pluginId || 'uptime_greeting',
+        action: (info && info.act) || 'refresh',
+        label: (info && info.name.split(' ')[0]) || s.type.toUpperCase(),
+        color: s.color || (info && info.color) || '#0f291e',
+      });
+    } else {
+      libraryAdd(s);
+    }
+  };
 }
 
 /** Pick a file/folder into the currently selected cell (creating the spec). */
@@ -8854,8 +9738,8 @@ function bindShell() {
       if (!currentLibModalSpec) return;
       delete currentLibModalSpec.badge;
       currentLibModalSpec.badgeToggle = true;
-      currentLibModalSpec.badgeState1 = currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' };
-      currentLibModalSpec.badgeState2 = currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' };
+      currentLibModalSpec.badgeState1 = currentLibModalSpec.badgeState1 || { text: '待机', bg: '#546e7a' };
+      currentLibModalSpec.badgeState2 = currentLibModalSpec.badgeState2 || { text: '运行中', bg: '#107c41' };
       updateLkmDualUI();
       updateLkmSwatch();
     };
@@ -9193,12 +10077,12 @@ function bindDevice() {
   api.on('device:repaint', (opts) => { isDeviceAsleep = false; repaintAll(opts && opts.force); });
   api.on('device:repaint-strips', () => { if (!isDeviceAsleep) repaintStrips(); });
   api.on('audio:state', (data) => updateVolumeState(data));
-  api.on('telemetry:data', async (data) => {
+  const handleRealtimeTelemetryUpdate = async (data) => {
     if (!data) return;
     lastTelemetry = Object.assign({}, lastTelemetry, data);
+    if (data.media_now && !data.media) lastTelemetry.media = data.media_now;
     if (!cfg || isDeviceAsleep) return;
     refreshGrid();
-    // Push any active widget keys or widget strips
     const buttons = pageButtons();
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < KEY_COLS; c++) {
@@ -9210,24 +10094,10 @@ function bindDevice() {
         await pushStrip(r, false);
       }
     }
-  });
-  api.on('pomodoro:tick', async (pomo) => {
-    if (!pomo) return;
-    lastTelemetry.pomodoro = pomo;
-    if (!cfg || isDeviceAsleep) return;
-    refreshGrid();
-    const buttons = pageButtons();
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < KEY_COLS; c++) {
-        const sp = buttons[`${r},${c}`];
-        if (sp && sp.type === 'widget' && sp.widgetKind === 'pomodoro') await pushKey(r, c);
-      }
-      const st = pageStrips()[String(r)];
-      if (st && (st.type === 'pomodoro' || (st.type === 'widget' && st.widgetKind === 'pomodoro'))) {
-        await pushStrip(r, false);
-      }
-    }
-  });
+  };
+  api.on('telemetry:update', handleRealtimeTelemetryUpdate);
+  api.on('telemetry:data', handleRealtimeTelemetryUpdate);
+  api.on('pomodoro:tick', (pomo) => handleRealtimeTelemetryUpdate({ pomodoro: pomo }));
   api.on('toast', (t) => toast(t && t.message));
   api.on('key:flash', (k) => {
     const cell = document.querySelector(`.cell[data-row="${k.row}"][data-col="${k.col}"]`);
@@ -9240,13 +10110,14 @@ function bindDevice() {
   api.on('key:result', (payload) => {
     if (payload) flashKeyResult(payload.row, payload.col, payload.success, payload.text);
   });
-  api.on('key:toggleState', async ({ pageId, row, col, activeState }) => {
+  const onKeyStateMsg = async ({ pageId, row, col, activeState, windowSubState }) => {
     if (!cfg || !cfg.pages) return;
     const p = (pageId && cfg.pages.find((x) => x.id === pageId)) || curPage();
     if (p && p.buttons) {
       const s = p.buttons[`${row},${col}`];
       if (s) {
         s._activeState = activeState;
+        if (windowSubState !== undefined) s._windowSubState = windowSubState;
       }
     }
     const current = curPage();
@@ -9257,7 +10128,9 @@ function bindDevice() {
         renderInspector();
       }
     }
-  });
+  };
+  api.on('key:toggleState', onKeyStateMsg);
+  api.on('device:key-state', onKeyStateMsg);
 
   // A key on the device switched pages (or a sub page's back key was pressed).
   // Config already holds the new page - reload and redraw everything.
@@ -9392,22 +10265,54 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // 定期检测并刷新系统状态监控副屏（单次合并采样，避免并发冲掉 CPU 差值与全量 DOM 重建）
+  // 定期检测并按需刷新系统状态监控副屏与动态组件按键（单次合并按需采样 + 批量硬件推送）
   setInterval(async () => {
     if (DEMO || !cfg || isDeviceAsleep) return;
     const strips = pageStrips();
-    const activeRows = [0, 1, 2].filter((row) => {
+    const buttons = pageButtons();
+    const neededTypes = new Set();
+    const neededPluginIds = new Set();
+    const widgetCoords = [];
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < KEY_COLS; c++) {
+        const sp = buttons[`${r},${c}`];
+        if (sp && sp.type === 'widget') {
+          const wk = sp.widgetKind || 'gpu';
+          neededTypes.add(wk);
+          if (wk === 'plugin') neededPluginIds.add(sp.pluginId || 'uptime_greeting');
+          widgetCoords.push({ row: r, col: c });
+        }
+      }
+    }
+
+    const activeStripRows = [0, 1, 2].filter((row) => {
       const s = strips[String(row)];
-      return s && ['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type);
+      if (!s) return false;
+      if (WIDGET_KINDS.includes(s.type) || s.type === 'widget') {
+        const wk = s.widgetKind || s.type;
+        neededTypes.add(wk);
+        if (wk === 'plugin') neededPluginIds.add(s.pluginId || 'uptime_greeting');
+        return true;
+      }
+      return ['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type);
     });
-    if (!activeRows.length) return;
+
+    if (!activeStripRows.length && !widgetCoords.length) return;
+
     let sharedStats = null;
-    const needsStats = activeRows.some((r) => ['cpu', 'mem', 'sys', 'volume'].includes(strips[String(r)].type));
-    if (needsStats && api.systemStats) {
+    if (api.systemStats) {
       try {
-        sharedStats = await api.systemStats();
+        sharedStats = await api.systemStats({
+          types: Array.from(neededTypes),
+          pluginIds: Array.from(neededPluginIds),
+        });
         if (sharedStats) {
           lastSysStats = Object.assign({}, lastSysStats, sharedStats);
+          lastTelemetry = Object.assign({}, lastTelemetry, sharedStats);
+          if (sharedStats.media_now && !sharedStats.media) {
+            lastTelemetry.media = sharedStats.media_now;
+          }
           if (sharedStats.volume !== undefined) {
             lastAudioState.volume = sharedStats.volume;
             lastAudioState.isMute = !!sharedStats.isMute;
@@ -9415,17 +10320,22 @@ async function boot() {
         }
       } catch (_) {}
     }
-    for (const row of activeRows) {
-      const s = strips[String(row)];
-      if (s && ['cpu', 'mem', 'sys', 'volume'].includes(s.type)) {
-        await pushStrip(row, false, sharedStats);
-      }
+
+    for (const { row, col } of widgetCoords) {
+      await pushKey(row, col, false);
     }
-    refreshStripCells(sharedStats);
-  }, 3000);
+    for (const row of activeStripRows) {
+      await pushStrip(row, false, sharedStats);
+    }
+    if (widgetCoords.length > 0) {
+      refreshGrid();
+    } else {
+      refreshStripCells(sharedStats);
+    }
+  }, 2500);
 
   if (DEMO) {
-    toast('预览模式 —— 这是示例布局。真机请运行「启动 AKP153 控制台.bat」');
+    toast('预览模式 · 真机请运行「启动 AKP153 控制台.bat」');
     return;
   }
 

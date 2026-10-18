@@ -24,7 +24,8 @@ contextBridge.exposeInMainWorld('api', {
   deviceReconnect: () => ipcRenderer.invoke('device:reconnect'),
   hostStatus: () => ipcRenderer.invoke('host:status'),
 
-  actionRun: (spec) => ipcRenderer.invoke('action:run', spec),
+  actionRun: (spec, ctx) => ipcRenderer.invoke('action:run', spec, ctx),
+  runAction: (spec, ctx) => ipcRenderer.invoke('action:run', spec, ctx),
   actionClassify: (p) => ipcRenderer.invoke('action:classify', p),
 
   iconExtract: (p) => ipcRenderer.invoke('icon:extract', p),
@@ -42,10 +43,15 @@ contextBridge.exposeInMainWorld('api', {
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
-  systemStats: () => ipcRenderer.invoke('system:stats'),
+  systemStats: (opts) => ipcRenderer.invoke('system:stats', opts),
   telemetryGet: (opts) => ipcRenderer.invoke('telemetry:get', opts),
-  pomodoroAction: (act, minutes) => ipcRenderer.invoke('pomodoro:action', { act, minutes }),
+  pomodoroAction: (act, minutes) => ipcRenderer.invoke('pomodoro:action', (act && typeof act === 'object') ? act : { act, minutes }),
+  pomodoroControl: (act, minutes) => ipcRenderer.invoke('pomodoro:action', (act && typeof act === 'object') ? act : { act, minutes }),
   pluginsList: () => ipcRenderer.invoke('plugins:list'),
+  pluginsReload: () => ipcRenderer.invoke('plugins:reload'),
+  pluginsMarket: () => ipcRenderer.invoke('plugins:market'),
+  pluginsInstall: (pluginId) => ipcRenderer.invoke('plugins:install', pluginId),
+  pluginsTrigger: (pluginId, args) => ipcRenderer.invoke('plugins:trigger', { pluginId, args }),
   pageManualSwitch: (pageId) => ipcRenderer.invoke('page:manualSwitch', pageId),
 
   libraryExport: (a) => ipcRenderer.invoke('library:export', a),
@@ -60,7 +66,16 @@ contextBridge.exposeInMainWorld('api', {
 
   macroGetCursor: () => ipcRenderer.invoke('macro:getCursor'),
   macroGetPixel: (x, y) => ipcRenderer.invoke('macro:getPixel', { x, y }),
-  macroRecordStart: (maxMs) => ipcRenderer.invoke('macro:recordStart', maxMs),
+  pixelGetColor: async (x, y) => {
+    const res = await ipcRenderer.invoke('macro:getPixel', { x, y });
+    return (res && res.color) ? res.color : '#00e676';
+  },
+  macroRecordStart: (maxMs) => {
+    const ms = (maxMs && typeof maxMs === 'object')
+      ? ((Number(maxMs.maxMs) || (Number(maxMs.maxSec) * 1000)) || 15000)
+      : (Number(maxMs) || 15000);
+    return ipcRenderer.invoke('macro:recordStart', ms);
+  },
   macroRecordStop: () => ipcRenderer.invoke('macro:recordStop'),
   macroStopAll: () => ipcRenderer.invoke('macro:stopAll'),
   macroStopKey: (a, b, c) => ipcRenderer.invoke(
@@ -75,8 +90,9 @@ contextBridge.exposeInMainWorld('api', {
       'host:status', 'device:repaint', 'device:repaint-strips', 'key:flash',
       'key:unconfigured', 'toast', 'page:changed', 'config:external',
       'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
-      'audio:state', 'app:runningStates', 'device:sleep-state', 'login:changed',
-      'telemetry:update', 'macro:recordState'
+      'device:key-state', 'audio:state', 'app:runningStates', 'device:sleep-state',
+      'login:changed', 'telemetry:update', 'telemetry:data', 'pomodoro:tick',
+      'macro:recordState'
     ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);

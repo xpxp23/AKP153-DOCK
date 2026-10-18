@@ -987,6 +987,48 @@ namespace AkpInput
             return string.Join(";;", results);
         }
 
+        public static string QueryWindowState(string procName)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return "NOT_RUNNING";
+            string target = procName.Trim();
+            if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                target = target.Substring(0, target.Length - 4);
+            }
+            IntPtr hwnd = IntPtr.Zero;
+            bool anyAlive = false;
+            var pids = new HashSet<uint>();
+            Process[] procs = Process.GetProcessesByName(target);
+            try
+            {
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        anyAlive = true;
+                        pids.Add((uint)p.Id);
+                        if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            hwnd = p.MainWindowHandle;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs) { try { p.Dispose(); } catch { } }
+            }
+            if (!anyAlive) return "NOT_RUNNING";
+            if (hwnd == IntPtr.Zero) return "BACKGROUND";
+            if (IsIconic(hwnd)) return "MINIMIZED";
+            IntPtr fg = GetForegroundWindow();
+            uint fgPid = 0;
+            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+            if (fg == hwnd || (fgPid != 0 && pids.Contains(fgPid))) return "FOREGROUND";
+            return "BACKGROUND";
+        }
+
         public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
         {
             if (string.IsNullOrWhiteSpace(procName)) return "ERR EMPTY";
@@ -997,6 +1039,7 @@ namespace AkpInput
             }
 
             IntPtr hwnd = IntPtr.Zero;
+            var pids = new HashSet<uint>();
             Process[] procs = Process.GetProcessesByName(target);
             try
             {
@@ -1004,6 +1047,7 @@ namespace AkpInput
                 {
                     try
                     {
+                        pids.Add((uint)p.Id);
                         if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
                         {
                             hwnd = p.MainWindowHandle;
@@ -1023,7 +1067,11 @@ namespace AkpInput
             if (hwnd == IntPtr.Zero) return "NOWINDOW";
 
             IntPtr fg = GetForegroundWindow();
-            if (allowMinimize && fg == hwnd && !IsIconic(hwnd))
+            uint fgPid = 0;
+            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+            bool isAlreadyFg = (fg == hwnd) || (fgPid != 0 && pids.Contains(fgPid));
+
+            if (allowMinimize && isAlreadyFg && !IsIconic(hwnd))
             {
                 ShowWindowAsync(hwnd, 6); // SW_MINIMIZE
                 return "MINIMIZED";
@@ -1034,7 +1082,6 @@ namespace AkpInput
                 ShowWindowAsync(hwnd, 9); // SW_RESTORE
             }
 
-            uint fgPid;
             uint fgThread = GetWindowThreadProcessId(fg, out fgPid);
             uint curThread = GetCurrentThreadId();
             bool attached = false;
@@ -1972,6 +2019,11 @@ namespace AkpInput
                     case "check_procs":
                         string queryCsv = parts.Length > 1 ? string.Join("", parts, 1, parts.Length - 1) : "";
                         WriteOut(reqPrefix, "OK " + CheckRunningProcesses(queryCsv));
+                        break;
+
+                    case "win_state":
+                        string stTarget = parts.Length > 1 ? parts[1] : "";
+                        WriteOut(reqPrefix, "OK " + QueryWindowState(stTarget));
                         break;
 
                     case "win_activate":

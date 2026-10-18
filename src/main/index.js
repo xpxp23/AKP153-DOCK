@@ -401,6 +401,51 @@ async function onWakeByKey(row, col) {
   log(`device woke up by key r${row}c${col} (wake only, restored brightness=${cfg.brightness})`);
 }
 
+function findSpanMasterInRow(page, row, col) {
+  if (!page || !page.buttons) return null;
+  for (let c = 0; c < col; c++) {
+    const candidate = page.buttons[row + ',' + c];
+    if (candidate) {
+      const span = Math.max(1, Math.min(5 - c, Number(candidate.spanCols) || 1));
+      if (c + span > col) {
+        return { masterCol: c, spanCols: span, spanOffset: col - c, spec: candidate };
+      }
+    }
+  }
+  return null;
+}
+
+async function resolveButtonProcessName(spec) {
+  if (!spec) return '';
+  if (spec.watchProcess && String(spec.watchProcess).trim()) {
+    return String(spec.watchProcess).trim().replace(/\.exe$/i, '');
+  }
+  if (!spec.target) return '';
+  try {
+    const probed = await probe.probeAppAsync(spec.target);
+    return (await runner.processNameFor(probed)) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function resolveEffectiveSyncMode(spec) {
+  if (!spec) return 'manual';
+  const explicit = String(spec.toggleSyncMode || 'auto').toLowerCase();
+  const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target } : null);
+  const act2Target = String((act2 && act2.target) || '').toLowerCase();
+  if (explicit === 'window' || (act2 && (act2.type === 'window_toggle' || act2Target.startsWith('window_toggle:') || act2Target.startsWith('smart_window:')))) {
+    return 'window';
+  }
+  if (explicit === 'manual') return 'manual';
+  if (explicit === 'process') return 'process';
+  // auto mode:
+  if (spec.type !== 'app' || !spec.target) return 'manual';
+  if (runner.isScriptTarget(spec.target)) return 'manual';
+  if (spec._downgradedToManual) return 'manual';
+  return 'auto';
+}
+
 async function onKeyDown(row, col) {
   const now = Date.now();
   lastActivity = now;
@@ -442,7 +487,22 @@ async function onKeyDown(row, col) {
     return;
   }
 
-  const spec = page.buttons[row + ',' + col];
+  let effectiveRow = row;
+  let effectiveCol = col;
+  let spanOffset = 0;
+  let spanCols = 1;
+  let spec = page.buttons[row + ',' + col];
+
+  // 支持跨格联合画布 (Multi-Key Span Widget 2x1 / 3x1)：从属格按键自动路由至主格
+  const spanMaster = findSpanMasterInRow(page, row, col);
+  if (spanMaster) {
+    effectiveCol = spanMaster.masterCol;
+    spanOffset = spanMaster.spanOffset;
+    spanCols = spanMaster.spanCols;
+    spec = spanMaster.spec;
+  } else if (spec && Number(spec.spanCols) > 1) {
+    spanCols = Math.max(1, Math.min(5 - col, Number(spec.spanCols) || 1));
+  }
 
   const isMulti = spec && (spec.type === 'multi' || spec.type === 'macro');
   const isQr = spec && (spec.type === 'qr_decode' || spec.type === 'qr');
@@ -450,7 +510,8 @@ async function onKeyDown(row, col) {
   const isMedia = spec && (spec.type === 'media');
   const isPage = spec && (spec.type === 'page');
   const isWidget = spec && (spec.type === 'widget');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isWidget)) {
+  const isWinToggle = spec && (spec.type === 'window_toggle');
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isWidget && !isWinToggle)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
@@ -458,29 +519,75 @@ async function onKeyDown(row, col) {
   }
 
   let actionToRun = spec;
-  if (spec.badgeToggle && (!isVolume || spec.toggleAction)) {
+  const isDualMode = Boolean(spec.toggleAction || (spec.badgeToggle && !isVolume));
+
+  if (isDualMode) {
     let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-    if (spec.type === 'app' && spec.target && spec.toggleAction) {
-      try {
-        const procName = await runner.processNameFor(await probe.probeAppAsync(spec.target));
-        if (procName) {
-          curState = (await runner.isRunningAsync(procName)) ? 1 : 0;
-        }
-      } catch (_) {}
-    }
+    const syncMode = resolveEffectiveSyncMode(spec);
     const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target, args: spec.act2Args || '' } : null);
     const hasAction2 = spec.toggleAction && act2 && (
       act2.target || act2.hotkey ||
       act2.type === 'volume' || act2.type === 'audio' ||
       act2.type === 'media' || act2.type === 'multi' ||
-      act2.type === 'macro' || act2.type === 'qr_decode' || act2.type === 'page' || act2.type === 'widget'
+      act2.type === 'macro' || act2.type === 'qr_decode' ||
+      act2.type === 'page' || act2.type === 'widget' || act2.type === 'window_toggle'
     );
-    if (hasAction2 && curState === 1) {
-      actionToRun = act2;
+
+    if (syncMode === 'window') {
+      // HWND 窗口句柄级任务栏双态模式：未启动则启动 -> 后台/最小化则置顶激活 -> 已在前台则最小化隐藏
+      const procName = await resolveButtonProcessName(spec);
+      const winState = procName ? await NativeInput.queryWindowState(procName) : 'NOT_RUNNING';
+      if (winState === 'NOT_RUNNING') {
+        actionToRun = spec;
+        spec._activeState = 1;
+        spec._windowSubState = 'focused';
+        spec._graceUntil = Date.now() + 7000;
+        spec._everSeenRunning = false;
+      } else {
+        actionToRun = hasAction2 ? act2 : { type: 'window_toggle', target: procName, watchProcess: procName };
+        spec._activeState = 1;
+        spec._windowSubState = (winState === 'FOREGROUND') ? 'minimized' : 'focused';
+      }
+      broadcast('key:toggleState', {
+        pageId: page.id,
+        row: effectiveRow,
+        col: effectiveCol,
+        activeState: spec._activeState,
+        windowSubState: spec._windowSubState,
+      });
+    } else {
+      // 'auto' | 'process' | 'manual'
+      const inGrace = spec._graceUntil && Date.now() < spec._graceUntil;
+      if ((syncMode === 'process' || syncMode === 'auto') && spec.toggleAction && !inGrace) {
+        const procName = await resolveButtonProcessName(spec);
+        if (procName) {
+          const alive = await runner.isRunningAsync(procName);
+          if (alive) {
+            spec._everSeenRunning = true;
+            curState = 1;
+          } else if (syncMode === 'process' || spec._everSeenRunning) {
+            curState = 0;
+          }
+        }
+      }
+
+      if (hasAction2 && curState === 1) {
+        actionToRun = act2;
+      }
+      const nextState = (curState === 1 ? 0 : 1);
+      spec._activeState = nextState;
+      if (nextState === 1) {
+        spec._graceUntil = Date.now() + 7000;
+      } else {
+        spec._graceUntil = 0;
+      }
+      broadcast('key:toggleState', {
+        pageId: page.id,
+        row: effectiveRow,
+        col: effectiveCol,
+        activeState: nextState,
+      });
     }
-    const nextState = (curState === 1 ? 0 : 1);
-    spec._activeState = nextState;
-    broadcast('key:toggleState', { pageId: page.id, row, col, activeState: nextState });
   }
 
   if (actionToRun && actionToRun.type === 'page') {
@@ -495,19 +602,19 @@ async function onKeyDown(row, col) {
   }
 
   const actMulti = actionToRun && (actionToRun.type === 'multi' || actionToRun.type === 'macro');
-  log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || actionToRun.widgetType || '')}`);
-  const res = await runner.run(actionToRun, { row, col, pageId: page.id });
+  log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || actionToRun.widgetKind || actionToRun.widgetType || '')}`);
+  const res = await runner.run(actionToRun, { row: effectiveRow, col: effectiveCol, pageId: page.id, spanOffset, spanCols });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
   if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media') || res.action.startsWith('widget'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio' || actionToRun.type === 'media' || actionToRun.type === 'widget')))) {
-    broadcast('device:repaint-strips', {});
+    broadcast('device:repaint-strips', { row: effectiveRow, col: effectiveCol });
     if (res.level !== undefined || res.isMute !== undefined) {
       broadcast('audio:state', res);
     }
   }
   if (isQr || (actionToRun && (actionToRun.type === 'qr_decode' || actionToRun.type === 'qr'))) {
     if (res.error !== 'CANCELLED') {
-      broadcast('key:result', { row, col, success: !!res.ok, text: res.text || '' });
+      broadcast('key:result', { row: effectiveRow, col: effectiveCol, success: !!res.ok, text: res.text || '' });
       if (res.ok) {
         notify('已解码并写入剪贴板：' + (res.text && res.text.length > 40 ? res.text.slice(0, 40) + '...' : (res.text || '')));
       } else {
@@ -538,9 +645,9 @@ function resetIdleTimer() {
 }
 
 /**
- * 后台智能态势引擎：
+ * 后台智能态势引擎 (v0.9)：
  * 1. 前台窗口感知自动切页 (支持进程名精确/通配匹配 + 窗口标题正则匹配 + 多层级子页记忆栈)
- * 2. 当前页应用程序真实进程存活状态同步
+ * 2. 当前页应用程序真实进程存活与 HWND 前后台状态同步（智能识别瞬态脚本与启动器，绝不误重置手动状态）
  */
 let isPollingState = false;
 async function pollForegroundAndProcessState() {
@@ -554,14 +661,16 @@ async function pollForegroundAndProcessState() {
       manualBasePageId = cfg.currentPage || (cfg.pages[0] && cfg.pages[0].id);
     }
 
+    let currentFgProc = '';
     const hasAutoRules = cfg.pages.some((p) => (p.autoApp && p.autoApp.trim()) || (p.autoTitle && p.autoTitle.trim()));
-    if (cfg.autoSwitchPage !== false && hasAutoRules) {
-      try {
-        const fg = await NativeInput.getForegroundWindow();
-        const proc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
-        const winTitle = (fg && fg.title) ? fg.title.trim() : '';
-        const isSelfOrShell = !proc || proc === 'electron' || proc === 'akp153 控制台' || proc === 'akp-input' || proc === 'searchhost' || proc === 'shellexperiencehost';
-        const sig = `${proc}|${winTitle}`;
+    try {
+      const fg = await NativeInput.getForegroundWindow();
+      currentFgProc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
+      const winTitle = (fg && fg.title) ? fg.title.trim() : '';
+
+      if (cfg.autoSwitchPage !== false && hasAutoRules) {
+        const isSelfOrShell = !currentFgProc || currentFgProc === 'electron' || currentFgProc === 'akp153 控制台' || currentFgProc === 'akp-input' || currentFgProc === 'searchhost' || currentFgProc === 'shellexperiencehost';
+        const sig = `${currentFgProc}|${winTitle}`;
 
         if (!isSelfOrShell && sig !== lastFgSignature) {
           lastFgSignature = sig;
@@ -569,7 +678,7 @@ async function pollForegroundAndProcessState() {
             const hasApp = !!(p.autoApp && p.autoApp.trim());
             const hasTitle = !!(p.autoTitle && p.autoTitle.trim());
             if (!hasApp && !hasTitle) return false;
-            const appOk = !hasApp || matchProcessRule(proc, p.autoApp);
+            const appOk = !hasApp || matchProcessRule(currentFgProc, p.autoApp);
             const titleOk = !hasTitle || matchTitleRule(winTitle, p.autoTitle);
             return appOk && titleOk;
           });
@@ -580,7 +689,7 @@ async function pollForegroundAndProcessState() {
             }
             if (autoActiveRootPageId !== matchedPage.id && !isPageDescendantOrSame(cfg, cfg.currentPage, matchedPage.id)) {
               autoActiveRootPageId = matchedPage.id;
-              await goToPage(matchedPage.id, `auto-switch (${proc})`, true);
+              await goToPage(matchedPage.id, `auto-switch (${currentFgProc})`, true);
             } else {
               autoActiveRootPageId = matchedPage.id;
             }
@@ -589,32 +698,68 @@ async function pollForegroundAndProcessState() {
               ? manualBasePageId
               : cfg.pages[0].id;
             autoActiveRootPageId = null;
-            await goToPage(restoreId, `auto-restore (left ${proc})`, true);
+            await goToPage(restoreId, `auto-restore (left ${currentFgProc})`, true);
           }
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
-    // 2. 批量同步当前页面上绑定了进程双态角标的按键真实运行状态
+    // 2. 批量同步当前页面上需要跟随进程/窗口状态的双态按键
     try {
       const page = config.currentPage();
       if (!page || !page.buttons) return;
       const entries = [];
       for (const [k, spec] of Object.entries(page.buttons)) {
-        if (!spec || spec.type !== 'app' || !spec.badgeToggle || !spec.target) continue;
-        const procName = await runner.processNameFor(await probe.probeAppAsync(spec.target));
+        if (!spec || spec.type !== 'app') continue;
+        if (!spec.toggleAction && !spec.badgeToggle) continue;
+        const syncMode = resolveEffectiveSyncMode(spec);
+        // 纯手动乒乓模式，或者仅开启了动态角标但未开启双态动作且未强制指定进程同步时，绝不覆盖用户手动状态
+        if (syncMode === 'manual') continue;
+        if (!spec.toggleAction && spec.toggleSyncMode !== 'process' && spec.toggleSyncMode !== 'window') continue;
+
+        const procName = await resolveButtonProcessName(spec);
         if (!procName) continue;
-        entries.push({ k, spec, procName: procName.replace(/\.exe$/i, '').toLowerCase() });
+        entries.push({ k, spec, syncMode, procName: procName.replace(/\.exe$/i, '').toLowerCase() });
       }
       if (entries.length > 0) {
+        const nowMs = Date.now();
         const runningSet = await runner.checkProcessesRunning(entries.map((e) => e.procName));
-        for (const { k, spec, procName } of entries) {
+        for (const { k, spec, syncMode, procName } of entries) {
           const [row, col] = k.split(',').map(Number);
-          const realState = runningSet.has(procName) ? 1 : 0;
+          const isAlive = runningSet.has(procName);
           const curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-          if (realState !== curState) {
+
+          if (isAlive) {
+            spec._everSeenRunning = true;
+          } else {
+            // 若刚按下启动尚在 7 秒宽限期内，不重置状态
+            if (spec._graceUntil && nowMs < spec._graceUntil) {
+              continue;
+            }
+            // 在智能混合模式 (auto) 下，如果宽限期过后该程序从来没有在进程列表中驻留过，
+            // 说明它是瞬态脚本、批处理或启动器，自动降级为手动切换模式，保留形态 2！
+            if (syncMode === 'auto' && curState === 1 && !spec._everSeenRunning) {
+              spec._downgradedToManual = true;
+              continue;
+            }
+          }
+
+          const realState = isAlive ? 1 : 0;
+          const nextWinSub = isAlive
+            ? (currentFgProc === procName ? 'focused' : 'minimized')
+            : 'stopped';
+          const winSubChanged = (syncMode === 'window') && (spec._windowSubState !== nextWinSub);
+
+          if (realState !== curState || winSubChanged) {
             spec._activeState = realState;
-            broadcast('key:toggleState', { pageId: page.id, row, col, activeState: realState });
+            spec._windowSubState = nextWinSub;
+            broadcast('key:toggleState', {
+              pageId: page.id,
+              row,
+              col,
+              activeState: realState,
+              windowSubState: nextWinSub,
+            });
           }
         }
       }
@@ -821,7 +966,15 @@ ipcMain.handle('host:status', () => ({
   draws: Object.assign({}, drawStats),
 }));
 
-ipcMain.handle('action:run', async (e, spec) => {
+ipcMain.handle('action:run', async (e, spec, ctx = {}) => {
+  const curPage = config.currentPage();
+  if (curPage && curPage.buttons && ctx && ctx.row !== undefined && ctx.col !== undefined) {
+    const btn = curPage.buttons[ctx.row + ',' + ctx.col];
+    if (btn && ctx.activeState !== undefined) {
+      btn._activeState = ctx.activeState;
+      if (ctx.activeState === 1) btn._graceUntil = Date.now() + 7000;
+    }
+  }
   if (spec && spec.type === 'page') {
     const page = config.currentPage();
     const target = resolvePageAction(spec, page);
@@ -1160,7 +1313,10 @@ ipcMain.handle('icon:extract', async (e, p) => {
   }
 });
 
-ipcMain.handle('system:stats', async () => {
+const cpuHistory = [18, 22, 25, 21, 28, 24, 30, 26, 22, 25, 27, 24];
+const memHistory = [48, 49, 49, 50, 50, 51, 50, 50, 51, 51, 52, 52];
+
+ipcMain.handle('system:stats', async (e, opts = {}) => {
   const cpu = getCpuUsage();
   const total = os.totalmem();
   const free = os.freemem();
@@ -1168,6 +1324,11 @@ ipcMain.handle('system:stats', async () => {
   const mem = Math.round((used / total) * 100);
   const memUsedGb = (used / (1024 ** 3)).toFixed(1);
   const memTotalGb = (total / (1024 ** 3)).toFixed(1);
+  cpuHistory.push(cpu);
+  if (cpuHistory.length > 24) cpuHistory.shift();
+  memHistory.push(mem);
+  if (memHistory.length > 24) memHistory.shift();
+
   let volume = 50;
   let isMute = false;
   try {
@@ -1175,10 +1336,22 @@ ipcMain.handle('system:stats', async () => {
     if (v && v.ok) { volume = v.level; isMute = v.isMute; }
   } catch (_) {}
   const cfg = config.load();
+  const reqTypes = (opts && Array.isArray(opts.types)) ? opts.types : ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
   const extTelemetry = await telemetry.gatherTelemetry({
-    weatherCity: cfg.weatherCity || 'Auto',
+    types: reqTypes,
+    pluginIds: opts && opts.pluginIds,
+    weatherCity: (opts && opts.weatherCity) || cfg.weatherCity || 'Auto',
   });
-  return Object.assign({ cpu, mem, memUsedGb, memTotalGb, volume, isMute }, extTelemetry);
+  return Object.assign({
+    cpu,
+    mem,
+    memUsedGb,
+    memTotalGb,
+    cpuHistory: cpuHistory.slice(),
+    memHistory: memHistory.slice(),
+    volume,
+    isMute,
+  }, extTelemetry);
 });
 
 ipcMain.handle('telemetry:get', async (e, opts) => {
@@ -1186,12 +1359,28 @@ ipcMain.handle('telemetry:get', async (e, opts) => {
   return await telemetry.gatherTelemetry(Object.assign({ weatherCity: cfg.weatherCity || 'Auto' }, opts || {}));
 });
 
-ipcMain.handle('pomodoro:action', (e, { act, minutes } = {}) => {
-  return telemetry.controlPomodoro(act, minutes);
+ipcMain.handle('pomodoro:action', (e, payload = {}) => {
+  const act = (typeof payload === 'string') ? payload : payload.act;
+  const minutes = (payload && typeof payload === 'object') ? payload.minutes : undefined;
+  const snap = telemetry.controlPomodoro(act, minutes);
+  broadcast('telemetry:update', { pomodoro: snap });
+  return snap;
 });
 
 ipcMain.handle('plugins:list', () => {
-  return telemetry.listAvailablePlugins();
+  return telemetry.listAvailablePlugins(true);
+});
+
+ipcMain.handle('plugins:reload', () => {
+  return telemetry.listAvailablePlugins(true);
+});
+
+ipcMain.handle('plugins:market', () => {
+  return telemetry.listMarketplacePlugins();
+});
+
+ipcMain.handle('plugins:trigger', async (e, { pluginId, args } = {}) => {
+  return await telemetry.triggerPluginPress(pluginId, args);
 });
 
 ipcMain.handle('dialog:pick', async (e, opts) => {
