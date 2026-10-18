@@ -158,6 +158,147 @@ namespace AkpInput
         [DllImport("ole32.dll")]
         static extern int PropVariantClear(ref PROPVARIANT pvar);
 
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+        [DllImport("user32.dll")]
+        static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SetFocus(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool SystemParametersInfo(uint uiAction, uint uiParam, out IntPtr pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        [DllImport("dwmapi.dll")]
+        static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+        [DllImport("kernel32.dll")]
+        static extern bool SetProcessShutdownParameters(uint dwLevel, uint dwFlags);
+
+        const uint WM_GETTEXT = 0x000D;
+        const uint SMTO_ABORTIFHUNG = 0x0002;
+        const int GWL_EXSTYLE = -20;
+        const int WS_EX_TOOLWINDOW = 0x00000080;
+        const int WS_EX_APPWINDOW = 0x00040000;
+        const uint GW_OWNER = 4;
+        const int DWMWA_CLOAKED = 14;
+        const uint SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000;
+        const uint SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001;
+        const uint SPIF_SENDCHANGE = 0x0002;
+        const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+        const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+        const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+        const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+        public static volatile bool _hostBlackoutAcked = false;
+        private static string _lastFgSig = "";
+        private static long _lastFgEmitTick = 0;
+        private static readonly object _watchLock = new object();
+        private static List<string> _watchedProcs = new List<string>();
+        private static string _lastWatchedRunningSig = "";
+        private static string _lastMediaTitlesSig = "";
+
+        public static void EmitEvent(string evtName, string payload)
+        {
+            string clean = (payload ?? "").Replace("\r", " ").Replace("\n", " ");
+            WriteOut("@evt ", evtName + " " + clean);
+        }
+
+        public static string GetWindowTitleSafe(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return "";
+            try
+            {
+                var sb = new StringBuilder(512);
+                IntPtr res;
+                IntPtr ok = SendMessageTimeoutW(hwnd, WM_GETTEXT, new IntPtr(sb.Capacity), sb, SMTO_ABORTIFHUNG, 60, out res);
+                if (ok == IntPtr.Zero) return "";
+                return sb.ToString().Replace("\r", " ").Replace("\n", " ").Trim();
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        static bool IsWindowCloaked(IntPtr hwnd)
+        {
+            try
+            {
+                int cloaked = 0;
+                int hr = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out cloaked, sizeof(int));
+                return hr == 0 && cloaked != 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static IntPtr FindBestProcessWindow(HashSet<uint> targetPids, IntPtr fgHwnd)
+        {
+            IntPtr bestHwnd = IntPtr.Zero;
+            int bestScore = -1;
+            EnumWindows(delegate(IntPtr hwnd, IntPtr lParam)
+            {
+                uint pid = 0;
+                GetWindowThreadProcessId(hwnd, out pid);
+                if (!targetPids.Contains(pid)) return true;
+                if (!IsWindowVisible(hwnd)) return true;
+                if (IsWindowCloaked(hwnd)) return true;
+                int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+                if ((exStyle & WS_EX_TOOLWINDOW) != 0 && (exStyle & WS_EX_APPWINDOW) == 0) return true;
+
+                int score = 10;
+                if (hwnd == fgHwnd) score += 10000;
+                string title = GetWindowTitleSafe(hwnd);
+                if (!string.IsNullOrEmpty(title)) score += 500;
+                if (GetWindow(hwnd, GW_OWNER) == IntPtr.Zero) score += 200;
+                if (!IsIconic(hwnd)) score += 50;
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestHwnd = hwnd;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return bestHwnd;
+        }
+
         private static IntPtr _guardHwnd = IntPtr.Zero;
         private static readonly object _outLock = new object();
 
@@ -174,6 +315,11 @@ namespace AkpInput
         {
             const int WM_QUERYENDSESSION = 0x0011;
             const int WM_ENDSESSION = 0x0016;
+
+            private WinEventDelegate _winEventProc;
+            private IntPtr _hookFg = IntPtr.Zero;
+            private IntPtr _hookMin = IntPtr.Zero;
+            private IntPtr _hookName = IntPtr.Zero;
 
             public ShutdownGuardForm()
             {
@@ -196,40 +342,78 @@ namespace AkpInput
                     ShutdownBlockReasonCreate(this.Handle, "AKP153 控制台正在安全关闭并休眠屏幕...");
                 }
                 catch { }
+                try
+                {
+                    _winEventProc = new WinEventDelegate(OnWinEventNotification);
+                    uint flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+                    _hookFg = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                    _hookMin = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                    _hookName = SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                }
+                catch { }
+            }
+
+            private void OnWinEventNotification(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+            {
+                try
+                {
+                    if (hwnd == IntPtr.Zero) return;
+                    if (eventType == EVENT_OBJECT_NAMECHANGE)
+                    {
+                        if (idObject != 0 || idChild != 0) return;
+                        if (hwnd != GetForegroundWindow()) return;
+                        long now = Environment.TickCount & Int32.MaxValue;
+                        if (now - _lastFgEmitTick < 90) return;
+                    }
+                    string fgInfo = GetForegroundProcessInfo();
+                    if (!string.IsNullOrEmpty(fgInfo) && fgInfo != _lastFgSig)
+                    {
+                        _lastFgSig = fgInfo;
+                        _lastFgEmitTick = Environment.TickCount & Int32.MaxValue;
+                        EmitEvent("fg", fgInfo);
+                    }
+                }
+                catch { }
             }
 
             protected override void WndProc(ref Message m)
             {
-                if (m.Msg == WM_QUERYENDSESSION)
+                if (m.Msg == WM_QUERYENDSESSION || (m.Msg == WM_ENDSESSION && m.WParam != IntPtr.Zero))
                 {
-                    try
+                    EmitEvent("shutdown", "1");
+                    // 等待主进程/device-host.js 优先通过既有 HID 句柄优雅完成 blackout（最多 550ms），
+                    // 仅当主进程已先退出或超时未确认时才由 C# 守护窗执行底层 DirectHardwareBlackout，彻底消除双进程并发写 HID 冲突。
+                    for (int w = 0; w < 11 && !_hostBlackoutAcked; w++)
                     {
-                        DirectHardwareBlackout();
+                        Thread.Sleep(50);
                     }
-                    catch { }
-                    try
+                    if (!_hostBlackoutAcked)
                     {
-                        ShutdownBlockReasonDestroy(this.Handle);
+                        try { DirectHardwareBlackout(); } catch { }
+                        _hostBlackoutAcked = true;
                     }
-                    catch { }
-                    m.Result = new IntPtr(1);
-                    return;
-                }
-                if (m.Msg == WM_ENDSESSION)
-                {
-                    if (m.WParam != IntPtr.Zero)
+                    if (m.Msg == WM_QUERYENDSESSION)
                     {
-                        try
-                        {
-                            DirectHardwareBlackout();
-                        }
-                        catch { }
+                        try { ShutdownBlockReasonDestroy(this.Handle); } catch { }
+                        m.Result = new IntPtr(1);
+                        return;
+                    }
+                    else
+                    {
                         Application.Exit();
+                        m.Result = IntPtr.Zero;
+                        return;
                     }
-                    m.Result = IntPtr.Zero;
-                    return;
                 }
                 base.WndProc(ref m);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (_hookFg != IntPtr.Zero) { UnhookWinEvent(_hookFg); _hookFg = IntPtr.Zero; }
+                if (_hookMin != IntPtr.Zero) { UnhookWinEvent(_hookMin); _hookMin = IntPtr.Zero; }
+                if (_hookName != IntPtr.Zero) { UnhookWinEvent(_hookName); _hookName = IntPtr.Zero; }
+                base.Dispose(disposing);
             }
         }
 
@@ -243,6 +427,8 @@ namespace AkpInput
             {
                 try
                 {
+                    SetProcessShutdownParameters(0x3FF, 0);
+                    SubscribeVolumeEvents();
                     _guardForm = new ShutdownGuardForm();
                     Application.Run(_guardForm);
                 }
@@ -252,6 +438,43 @@ namespace AkpInput
             _guardThread.IsBackground = true;
             _guardThread.Name = "AkpShutdownGuard";
             _guardThread.Start();
+
+            Thread watcher = new Thread(() =>
+            {
+                const string mediaCsv = "qqmusic,cloudmusic,kugou,kuwo,spotify,yesplaymusic,lx-music-desktop,foobar2000,musicbee,aimp,potplayermini64,potplayer,vlc,wmplayer,obs64,obs32";
+                while (true)
+                {
+                    Thread.Sleep(900);
+                    try
+                    {
+                        string mediaTitles = GetProcessWindowTitles(mediaCsv);
+                        if (mediaTitles != _lastMediaTitlesSig)
+                        {
+                            _lastMediaTitlesSig = mediaTitles;
+                            EmitEvent("media", mediaTitles);
+                        }
+
+                        string watchCsv = "";
+                        lock (_watchLock)
+                        {
+                            if (_watchedProcs.Count > 0) watchCsv = string.Join(",", _watchedProcs);
+                        }
+                        if (!string.IsNullOrEmpty(watchCsv))
+                        {
+                            string running = CheckRunningProcesses(watchCsv);
+                            if (running != _lastWatchedRunningSig)
+                            {
+                                _lastWatchedRunningSig = running;
+                                EmitEvent("procs", running);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            });
+            watcher.IsBackground = true;
+            watcher.Name = "AkpStateWatcher";
+            watcher.Start();
         }
 
         public static void StopShutdownGuard()
@@ -421,15 +644,17 @@ namespace AkpInput
                 uint FILE_SHARE_WRITE = 0x00000002;
                 uint OPEN_EXISTING = 3;
 
+                // 严禁在末尾发送 DEVICE_CLOSE (67,76,69,0,0,68,67)！
+                // 在独立供电拓展坞上，DEVICE_CLOSE 会将已进入 sleep 的 MCU 重置回亮屏待机 Logo。
                 byte[][] blackoutSeq = new byte[][]
                 {
                     new byte[] { 67, 76, 69, 0, 0, 0, 255 },     // CLEAR_ALL
                     new byte[] { 76, 66, 76, 73, 71, 0 },          // LBLIG 0
                     new byte[] { 76, 73, 71, 0, 0, 0 },            // LIG 0
                     new byte[] { 72, 65, 78 },                     // HAN
-                    new byte[] { 115, 108, 101, 101, 112 },        // sleep
-                    new byte[] { 67, 76, 69, 0, 0, 68, 67 }        // DEVICE_CLOSE
+                    new byte[] { 115, 108, 101, 101, 112 }         // sleep
                 };
+                int[] delaysMs = new int[] { 45, 20, 20, 20, 35 };
 
                 bool anySuccess = false;
                 foreach (var path in candidatePaths)
@@ -440,12 +665,12 @@ namespace AkpInput
                         {
                             if (handle.IsInvalid) continue;
 
-                            foreach (var cmd in blackoutSeq)
+                            for (int i = 0; i < blackoutSeq.Length; i++)
                             {
-                                byte[] pkt = MakeHidPacket(cmd);
+                                byte[] pkt = MakeHidPacket(blackoutSeq[i]);
                                 uint written;
                                 WriteFile(handle, pkt, 513, out written, IntPtr.Zero);
-                                Thread.Sleep(4);
+                                Thread.Sleep(delaysMs[i]);
                             }
                             anySuccess = true;
                         }
@@ -498,6 +723,8 @@ namespace AkpInput
             return ok;
         }
 
+        const uint SWP_NOSIZE = 0x0001;
+        const uint SWP_NOMOVE = 0x0002;
         const uint SWP_NOZORDER = 0x0004;
         const uint SWP_NOACTIVATE = 0x0010;
         const uint SWP_SHOWWINDOW = 0x0040;
@@ -869,7 +1096,6 @@ namespace AkpInput
             GetWindowThreadProcessId(hwnd, out pid);
             if (pid == 0) return "";
             string procName = "";
-            string title = "";
             try
             {
                 using (Process p = Process.GetProcessById((int)pid))
@@ -878,15 +1104,7 @@ namespace AkpInput
                 }
             }
             catch { }
-            try
-            {
-                var sb = new StringBuilder(256);
-                if (GetWindowText(hwnd, sb, sb.Capacity) > 0)
-                {
-                    title = sb.ToString();
-                }
-            }
-            catch { }
+            string title = GetWindowTitleSafe(hwnd);
             return procName + "|" + pid + "|" + title.Replace("\r", "").Replace("\n", " ");
         }
 
@@ -963,7 +1181,7 @@ namespace AkpInput
                         string pName = p.ProcessName;
                         if (!string.IsNullOrEmpty(pName) && targets.Contains(pName) && p.MainWindowHandle != IntPtr.Zero)
                         {
-                            string wTitle = (p.MainWindowTitle ?? "").Replace("\r", "").Replace("\n", " ").Replace(";;", ";").Replace("|", "-");
+                            string wTitle = GetWindowTitleSafe(p.MainWindowHandle).Replace(";;", ";").Replace("|", "-");
                             if (!string.IsNullOrWhiteSpace(wTitle))
                             {
                                 results.Add(pName.ToLowerInvariant() + "|" + wTitle);
@@ -995,7 +1213,7 @@ namespace AkpInput
             {
                 target = target.Substring(0, target.Length - 4);
             }
-            IntPtr hwnd = IntPtr.Zero;
+            IntPtr fallbackHwnd = IntPtr.Zero;
             bool anyAlive = false;
             var pids = new HashSet<uint>();
             Process[] procs = Process.GetProcessesByName(target);
@@ -1007,9 +1225,9 @@ namespace AkpInput
                     {
                         anyAlive = true;
                         pids.Add((uint)p.Id);
-                        if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
+                        if (fallbackHwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero && IsWindowVisible(p.MainWindowHandle))
                         {
-                            hwnd = p.MainWindowHandle;
+                            fallbackHwnd = p.MainWindowHandle;
                         }
                     }
                     catch { }
@@ -1020,11 +1238,13 @@ namespace AkpInput
                 foreach (var p in procs) { try { p.Dispose(); } catch { } }
             }
             if (!anyAlive) return "NOT_RUNNING";
-            if (hwnd == IntPtr.Zero) return "BACKGROUND";
-            if (IsIconic(hwnd)) return "MINIMIZED";
             IntPtr fg = GetForegroundWindow();
             uint fgPid = 0;
             if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+            IntPtr hwnd = FindBestProcessWindow(pids, fg);
+            if (hwnd == IntPtr.Zero) hwnd = fallbackHwnd;
+            if (hwnd == IntPtr.Zero) return "TRAY_HIDDEN";
+            if (IsIconic(hwnd)) return "MINIMIZED";
             if (fg == hwnd || (fgPid != 0 && pids.Contains(fgPid))) return "FOREGROUND";
             return "BACKGROUND";
         }
@@ -1038,7 +1258,7 @@ namespace AkpInput
                 target = target.Substring(0, target.Length - 4);
             }
 
-            IntPtr hwnd = IntPtr.Zero;
+            IntPtr fallbackHwnd = IntPtr.Zero;
             var pids = new HashSet<uint>();
             Process[] procs = Process.GetProcessesByName(target);
             try
@@ -1048,9 +1268,9 @@ namespace AkpInput
                     try
                     {
                         pids.Add((uint)p.Id);
-                        if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero)
+                        if (fallbackHwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero && IsWindowVisible(p.MainWindowHandle))
                         {
-                            hwnd = p.MainWindowHandle;
+                            fallbackHwnd = p.MainWindowHandle;
                         }
                     }
                     catch { }
@@ -1064,38 +1284,84 @@ namespace AkpInput
                 }
             }
 
-            if (hwnd == IntPtr.Zero) return "NOWINDOW";
+            if (pids.Count == 0) return "NOT_RUNNING";
 
             IntPtr fg = GetForegroundWindow();
             uint fgPid = 0;
             if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+
+            IntPtr hwnd = FindBestProcessWindow(pids, fg);
+            if (hwnd == IntPtr.Zero) hwnd = fallbackHwnd;
+            if (hwnd == IntPtr.Zero) return "TRAY_HIDDEN";
+
             bool isAlreadyFg = (fg == hwnd) || (fgPid != 0 && pids.Contains(fgPid));
 
             if (allowMinimize && isAlreadyFg && !IsIconic(hwnd))
             {
-                ShowWindowAsync(hwnd, 6); // SW_MINIMIZE
+                ShowWindow(hwnd, 6); // SW_MINIMIZE (synchronous)
                 return "MINIMIZED";
             }
 
-            if (IsIconic(hwnd))
+            uint targetPid = 0;
+            uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out fgPid) : 0;
+            uint targetThread = GetWindowThreadProcessId(hwnd, out targetPid);
+            uint curThread = GetCurrentThreadId();
+
+            IntPtr oldLockTimeout = IntPtr.Zero;
+            bool hasLockTimeout = SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, out oldLockTimeout, 0);
+            if (hasLockTimeout)
             {
-                ShowWindowAsync(hwnd, 9); // SW_RESTORE
+                SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, IntPtr.Zero, SPIF_SENDCHANGE);
             }
 
-            uint fgThread = GetWindowThreadProcessId(fg, out fgPid);
-            uint curThread = GetCurrentThreadId();
-            bool attached = false;
-            if (fgThread != 0 && fgThread != curThread)
-            {
-                attached = AttachThreadInput(curThread, fgThread, true);
-            }
+            bool attachedFg = false;
+            bool attachedTarget = false;
             try
             {
+                if (fgThread != 0 && fgThread != curThread)
+                {
+                    attachedFg = AttachThreadInput(curThread, fgThread, true);
+                }
+                if (targetThread != 0 && targetThread != curThread)
+                {
+                    attachedTarget = AttachThreadInput(curThread, targetThread, true);
+                }
+
+                if (IsIconic(hwnd))
+                {
+                    ShowWindow(hwnd, 9); // SW_RESTORE (synchronous so window is ready before SetForegroundWindow)
+                }
+                else
+                {
+                    ShowWindow(hwnd, 5); // SW_SHOW
+                }
+
+                // Send unassigned VK 0xFF pulse so win32k grants foreground switch permission
+                // without triggering application menu bars like Alt (VK_MENU).
+                keybd_event(0xFF, 0, 0, UIntPtr.Zero);
+                keybd_event(0xFF, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+                BringWindowToTop(hwnd);
                 SetForegroundWindow(hwnd);
+                SetFocus(hwnd);
+                SwitchToThisWindow(hwnd, true);
             }
             finally
             {
-                if (attached) AttachThreadInput(curThread, fgThread, false);
+                if (attachedTarget) AttachThreadInput(curThread, targetThread, false);
+                if (attachedFg) AttachThreadInput(curThread, fgThread, false);
+                if (hasLockTimeout)
+                {
+                    SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, oldLockTimeout, SPIF_SENDCHANGE);
+                }
+            }
+
+            if (GetForegroundWindow() != hwnd)
+            {
+                SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                SetWindowPos(hwnd, new IntPtr(-2), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                SetForegroundWindow(hwnd);
+                SwitchToThisWindow(hwnd, true);
             }
             return "FOCUSED";
         }
@@ -1520,11 +1786,70 @@ namespace AkpInput
             int Commit();
         }
 
+        [Guid("657804FA-D6AD-4496-8A60-352752AF4F89"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAudioEndpointVolumeCallback
+        {
+            [PreserveSig]
+            int OnNotify(IntPtr pNotifyData);
+        }
+
+        sealed class MasterVolumeCallback : IAudioEndpointVolumeCallback
+        {
+            private int _lastPct = -1;
+            private int _lastMute = -1;
+
+            public int OnNotify(IntPtr pNotifyData)
+            {
+                try
+                {
+                    if (pNotifyData == IntPtr.Zero) return 0;
+                    int bMuted = Marshal.ReadInt32(pNotifyData, 16);
+                    int rawFloat = Marshal.ReadInt32(pNotifyData, 20);
+                    float level = BitConverter.ToSingle(BitConverter.GetBytes(rawFloat), 0);
+                    int pct = (int)Math.Round(Math.Max(0f, Math.Min(1f, level)) * 100f);
+                    int mute = (bMuted != 0) ? 1 : 0;
+                    if (pct != _lastPct || mute != _lastMute)
+                    {
+                        _lastPct = pct;
+                        _lastMute = mute;
+                        EmitEvent("volume", pct.ToString() + " " + mute.ToString());
+                    }
+                }
+                catch { }
+                return 0;
+            }
+        }
+
+        private static IAudioEndpointVolume _subscribedEpv = null;
+        private static MasterVolumeCallback _volumeCallback = null;
+
+        public static void SubscribeVolumeEvents()
+        {
+            if (_subscribedEpv != null) return;
+            try
+            {
+                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                IMMDevice dev;
+                if (enumerator.GetDefaultAudioEndpoint(0, 1, out dev) == 0 && dev != null)
+                {
+                    var iid = typeof(IAudioEndpointVolume).GUID;
+                    object epvObj;
+                    if (dev.Activate(ref iid, 1, IntPtr.Zero, out epvObj) == 0 && epvObj != null)
+                    {
+                        _subscribedEpv = (IAudioEndpointVolume)epvObj;
+                        _volumeCallback = new MasterVolumeCallback();
+                        _subscribedEpv.RegisterControlChangeNotify(_volumeCallback);
+                    }
+                }
+            }
+            catch { }
+        }
+
         [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         interface IAudioEndpointVolume
         {
-            int RegisterControlChangeNotify(IntPtr pNotify);
-            int UnregisterControlChangeNotify(IntPtr pNotify);
+            int RegisterControlChangeNotify(IAudioEndpointVolumeCallback pNotify);
+            int UnregisterControlChangeNotify(IAudioEndpointVolumeCallback pNotify);
             int GetChannelCount(out uint pnChannelCount);
             int SetMasterVolumeLevel(float fLevelDB, ref Guid pguidEventContext);
             int SetMasterVolumeLevelScalar(float fLevel, ref Guid pguidEventContext);
@@ -2186,6 +2511,30 @@ namespace AkpInput
                             bool ok = DirectHardwareBlackout();
                             WriteOut(reqPrefix, ok ? "OK" : "ERR NO_DEVICE");
                         }
+                        break;
+
+                    case "watch_procs":
+                        {
+                            string wCsv = parts.Length > 1 ? string.Join("", parts, 1, parts.Length - 1) : "";
+                            lock (_watchLock)
+                            {
+                                _watchedProcs.Clear();
+                                foreach (var item in wCsv.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                                {
+                                    string clean = item.Trim();
+                                    if (!string.IsNullOrEmpty(clean) && !_watchedProcs.Contains(clean))
+                                    {
+                                        _watchedProcs.Add(clean);
+                                    }
+                                }
+                            }
+                            WriteOut(reqPrefix, "OK");
+                        }
+                        break;
+
+                    case "host_blackout_ack":
+                        _hostBlackoutAcked = true;
+                        WriteOut(reqPrefix, "OK");
                         break;
 
                     case "ping":

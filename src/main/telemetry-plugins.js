@@ -1,6 +1,6 @@
 'use strict';
 /**
- * telemetry-plugins.js - AKP153 动态数据源、SMTC 桌面歌词与可视化画布插件引擎 (v0.9.0)
+ * telemetry-plugins.js - AKP153 动态数据源、SMTC 桌面歌词与可视化画布插件引擎 (v0.9.5)
  *
  * 提供 6 大内置实时数据源与外部 JS 插件扩展能力（支持单键 96×96 与跨格 2×1 / 3×1 宽屏画布）：
  *   1. gpu       : GPU 核心负载、温度、显存占用与 24 点历史趋势折线 (history)
@@ -611,8 +611,6 @@ async function sampleMediaAndObs() {
     return mediaObsCache;
   }
 
-  pollWindowsSmtcAsync();
-
   const titles = await NativeInput.getProcessWindowTitles([
     'obs64', 'obs32', 'cloudmusic', 'spotify', 'qqmusic', 'foobar2000', 'music.ui', 'yesplaymusic',
   ]);
@@ -689,7 +687,10 @@ async function sampleMediaAndObs() {
     }
   }
 
-  // 3. 若窗口标题未命中，尝试使用 Windows SMTC 会话数据
+  // 3. 仅当原生窗口标题未命中任何桌面音乐播放器时，才按需触发异步 SMTC 探测，避免空闲时每 3.5s 拉起 PowerShell
+  if (!foundMedia) {
+    pollWindowsSmtcAsync();
+  }
   if (!foundMedia && smtcCache.data && smtcCache.data.track) {
     const s = smtcCache.data;
     const dur = Math.max(30, s.durationSec || 240);
@@ -755,7 +756,7 @@ const MARKETPLACE_CATALOG = [
     name: '系统运行时长与负载看板',
     category: '系统监控',
     author: 'AKP153 Official',
-    version: '0.9.0',
+    version: '0.9.5',
     description: '实时展示开机累计运行时长、时段问候语与内存负载折线图，按击切换监控维度',
     features: ['sparkline', 'progress', 'badge'],
     color: '#0f172a',
@@ -766,7 +767,7 @@ const MARKETPLACE_CATALOG = [
     name: '金融行情与 K 线趋势监控',
     category: '金融行情',
     author: 'AKP153 Community',
-    version: '0.9.0',
+    version: '0.9.5',
     description: '实时展示 BTC / ETH / NVDA / AAPL 价格走势与迷你 K 线折线图，按击一键切换标的',
     features: ['sparkline', 'badge'],
     color: '#06221c',
@@ -777,7 +778,7 @@ const MARKETPLACE_CATALOG = [
     name: 'HomeAssistant 智能家居开关',
     category: '智能家居',
     author: 'AKP153 Community',
-    version: '0.9.0',
+    version: '0.9.5',
     description: '控制与监控智能家居灯光/空调状态，支持自定义 SVG 矢量图标与亮度进度条',
     features: ['svg', 'progress', 'badge'],
     color: '#1e1b4b',
@@ -788,7 +789,7 @@ const MARKETPLACE_CATALOG = [
     name: 'GitHub PR 与 CI 构建监控',
     category: '开发者工具',
     author: 'AKP153 Community',
-    version: '0.9.0',
+    version: '0.9.5',
     description: '监控仓库待审 PR 数量、Actions CI 构建状态角标与近 7 日 Commit 趋势折线',
     features: ['sparkline', 'badge'],
     color: '#0d1117',
@@ -799,7 +800,7 @@ const MARKETPLACE_CATALOG = [
     name: '多路声卡推子与电平表',
     category: '音频与直播',
     author: 'AKP153 Community',
-    version: '0.9.0',
+    version: '0.9.5',
     description: '四通道实时混音推子柱状图（MAIN / MIC / BGM / GAME），按击一键切换主通道静音',
     features: ['bars', 'badge'],
     color: '#0f172a',
@@ -834,14 +835,27 @@ function loadExternalPlugins(force = false) {
         delete require.cache[require.resolve(fullPath)];
         const mod = require(fullPath);
         if (mod && mod.id && typeof mod.render === 'function') {
+          const configSchema = Array.isArray(mod.configSchema)
+            ? mod.configSchema.filter((f) => f && f.key).map((f) => ({
+                key: String(f.key).trim(),
+                label: String(f.label || f.key).trim(),
+                type: ['text', 'number', 'select', 'password', 'boolean'].includes(f.type) ? f.type : 'text',
+                default: f.default !== undefined ? f.default : '',
+                placeholder: f.placeholder ? String(f.placeholder) : '',
+                options: Array.isArray(f.options)
+                  ? f.options.map((o) => (typeof o === 'object' ? { label: String(o.label ?? o.value), value: String(o.value) } : { label: String(o), value: String(o) }))
+                  : [],
+              }))
+            : [];
           const entry = {
             id: String(mod.id),
             name: String(mod.name || mod.id),
             category: String(mod.category || '扩展插件'),
             author: String(mod.author || 'Community'),
-            version: String(mod.version || '0.9.0'),
+            version: String(mod.version || '0.9.5'),
             description: String(mod.description || ''),
             color: mod.color || '#1e293b',
+            configSchema,
             render: mod.render,
             onPress: typeof mod.onPress === 'function' ? mod.onPress : null,
           };
@@ -858,7 +872,22 @@ function loadExternalPlugins(force = false) {
   return Array.from(loadedPlugins.values());
 }
 
-async function evaluatePlugin(pluginId) {
+function resolvePluginConfig(pluginEntry, customConfig = {}) {
+  const out = {};
+  if (pluginEntry && Array.isArray(pluginEntry.configSchema)) {
+    for (const f of pluginEntry.configSchema) {
+      if (f.default !== undefined) out[f.key] = f.default;
+    }
+  }
+  if (customConfig && typeof customConfig === 'object') {
+    for (const [k, v] of Object.entries(customConfig)) {
+      if (v !== undefined && v !== '') out[k] = v;
+    }
+  }
+  return out;
+}
+
+async function evaluatePlugin(pluginId, customConfig = {}) {
   loadExternalPlugins();
   const normId = normalizePluginId(pluginId);
   const p = loadedPlugins.get(normId);
@@ -873,7 +902,8 @@ async function evaluatePlugin(pluginId) {
     };
   }
   try {
-    const res = await p.render({ os, now: new Date(), NativeInput });
+    const config = resolvePluginConfig(p, customConfig);
+    const res = await p.render({ os, now: new Date(), NativeInput, config });
     const merged = Object.assign({
       id: p.id,
       title: p.name,
@@ -897,12 +927,16 @@ async function evaluatePlugin(pluginId) {
   }
 }
 
-async function triggerPluginPress(pluginId, args) {
+async function triggerPluginPress(pluginId, args, customConfig = {}) {
   loadExternalPlugins();
   const normId = normalizePluginId(pluginId);
   const p = loadedPlugins.get(normId);
   if (p && p.onPress) {
-    return await p.onPress({ args, os, now: new Date(), NativeInput });
+    const cfgObj = (args && args.pluginConfig && typeof args.pluginConfig === 'object')
+      ? args.pluginConfig
+      : customConfig;
+    const config = resolvePluginConfig(p, cfgObj);
+    return await p.onPress({ args, config, os, now: new Date(), NativeInput });
   }
   return { ok: true };
 }
@@ -916,7 +950,25 @@ function listAvailablePlugins(force = true) {
     version: p.version,
     description: p.description,
     color: p.color,
+    configSchema: p.configSchema || [],
   }));
+}
+
+function installPluginFile(sourcePath) {
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return { ok: false, error: 'FILE_NOT_FOUND' };
+  }
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    fs.mkdirSync(PLUGINS_DIR, { recursive: true });
+  }
+  let baseName = path.basename(sourcePath);
+  if (!baseName.endsWith('.plugin.js')) {
+    baseName = baseName.replace(/\.js$/i, '') + '.plugin.js';
+  }
+  const dest = path.join(PLUGINS_DIR, baseName);
+  fs.copyFileSync(sourcePath, dest);
+  const list = listAvailablePlugins(true);
+  return { ok: true, plugins: list, installedPath: dest };
 }
 
 function listMarketplacePlugins() {
@@ -971,9 +1023,13 @@ async function gatherTelemetry(options = {}) {
       ? Array.from(new Set(options.pluginIds.map(normalizePluginId)))
       : allLoaded.map((p) => p.id);
 
+    const pluginConfigs = (options && options.pluginConfigs && typeof options.pluginConfigs === 'object')
+      ? options.pluginConfigs
+      : {};
     const pluginArr = [];
     await Promise.all(reqIds.map(async (pid) => {
-      const evaluated = await evaluatePlugin(pid);
+      const customCfg = pluginConfigs[pid] || pluginConfigs[pid.replace(/_/g, '-')] || {};
+      const evaluated = await evaluatePlugin(pid, customCfg);
       pluginArr.push(evaluated);
       pluginArr[pid] = evaluated;
       pluginArr[pid.replace(/_/g, '-')] = evaluated;
@@ -995,5 +1051,13 @@ module.exports = {
   loadExternalPlugins,
   evaluatePlugin,
   triggerPluginPress,
+  installPluginFile,
+  resolvePluginConfig,
   PLUGINS_DIR,
 };
+
+if (NativeInput && typeof NativeInput.on === 'function') {
+  NativeInput.on('media', () => {
+    mediaObsCache.ts = 0;
+  });
+}

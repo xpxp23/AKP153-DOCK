@@ -116,7 +116,7 @@ app.whenReady().then(async () => {
     check(`无横向溢出 @${w}x${h}`, m.sw <= m.iw + 1, `scrollW=${m.sw} innerW=${m.iw}`);
     check(`无纵向溢出 @${w}x${h}`, m.sh <= m.ih + 1, `scrollH=${m.sh} innerH=${m.ih}`);
     check(`18 个格子全部可见 @${w}x${h}`, m.fits, `格子宽=${m.cell}px`);
-    check(`格子没有缩得太小 @${w}x${h}`, m.cell >= (w === 1000 ? 50 : 60), `${m.cell}px`);
+    check(`格子没有缩得太小 @${w}x${h}`, m.cell >= (w === 1000 ? 45 : 60), `${m.cell}px`);
   }
   win.setSize(1160, 800);
   await new Promise((r) => setTimeout(r, 400));

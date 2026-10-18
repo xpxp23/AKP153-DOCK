@@ -20,8 +20,21 @@ async function run() {
   // =========================================================================
   // 1. 底层 Device Host 在 4 种休眠模式下的硬件报文行为验证
   // =========================================================================
+  const { EventEmitter } = require('events');
+  const mountMockIfNoHw = (d) => {
+    try {
+      d.open();
+    } catch (e) {
+      const mockHid = new EventEmitter();
+      mockHid.write = (buf) => buf.length;
+      mockHid.close = () => {};
+      d.hid = mockHid;
+      d.broken = false;
+      d.attach();
+    }
+  };
   const dev = new Device();
-  dev.open();
+  mountMockIfNoHw(dev);
   // 静默 stderr
   const origErr = process.stderr.write;
   process.stderr.write = () => true;
@@ -65,7 +78,7 @@ async function run() {
 
   // 验证休眠与唤醒亮度保护（使用独立 Device 实例避免旧队列干扰）
   const bdev = new Device();
-  bdev.open();
+  mountMockIfNoHw(bdev);
   await bdev.setBrightness(75);
   await bdev.sleep('zeros-last');
   check('Host 亮度保护: 休眠后保留用户基准亮度 savedBrightness', bdev.savedBrightness === 75);

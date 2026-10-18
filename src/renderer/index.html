@@ -12,6 +12,7 @@
     <span class="dot"></span>
     <h1>AKP153 控制台</h1>
     <span id="status" class="pill pill-warn">连接中…</span>
+    <div id="profileSwitcherBar" class="profile-switcher-bar" title="多套顶层配置文件 (Profiles) 一键热切"></div>
   </div>
   <div class="actions">
     <div class="history-btn-group">
@@ -146,6 +147,19 @@
                 <span class="switch-slider"></span>
               </label>
             </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">OSD 桌面毛玻璃悬浮提示窗 (HUD Overlay)</span>
+                <span class="pref-desc">在全屏游戏或后台时按下切页、切模式、调音量、切声卡、启停宏或番茄钟，顶部弹出 1.5s 无焦点穿透提示</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <button type="button" id="btnPreviewHud" class="ghost tiny">✨ 预览 HUD</button>
+                <label class="switch">
+                  <input type="checkbox" id="prefHudEnabled" checked />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
 
           <div class="settings-card">
@@ -245,7 +259,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.9 (0.9.0 独立便携免安装版)</span>
+                <span class="about-v">v0.9.5 (Event-Driven · OffscreenWorker · Plugin Schema · HUD &amp; Profiles)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -308,7 +322,10 @@
           <span class="model">AKP-153</span>
           <span id="multiSelectHint" class="multi-select-badge" hidden>已多选 0 格</span>
         </div>
-        <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button id="hwMirrorToggleBtn" class="device-grad-pill" title="切换 1:1 硬件真彩 Canvas 像素镜像预览（彻底消除窗口缩放导致的文字截断）">🖥️ 硬件真彩</button>
+          <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
+        </div>
       </div>
       <div id="grid" class="grid"></div>
     </div>

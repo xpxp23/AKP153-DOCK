@@ -51,7 +51,7 @@ function cellKey(v) {
   return null;
 }
 
-const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'hotkey', 'volume', 'audio', 'media', 'multi', 'macro', 'qr_decode', 'widget'];
+const TYPES = ['app', 'folder', 'url', 'command', 'ps1', 'file', 'page', 'profile', 'hotkey', 'volume', 'audio', 'media', 'multi', 'macro', 'qr_decode', 'widget'];
 const PAGE_MODES = ['next', 'prev', 'goto', 'up', 'home'];
 const STRIP_TYPES = ['clock', 'text', 'page', 'cpu', 'mem', 'sys', 'volume', 'gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
 
@@ -198,9 +198,15 @@ function buildSpec(f, opts) {
   } else if (type === 'qr_decode') {
     spec.target = 'qr_decode';
     if (!spec.label) spec.label = '扫码解码';
+  } else if (type === 'profile') {
+    spec.mode = String(f.mode || (f.to || f.profileId ? 'goto' : 'next')).toLowerCase();
+    spec.profileId = String(f.to || f.profileId || '');
+    spec.target = '';
+    if (!spec.label) spec.label = '切换模式';
   } else if (type === 'widget') {
     spec.widgetKind = String(f.kind || f['widget-kind'] || 'gpu').toLowerCase();
     spec.action = String(f.action || (spec.widgetKind === 'pomodoro' ? 'pomodoro_toggle' : 'refresh'));
+    if (f.plugin) spec.pluginId = String(f.plugin);
     if (!spec.label) spec.label = spec.widgetKind.toUpperCase();
   } else {
     if (!spec.target) die('这个类型需要 --target（程序路径 / 文件夹 / 网址 / 命令行）');
@@ -219,6 +225,13 @@ function buildSpec(f, opts) {
   if (f['font-size'] !== undefined) spec.fontSize = Number(f['font-size']);
   if (f['icon-scale'] !== undefined) spec.iconScale = Number(f['icon-scale']);
   if (f['label-pos'] !== undefined) spec.labelPos = String(f['label-pos']);
+  if (f['plugin-config']) {
+    try {
+      spec.pluginConfig = Object.assign({}, spec.pluginConfig || {}, JSON.parse(String(f['plugin-config'])));
+    } catch (e) {
+      die('解析 --plugin-config JSON 失败: ' + e.message);
+    }
+  }
 
   const autoIcon = o.icons !== false && spec.target && /\.(exe|lnk|ico)$/i.test(spec.target)
     && fs.existsSync(spec.target);
@@ -436,10 +449,19 @@ switch (CMD) {
     if (!page) die(`找不到页面「${f.page}」`);
     const type = String(f.type || 'text').toLowerCase();
     if (!STRIP_TYPES.includes(type)) die(`--type 只能是 ${STRIP_TYPES.join(' / ')}`);
+    let pluginConfig = (page.strips[n] && page.strips[n].pluginConfig) || {};
+    if (f['plugin-config']) {
+      try {
+        pluginConfig = Object.assign({}, pluginConfig, JSON.parse(String(f['plugin-config'])));
+      } catch (e) {
+        die('解析 --plugin-config JSON 失败: ' + e.message);
+      }
+    }
     page.strips[n] = Object.assign({}, page.strips[n], {
       type,
       label: f.label != null ? String(f.label) : (page.strips[n] || {}).label || '',
       color: f.color || (page.strips[n] || {}).color || '#263238',
+      pluginConfig,
     });
     saveIt();
     say(`屏${Number(n) + 1} @ ${page.name} -> ${type}`);
@@ -620,6 +642,49 @@ switch (CMD) {
     saveIt();
     say(`已从库里删掉 ${removed} 条`);
     done({ removed });
+    break;
+  }
+
+  case 'profile-list': {
+    const cfg = config.load();
+    say(`当前激活模式：${cfg.currentProfile}`);
+    for (const p of (cfg.profiles || [])) {
+      say(`  ${p.id === cfg.currentProfile ? '●' : ' '} ${p.id}  ${p.name}  (${(p.pages || []).length} 页)`);
+    }
+    done({ currentProfile: cfg.currentProfile, profiles: cfg.profiles });
+    break;
+  }
+
+  case 'profile-switch': {
+    const ref = f._[1] || f.to || f.id || '__next__';
+    const next = config.switchProfile(ref);
+    if (!next) die(`找不到配置文件模式「${ref}」`);
+    say(`已切换至模式：${next.name} (${next.id})`);
+    done({ profile: next.id, name: next.name });
+    break;
+  }
+
+  case 'profile-add': {
+    const name = f._[1] || f.name || '新模式';
+    const created = config.createProfile({
+      name,
+      icon: f.icon || '🗂️',
+      accent: f.accent || '#3b82f6',
+      cloneCurrent: !!f.clone,
+      preset: f.preset || '',
+      switchNow: f.switch !== false,
+    });
+    say(`已新建模式：${created.name} (${created.id})`);
+    done({ profile: created.id, name: created.name });
+    break;
+  }
+
+  case 'profile-del': {
+    const ref = f._[1] || f.id || f.name;
+    if (!ref) die('用法：profile-del <id 或 名字>');
+    if (!config.deleteProfile(ref)) die(`无法删除模式「${ref}」`);
+    say(`已删除模式：${ref}`);
+    done({ deleted: ref });
     break;
   }
 

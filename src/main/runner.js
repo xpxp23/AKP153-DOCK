@@ -247,9 +247,8 @@ async function activateWindow(name, allowMinimize = false) {
       runningStateCache.set(clean, { running: true, ts: Date.now() });
       return nat.state === 'MINIMIZED' ? 'minimized' : 'focused';
     }
-    if (nat && nat.state === 'NOWINDOW') {
-      const alive = await isRunningAsync(name);
-      if (!alive) return null;
+    if (nat && (nat.state === 'NOT_RUNNING' || nat.state === 'TRAY_HIDDEN' || nat.state === 'NOWINDOW')) {
+      return null;
     }
   } catch (_) {}
 
@@ -375,14 +374,25 @@ function stopMacrosForPage(pageId) {
  * 执行复合宏中的单步动作或条件分支指令
  * 返回 { ok: true, control?: 'continue' | 'skip_next' | 'abort' }
  */
-async function runSingleAction(action) {
+async function interruptibleDelay(ms, shouldStop) {
+  const total = Math.max(10, Math.min(60000, Number(ms) || 50));
+  const end = Date.now() + total;
+  while (Date.now() < end) {
+    if (shouldStop && shouldStop()) return;
+    const rem = end - Date.now();
+    await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, rem))));
+  }
+}
+
+async function runSingleAction(action, shouldStop) {
   if (!action || typeof action !== 'object') return { ok: true };
+  if (shouldStop && shouldStop()) return { ok: false, control: 'abort' };
   const type = String(action.type || 'app').toLowerCase();
 
   switch (type) {
     case 'delay': {
       const ms = Math.max(10, Number(action.ms) || 50);
-      await new Promise((r) => setTimeout(r, ms));
+      await interruptibleDelay(ms, shouldStop);
       return { ok: true };
     }
     case 'if_color': {
@@ -576,7 +586,7 @@ async function executeActionListOnce(actions, shouldStop) {
     if (shouldStop && shouldStop()) break;
     const act = actions[idx];
     try {
-      const stepRes = await runSingleAction(act);
+      const stepRes = await runSingleAction(act, shouldStop);
       if (stepRes && stepRes.control === 'abort') break;
       if (stepRes && stepRes.control === 'skip_next') idx++;
     } catch (_) {}
@@ -627,20 +637,32 @@ async function runMacro(spec, context) {
     return { ok: true, action: 'loop_started' };
   }
 
-  if (keyId) busyKeys.add(keyId);
+  const token = { stop: false, context };
+  if (keyId) {
+    busyKeys.add(keyId);
+    activeLoops.set(keyId, token);
+    if (onLoopStateCallback) onLoopStateCallback(keyId, true, context);
+  }
   try {
     const times = (loopCfg.mode === 'times' && Number(loopCfg.times) > 0) ? Number(loopCfg.times) : 1;
     const interval = Math.max(20, Number(spec.loopInterval || loopCfg.interval) || 50);
 
     for (let i = 0; i < times; i++) {
-      await executeActionListOnce(actions, null);
-      if (i < times - 1) {
-        await new Promise((r) => setTimeout(r, interval));
+      if (token.stop) break;
+      await executeActionListOnce(actions, () => token.stop);
+      if (i < times - 1 && !token.stop) {
+        await interruptibleDelay(interval, () => token.stop);
       }
     }
-    return { ok: true, action: 'macro_completed' };
+    return { ok: true, action: token.stop ? 'loop_stopped' : 'macro_completed' };
   } finally {
-    if (keyId) busyKeys.delete(keyId);
+    if (keyId) {
+      busyKeys.delete(keyId);
+      if (activeLoops.get(keyId) === token) {
+        activeLoops.delete(keyId);
+        if (onLoopStateCallback) onLoopStateCallback(keyId, false, context);
+      }
+    }
   }
 }
 

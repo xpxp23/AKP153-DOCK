@@ -12,6 +12,10 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { EventEmitter } = require('events');
+
+const evtBus = new EventEmitter();
+let lastWatchProcsCsv = '';
 
 const BIN_PATH = path.join(__dirname, '..', '..', 'bin', 'akp-input.exe');
 const CS_PATH = path.join(__dirname, 'native-input.cs');
@@ -95,6 +99,35 @@ function ensureDaemon() {
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+
+        if (trimmed.startsWith('@evt ')) {
+          const rawEvt = trimmed.slice(5);
+          const spIdx = rawEvt.indexOf(' ');
+          const evtType = (spIdx > 0 ? rawEvt.slice(0, spIdx) : rawEvt).trim();
+          const evtPayload = spIdx > 0 ? rawEvt.slice(spIdx + 1) : '';
+          if (evtType === 'fg') {
+            const p = evtPayload.split('|');
+            evtBus.emit('fg', {
+              processName: (p[0] || '').trim(),
+              pid: parseInt(p[1], 10) || 0,
+              title: p.slice(2).join('|').trim(),
+            });
+          } else if (evtType === 'volume') {
+            const p = evtPayload.trim().split(/\s+/);
+            evtBus.emit('volume', {
+              ok: true,
+              level: Math.max(0, Math.min(100, parseInt(p[0], 10) || 0)),
+              isMute: p[1] === '1',
+            });
+          } else if (evtType === 'media') {
+            evtBus.emit('media', evtPayload);
+          } else if (evtType === 'procs') {
+            evtBus.emit('procs', evtPayload);
+          } else if (evtType === 'shutdown') {
+            evtBus.emit('shutdown', {});
+          }
+          continue;
+        }
 
         if (trimmed.startsWith('@')) {
           const sp = trimmed.indexOf(' ');
@@ -530,6 +563,29 @@ const NativeInput = {
 
   shutdownUnblock: (hwnd = 0) => {
     return sendCmd(`shutdown_unblock ${hwnd || 0}`);
+  },
+
+  on: (evt, listener) => {
+    evtBus.on(evt, listener);
+    ensureDaemon();
+    return () => evtBus.removeListener(evt, listener);
+  },
+
+  off: (evt, listener) => {
+    evtBus.removeListener(evt, listener);
+  },
+
+  watchProcesses: (names) => {
+    const arr = Array.isArray(names) ? names : [names];
+    const cleaned = Array.from(new Set(
+      arr.map(n => String(n || '').trim().replace(/\.exe$/i, '').toLowerCase()).filter(Boolean)
+    ));
+    lastWatchProcsCsv = cleaned.join(',');
+    return sendCmd(`watch_procs ${lastWatchProcsCsv}`);
+  },
+
+  ackHostBlackout: () => {
+    return sendCmd('host_blackout_ack', 800);
   },
 
   stop: () => {

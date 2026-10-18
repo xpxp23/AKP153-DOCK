@@ -44,7 +44,11 @@ const BUILTIN_MARKET_PLUGINS = [
     progress: 48,
     sparkline: [22, 26, 24, 31, 28, 35, 30, 27, 33, 29, 25, 32],
     features: ['📈 Sparkline 折线', '📊 Progress 进度', '🏷️ Badge 角标'],
-    description: '实时展示本机开机累计运行时长、时段问候语与内存负载趋势折线，按击切换监控维度'
+    description: '实时展示本机开机累计运行时长、时段问候语与内存负载趋势折线，按击切换监控维度',
+    configSchema: [
+      { key: 'customGreet', label: '自定义问候语', type: 'text', default: '', placeholder: '留空则按时段自动问候' },
+      { key: 'memWarnPct', label: '内存告警阈值 (%)', type: 'number', default: 85, placeholder: '85' }
+    ]
   },
   {
     id: 'stock_crypto_ticker',
@@ -60,7 +64,20 @@ const BUILTIN_MARKET_PLUGINS = [
     badge: { text: '+2.45%', bg: '#059669' },
     sparkline: [67800, 67950, 68120, 68040, 68290, 68180, 68350, 68510, 68400, 68620, 68490, 68420],
     features: ['📈 K 线趋势图', '🏷️ 涨跌角标', '🔄 按击切标的'],
-    description: '实时展示 BTC / ETH / NVDA / AAPL 价格走势与迷你 K 线折线图，按击一键切换标的'
+    description: '实时展示 BTC / ETH / NVDA / AAPL 价格走势与迷你 K 线折线图，按击一键切换标的',
+    configSchema: [
+      { key: 'symbol', label: '监控股票/币种代码', type: 'select', default: '', options: [
+        { label: '自动轮播 (按击切换)', value: '' },
+        { label: 'BTC/USD · 比特币', value: 'BTC/USD' },
+        { label: 'ETH/USD · 以太坊', value: 'ETH/USD' },
+        { label: 'NVDA · 英伟达', value: 'NVDA' },
+        { label: 'AAPL · 苹果', value: 'AAPL' }
+      ] },
+      { key: 'colorScheme', label: '涨跌配色方案', type: 'select', default: 'us', options: [
+        { label: '国际标准 (绿涨红跌)', value: 'us' },
+        { label: 'A股习惯 (红涨绿跌)', value: 'cn' }
+      ] }
+    ]
   },
   {
     id: 'home_assistant_switch',
@@ -77,7 +94,13 @@ const BUILTIN_MARKET_PLUGINS = [
     progress: 85,
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>',
     features: ['🎨 SVG 矢量图标', '📊 亮度进度条', '⚡ 按击开关'],
-    description: '控制与监控智能家居灯光/空调/插座状态，支持自定义 SVG 图标与亮度进度条'
+    description: '控制与监控智能家居灯光/空调/插座状态，支持自定义 SVG 图标与亮度进度条',
+    configSchema: [
+      { key: 'haUrl', label: 'HomeAssistant 地址', type: 'text', default: 'http://homeassistant.local:8123', placeholder: 'http://192.168.1.x:8123' },
+      { key: 'entityId', label: '实体 ID (Entity ID)', type: 'text', default: 'light.studio_desk', placeholder: 'light.studio_desk' },
+      { key: 'deviceName', label: '显示设备名称', type: 'text', default: '', placeholder: '例如：工作室桌面灯带' },
+      { key: 'haToken', label: '访问令牌 (Token)', type: 'password', default: '', placeholder: 'Long-Lived Access Token' }
+    ]
   },
   {
     id: 'github_pr_monitor',
@@ -93,7 +116,11 @@ const BUILTIN_MARKET_PLUGINS = [
     badge: { text: 'PASS', bg: '#238636' },
     sparkline: [4, 7, 5, 9, 12, 8, 14],
     features: ['📈 Commit 活跃线', '🏷️ CI 状态标', '🔄 多仓库切换'],
-    description: '实时监控 GitHub 仓库待审 PR 数量、Actions CI 构建状态与近期提交活跃度趋势'
+    description: '实时监控 GitHub 仓库待审 PR 数量、Actions CI 构建状态与近期提交活跃度趋势',
+    configSchema: [
+      { key: 'repo', label: 'GitHub 仓库名', type: 'text', default: '', placeholder: '例如：electron/electron' },
+      { key: 'branch', label: '监控分支', type: 'text', default: 'main', placeholder: 'main' }
+    ]
   },
   {
     id: 'audio_fader_meter',
@@ -114,7 +141,15 @@ const BUILTIN_MARKET_PLUGINS = [
       { label: 'GAME', value: 46, color: '#f59e0b' }
     ],
     features: ['📊 4 路推子柱图', '🏷️ 直播状态标', '🔇 按击一键静音'],
-    description: '四通道实时混音推子柱状图（MAIN / MIC / BGM / GAME），按击一键切换主通道静音'
+    description: '四通道实时混音推子柱状图（MAIN / MIC / BGM / GAME），按击一键切换主通道静音',
+    configSchema: [
+      { key: 'title', label: '面板显示标题', type: 'text', default: '🎚️ 混音推子监控', placeholder: '例如：直播混音台' },
+      { key: 'theme', label: '推子配色方案', type: 'select', default: 'cyber', options: [
+        { label: '赛博青紫 (Cyber)', value: 'cyber' },
+        { label: '录音室绿金 (Studio)', value: 'studio' },
+        { label: '烈焰暖橙 (Warm)', value: 'warm' }
+      ] }
+    ]
   }
 ];
 
@@ -163,12 +198,46 @@ function updateUndoRedoUI() {
   }
 }
 
+const _historyIconPool = new Map();
+
+function compactPagesForHistory(pages) {
+  const cloned = JSON.parse(JSON.stringify(pages || []));
+  for (const p of cloned) {
+    for (const s of Object.values(p.buttons || {})) {
+      if (s && typeof s.icon === 'string' && s.icon.length > 256) {
+        let refKey = null;
+        for (const [k, v] of _historyIconPool.entries()) {
+          if (v === s.icon) { refKey = k; break; }
+        }
+        if (!refKey) {
+          refKey = `__hist_icon_${_historyIconPool.size + 1}__`;
+          _historyIconPool.set(refKey, s.icon);
+        }
+        s.icon = refKey;
+      }
+    }
+  }
+  return cloned;
+}
+
+function restorePagesFromHistory(pages) {
+  const cloned = JSON.parse(JSON.stringify(pages || []));
+  for (const p of cloned) {
+    for (const s of Object.values(p.buttons || {})) {
+      if (s && typeof s.icon === 'string' && _historyIconPool.has(s.icon)) {
+        s.icon = _historyIconPool.get(s.icon);
+      }
+    }
+  }
+  return cloned;
+}
+
 function pushHistory(reason = '编辑配置') {
   if (!cfg || !cfg.pages || _isApplyingHistory) return;
   const curHash = getPagesSnapshotHash();
   if (_lastHistoryHash && curHash === _lastHistoryHash) return;
   historyStack.push({
-    pages: JSON.parse(JSON.stringify(cfg.pages)),
+    pages: compactPagesForHistory(cfg.pages),
     currentPage: cfg.currentPage,
     reason
   });
@@ -187,11 +256,11 @@ async function performUndo() {
   try {
     const snap = historyStack.pop();
     redoStack.push({
-      pages: JSON.parse(JSON.stringify(cfg.pages)),
+      pages: compactPagesForHistory(cfg.pages),
       currentPage: cfg.currentPage,
       reason: snap.reason
     });
-    cfg.pages = JSON.parse(JSON.stringify(snap.pages));
+    cfg.pages = restorePagesFromHistory(snap.pages);
     if (snap.currentPage && cfg.pages.some(p => p.id === snap.currentPage)) {
       cfg.currentPage = snap.currentPage;
     } else if (cfg.pages[0]) {
@@ -219,11 +288,11 @@ async function performRedo() {
   try {
     const snap = redoStack.pop();
     historyStack.push({
-      pages: JSON.parse(JSON.stringify(cfg.pages)),
+      pages: compactPagesForHistory(cfg.pages),
       currentPage: cfg.currentPage,
       reason: snap.reason
     });
-    cfg.pages = JSON.parse(JSON.stringify(snap.pages));
+    cfg.pages = restorePagesFromHistory(snap.pages);
     if (snap.currentPage && cfg.pages.some(p => p.id === snap.currentPage)) {
       cfg.currentPage = snap.currentPage;
     } else if (cfg.pages[0]) {
@@ -493,6 +562,7 @@ function glyphFor(type) {
     case 'command': return '⌘';
     case 'ps1': return 'PS';
     case 'page': return '↦';
+    case 'profile': return '🗂️';
     case 'back': return '←';
     case 'qr_decode':
     case 'qr': return '📷';
@@ -515,11 +585,12 @@ const TYPE_NAMES = {
   ps1: 'PowerShell 脚本',
   file: '其它文件（用默认程序打开）',
   page: '切换页面（下一页 / 跳转 / 返回上级）',
+  profile: '🗂️ 切换整机模式 (办公/直播/剪辑/游戏 Profile)',
   qr_decode: '📷 屏幕/剪贴板二维码解码',
 };
 const TYPE_SHORT = {
   volume: '音量', widget: '组件', multi: '宏', app: '应用', hotkey: '快捷键', folder: '文件夹', url: '网址',
-  command: '命令', ps1: '脚本', file: '文件', page: '切页', qr_decode: '扫码',
+  command: '命令', ps1: '脚本', file: '文件', page: '切页', profile: '切模式', qr_decode: '扫码',
 };
 
 /** Collapsible inspector sections keep their state across re-renders. */
@@ -1027,6 +1098,107 @@ function toJpegUnder(canvas, maxBytes) {
   return canvas.toDataURL('image/jpeg', 0.3);
 }
 
+// v0.9.5: OffscreenCanvas Web Worker for zero-jank hardware frame rotation & JPEG encoding
+let offscreenWorker = null;
+let offscreenSeq = 1;
+const offscreenPending = new Map();
+let isWindowVisible = true;
+let hwMirrorEnabled = false;
+let cachedPluginSchemas = [];
+
+function ensureOffscreenWorker() {
+  if (offscreenWorker !== null) return offscreenWorker;
+  if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof Blob === 'undefined') {
+    offscreenWorker = false;
+    return null;
+  }
+  try {
+    const code = `
+      const pool = new Map();
+      function getCanvas(s) {
+        let e = pool.get(s);
+        if (!e) {
+          const c = new OffscreenCanvas(s, s);
+          e = { c, ctx: c.getContext('2d', { alpha: false }) };
+          pool.set(s, e);
+        }
+        return e;
+      }
+      self.onmessage = async (ev) => {
+        const m = ev.data;
+        if (!m || !m.id) return;
+        try {
+          const s = m.size || 96;
+          const { c, ctx } = getCanvas(s);
+          ctx.save();
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, s, s);
+          if (m.mode === 'ccw') { ctx.translate(0, s); ctx.rotate(-Math.PI / 2); }
+          else if (m.mode === 'cw') { ctx.translate(s, 0); ctx.rotate(Math.PI / 2); }
+          ctx.drawImage(m.bitmap, 0, 0, s, s);
+          ctx.restore();
+          if (m.bitmap && m.bitmap.close) m.bitmap.close();
+          const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.90 });
+          let b64 = '';
+          if (typeof FileReaderSync !== 'undefined') {
+            const url = new FileReaderSync().readAsDataURL(blob);
+            b64 = url.split(',')[1] || '';
+          } else {
+            const ab = await blob.arrayBuffer();
+            const u8 = new Uint8Array(ab);
+            let bin = '';
+            for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+            b64 = btoa(bin);
+          }
+          self.postMessage({ id: m.id, ok: true, data: b64 });
+        } catch (err) {
+          self.postMessage({ id: m.id, ok: false });
+        }
+      };
+    `;
+    const blobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    offscreenWorker = new Worker(blobUrl);
+    offscreenWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg || !msg.id) return;
+      const p = offscreenPending.get(msg.id);
+      if (p) {
+        offscreenPending.delete(msg.id);
+        p.resolve(msg.ok ? msg.data : null);
+      }
+    };
+    offscreenWorker.onerror = () => { offscreenWorker = false; };
+    return offscreenWorker;
+  } catch (_) {
+    offscreenWorker = false;
+    return null;
+  }
+}
+
+async function encodeCanvasToJpegB64(canvas, rotMode) {
+  const worker = ensureOffscreenWorker();
+  if (worker && typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(canvas);
+      const id = offscreenSeq++;
+      const b64 = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          offscreenPending.delete(id);
+          resolve(null);
+        }, 1200);
+        offscreenPending.set(id, {
+          resolve: (res) => { clearTimeout(timer); resolve(res); }
+        });
+        worker.postMessage({ id, bitmap: bmp, size: canvas.width, mode: rotMode }, [bmp]);
+      });
+      if (b64) return b64;
+    } catch (_) {}
+  }
+  const rotated = rotateCanvas(canvas, rotMode);
+  const dataUrl = toJpegUnder(rotated, 10240);
+  return dataUrl.split(',')[1];
+}
+
 // Preview mode: when opened as a plain HTML file (no Electron preload) we
 // render a sample layout so the UI can be inspected without the device.
 const DEMO = typeof api === 'undefined';
@@ -1065,9 +1237,9 @@ async function pushKey(row, col, force = false) {
   const size = col === 5 ? 80 : 96;
   const blank = { color: '#20262e', label: '' };
   const c = await paintKey(spec || blank, size, { row, col });
-  const rotated = rotateCanvas(c, $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw'));
-  const dataUrl = toJpegUnder(rotated, 10240);
-  await api.deviceDraw({ row, col, data: dataUrl.split(',')[1], force: !!force });
+  const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+  const b64 = await encodeCanvasToJpegB64(c, rotMode);
+  await api.deviceDraw({ row, col, data: b64, force: !!force });
 }
 
 /** 显示屏上的页码/页名。顶层页显示「第 N/M 页」，子页显示「子页 · 名字」。 */
@@ -1977,9 +2149,8 @@ async function pushStrip(row, force = false, preStats = null) {
   if (!cfg || DEMO) return;
   const c = await buildStripCanvas(row, preStats);
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
-  const rotated = rotateCanvas(c, rotMode);
-  const dataUrl = toJpegUnder(rotated, 10240);
-  await api.deviceDraw({ row, col: 5, data: dataUrl.split(',')[1], force: !!force });
+  const b64 = await encodeCanvasToJpegB64(c, rotMode);
+  await api.deviceDraw({ row, col: 5, data: b64, force: !!force });
 }
 
 async function repaintAllKeys(force = false, gen = null) {
@@ -1992,10 +2163,9 @@ async function repaintAllKeys(force = false, gen = null) {
     for (let col = 0; col < KEY_COLS; col++) {
       const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
       jobs.push(
-        paintKey(spec || blank, 96, { row, col }).then((c) => {
-          const rotated = rotateCanvas(c, rotMode);
-          const dataUrl = toJpegUnder(rotated, 10240);
-          return { row, col, data: dataUrl.split(',')[1], force: !!force };
+        paintKey(spec || blank, 96, { row, col }).then(async (c) => {
+          const b64 = await encodeCanvasToJpegB64(c, rotMode);
+          return { row, col, data: b64, force: !!force };
         })
       );
     }
@@ -2039,20 +2209,18 @@ async function repaintAll(force = false) {
     for (let col = 0; col < KEY_COLS; col++) {
       const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
       jobs.push(
-        paintKey(spec || blank, 96, { row, col }).then((c) => {
-          const rotated = rotateCanvas(c, rotMode);
-          const dataUrl = toJpegUnder(rotated, 10240);
-          return { row, col, data: dataUrl.split(',')[1], force: !!force };
+        paintKey(spec || blank, 96, { row, col }).then(async (c) => {
+          const b64 = await encodeCanvasToJpegB64(c, rotMode);
+          return { row, col, data: b64, force: !!force };
         })
       );
     }
   }
   for (let row = 0; row < ROWS; row++) {
     jobs.push(
-      buildStripCanvas(row, sharedStats).then((c) => {
-        const rotated = rotateCanvas(c, rotMode);
-        const dataUrl = toJpegUnder(rotated, 10240);
-        return { row, col: 5, data: dataUrl.split(',')[1], force: !!force };
+      buildStripCanvas(row, sharedStats).then(async (c) => {
+        const b64 = await encodeCanvasToJpegB64(c, rotMode);
+        return { row, col: 5, data: b64, force: !!force };
       })
     );
   }
@@ -2535,6 +2703,24 @@ function refreshGrid() {
     cell.appendChild(capEl);
     cell.appendChild(el('span', 'tag', `r${row}c${col}`));
     if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
+
+    if (hwMirrorEnabled) {
+      cell.classList.add('has-canvas');
+      paintKey(spec, 96, { row, col }).then((hwCnv) => {
+        if (!hwCnv || !cell.isConnected) return;
+        hwCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
+        hwCnv.style.position = 'absolute';
+        hwCnv.style.inset = '0';
+        hwCnv.style.width = '100%';
+        hwCnv.style.height = '100%';
+        hwCnv.style.borderRadius = 'inherit';
+        hwCnv.style.pointerEvents = 'none';
+        hwCnv.style.zIndex = '1';
+        const oldCnv = cell.querySelector('.cell-hw-mirror-canvas');
+        if (oldCnv) oldCnv.remove();
+        cell.insertBefore(hwCnv, cell.firstChild);
+      }).catch(() => {});
+    }
 
     const x = document.createElement('button');
     x.className = 'clear';
@@ -4292,7 +4478,10 @@ function openPluginMarketModal(onSelectPlugin) {
           <h3 style="margin:0; font-size:15px;">🛍️ AKP153 可视化画布插件中心 (v0.9 Plugin API)</h3>
           <div style="font-size:11.5px; color:var(--muted); margin-top:3px;">支持 Sparkline 折线图、Bars 多路推子、SVG 矢量图标与 Badge 状态角标渲染</div>
         </div>
-        <button type="button" class="ghost tiny" id="pmCloseBtn">✕ 关闭</button>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button type="button" class="ghost tiny" id="pmInstallLocalBtn">📦 安装本地 .plugin.js</button>
+          <button type="button" class="ghost tiny" id="pmCloseBtn">✕ 关闭</button>
+        </div>
       </div>
       <div class="plugin-market-grid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; max-height: 76vh; overflow-y:auto; padding-right:4px;">
         ${catalog.map(p => `
@@ -4314,6 +4503,22 @@ function openPluginMarketModal(onSelectPlugin) {
   document.body.appendChild(wrap);
   const close = () => wrap.remove();
   wrap.querySelector('#pmCloseBtn').onclick = close;
+  const installBtn = wrap.querySelector('#pmInstallLocalBtn');
+  if (installBtn) {
+    installBtn.onclick = async () => {
+      if (!DEMO && api.pluginsInstall) {
+        const res = await api.pluginsInstall('__pick__');
+        if (res && res.ok && Array.isArray(res.plugins)) {
+          cachedPluginSchemas = res.plugins;
+          toast(`✅ 插件安装成功，共加载 ${res.plugins.length} 个插件`);
+          close();
+          renderInspector();
+        }
+      } else {
+        toast('预览模式下不支持安装本地文件');
+      }
+    };
+  }
   wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
   wrap.querySelectorAll('.pm-use-btn').forEach(btn => {
     btn.onclick = () => {
@@ -4322,6 +4527,90 @@ function openPluginMarketModal(onSelectPlugin) {
       close();
       if (onSelectPlugin) onSelectPlugin(meta);
     };
+  });
+}
+
+function getPluginSchemaForId(pluginId) {
+  const normId = String(pluginId || 'uptime_greeting').replace(/-/g, '_');
+  const fromLoaded = (cachedPluginSchemas || []).find(p => p && String(p.id).replace(/-/g, '_') === normId);
+  if (fromLoaded && Array.isArray(fromLoaded.configSchema) && fromLoaded.configSchema.length) {
+    return fromLoaded.configSchema;
+  }
+  const fromBuiltin = BUILTIN_MARKET_PLUGINS.find(p => p && String(p.id).replace(/-/g, '_') === normId);
+  return (fromBuiltin && Array.isArray(fromBuiltin.configSchema)) ? fromBuiltin.configSchema : [];
+}
+
+function renderPluginSchemaBoxHtml(pluginId, pluginConfig = {}, idPrefix = 'i-plgcfg-') {
+  const schema = getPluginSchemaForId(pluginId);
+  if (!schema || !schema.length) return '';
+  return `
+    <div class="plugin-schema-box" id="${idPrefix}box">
+      <div class="plugin-schema-title">
+        <span>🔌 插件参数配置 (Schema Config)</span>
+        <span style="font-size:10px; opacity:0.75;">自动持久化至 spec.pluginConfig</span>
+      </div>
+      ${schema.map(f => {
+        const curVal = (pluginConfig && pluginConfig[f.key] !== undefined)
+          ? pluginConfig[f.key]
+          : (f.default !== undefined ? f.default : '');
+        const fid = `${idPrefix}${f.key}`;
+        if (f.type === 'select' && Array.isArray(f.options)) {
+          return `
+            <div class="plugin-schema-field">
+              <label for="${escapeAttr(fid)}">${escapeHtml(f.label || f.key)}</label>
+              <select id="${escapeAttr(fid)}" data-schema-key="${escapeAttr(f.key)}" data-schema-type="select">
+                ${f.options.map(opt => {
+                  const val = typeof opt === 'object' ? opt.value : opt;
+                  const lbl = typeof opt === 'object' ? opt.label : opt;
+                  return `<option value="${escapeAttr(String(val))}" ${String(curVal) === String(val) ? 'selected' : ''}>${escapeHtml(String(lbl))}</option>`;
+                }).join('')}
+              </select>
+            </div>
+          `;
+        }
+        const inputType = f.type === 'number' ? 'number' : (f.type === 'password' ? 'password' : 'text');
+        return `
+          <div class="plugin-schema-field">
+            <label for="${escapeAttr(fid)}">${escapeHtml(f.label || f.key)}</label>
+            <input id="${escapeAttr(fid)}" type="${inputType}" data-schema-key="${escapeAttr(f.key)}" data-schema-type="${inputType}" value="${escapeAttr(String(curVal))}" placeholder="${escapeAttr(f.placeholder || '')}" />
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function wirePluginSchemaBox(rootEl, pluginId, targetSpec, idPrefix = 'i-plgcfg-', onUpdated = null) {
+  const box = rootEl.querySelector(`#${idPrefix}box`);
+  if (!box || !targetSpec) return;
+  const normId = String(pluginId || targetSpec.pluginId || 'uptime_greeting').replace(/-/g, '_');
+  box.querySelectorAll('[data-schema-key]').forEach((el) => {
+    const key = el.dataset.schemaKey;
+    const stype = el.dataset.schemaType;
+    const handler = async () => {
+      pushHistory('修改插件配置参数');
+      if (!targetSpec.pluginConfig || typeof targetSpec.pluginConfig !== 'object') {
+        targetSpec.pluginConfig = {};
+      }
+      targetSpec.pluginConfig[key] = stype === 'number' ? (Number(el.value) || 0) : el.value;
+      if (!DEMO && api.pluginsEvaluate) {
+        try {
+          const evaluated = await api.pluginsEvaluate(normId, targetSpec.pluginConfig);
+          if (evaluated && lastTelemetry && lastTelemetry.plugins) {
+            if (Array.isArray(lastTelemetry.plugins)) {
+              const idx = lastTelemetry.plugins.findIndex(p => p && String(p.id).replace(/-/g, '_') === normId);
+              if (idx >= 0) lastTelemetry.plugins[idx] = evaluated;
+              else lastTelemetry.plugins.push(evaluated);
+            }
+            lastTelemetry.plugins[normId] = evaluated;
+          }
+        } catch (_) {}
+      }
+      await commit(true);
+      if (onUpdated) onUpdated();
+    };
+    if (el.tagName === 'SELECT') el.addEventListener('change', handler);
+    else el.addEventListener('change', handler);
   });
 }
 
@@ -4388,6 +4677,7 @@ function renderWidgetEditorHtml(spec) {
               return `<option value="${escapeAttr(pid)}" ${curPluginId === pid ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.title || pid)}</option>`;
             }).join('')}
           </select>
+          ${renderPluginSchemaBoxHtml(curPluginId, spec.pluginConfig || {}, 'i-plgcfg-')}
         </div>
       ` : ''}
 
@@ -4422,6 +4712,13 @@ function wireWidgetEditor(box, spec) {
       if (btn.disabled) return;
       const span = Math.max(1, Math.min(3, Number(btn.dataset.span) || 1));
       pushHistory(`设置组件跨格联屏 ${span}×1`);
+      if (span > 1 && selected && selected.col < KEY_COLS) {
+        const btns = pageButtons();
+        for (let k = 1; k < span && (selected.col + k) < KEY_COLS; k++) {
+          const nk = `${selected.row},${selected.col + k}`;
+          if (btns[nk]) delete btns[nk];
+        }
+      }
       if (span === 1) delete spec.spanCols;
       else spec.spanCols = span;
       await commit(true);
@@ -4465,6 +4762,9 @@ function wireWidgetEditor(box, spec) {
       });
     };
   }
+  wirePluginSchemaBox(box, spec.pluginId || 'uptime_greeting', spec, 'i-plgcfg-', () => {
+    refreshGrid();
+  });
   const btnReloadPlg = box.querySelector('#i-widget-reload-plugins');
   if (btnReloadPlg) {
     btnReloadPlg.onclick = async () => {
@@ -4855,6 +5155,31 @@ function renderInspector() {
                 <button type="button" class="ghost tiny" id="i-page-open-modal" style="width: 100%; margin-top: 6px;">
                   ⚙️ 打开高级翻页配置器…
                 </button>
+              </div>
+            ` : spec.type === 'profile' ? `
+              <div class="page-inspector-card">
+                <div class="page-insp-head">
+                  <span class="page-insp-label">🗂️ 整机模式热切 (Profile)</span>
+                  <span class="page-insp-badge">模式: ${escapeHtml(spec.mode || 'next')}</span>
+                </div>
+                <div class="row" style="margin-top:8px;">
+                  <label>切换方式</label>
+                  <select id="i-profile-mode-select">
+                    <option value="next" ${(spec.mode || 'next') === 'next' ? 'selected' : ''}>🔄 顺序循环切换下一套模式</option>
+                    <option value="prev" ${spec.mode === 'prev' ? 'selected' : ''}>⏮️ 逆序切换上一套模式</option>
+                    <option value="goto" ${spec.mode === 'goto' ? 'selected' : ''}>🎯 切换到指定模式 (Profile)</option>
+                  </select>
+                </div>
+                ${spec.mode === 'goto' ? `
+                  <div class="row" style="margin-top:6px;">
+                    <label>目标配置文件模式</label>
+                    <select id="i-profile-target-select">
+                      ${((cfg && cfg.profiles) || []).map(pr => `
+                        <option value="${escapeAttr(pr.id)}" ${spec.profileId === pr.id ? 'selected' : ''}>${escapeHtml(pr.icon || '🗂️')} ${escapeHtml(pr.name)}</option>
+                      `).join('')}
+                    </select>
+                  </div>
+                ` : ''}
               </div>
             ` : `
               <div class="row">
@@ -5248,6 +5573,29 @@ function renderInspector() {
     pageTargetSel.onchange = async () => {
       spec.pageId = pageTargetSel.value;
       await commit(true);
+    };
+  }
+  const profModeSel = $('i-profile-mode-select');
+  if (profModeSel) {
+    profModeSel.onchange = async () => {
+      pushHistory('修改模式切换方式');
+      spec.mode = profModeSel.value;
+      if (spec.mode === 'goto' && !spec.profileId && cfg && cfg.profiles && cfg.profiles[0]) {
+        spec.profileId = cfg.profiles[0].id;
+      }
+      await commit(true);
+      renderInspector();
+    };
+  }
+  const profTargetSel = $('i-profile-target-select');
+  if (profTargetSel) {
+    profTargetSel.onchange = async () => {
+      pushHistory('选择目标整机模式');
+      spec.profileId = profTargetSel.value;
+      const found = ((cfg && cfg.profiles) || []).find(p => p.id === spec.profileId);
+      if (found) spec.label = found.name;
+      await commit(true);
+      renderInspector();
     };
   }
   const btnPageOpenModal = $('i-page-open-modal');
@@ -6336,6 +6684,7 @@ function renderStripInspector(box) {
                 return `<option value="${escapeAttr(pid)}" ${curPluginId === pid ? 'selected' : ''}>${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name || p.title || pid)}</option>`;
               }).join('')}
             </select>
+            ${renderPluginSchemaBoxHtml(curPluginId, s.pluginConfig || {}, 's-plgcfg-')}
           </div>
         ` : ''}
         ${s.type === 'pomodoro' ? `
@@ -6393,6 +6742,10 @@ function renderStripInspector(box) {
       pageStrips()[String(row)] = Object.assign({}, s, { pluginId: sPlgSel.value });
       await commit(true);
       renderInspector();
+    });
+    wirePluginSchemaBox(box, s.pluginId || 'uptime_greeting', pageStrips()[String(row)], 's-plgcfg-', () => {
+      refreshStripCells(lastSysStats);
+      pushStrip(row, true);
     });
   }
   const sMarketBtn = el('s-open-plugin-market');
@@ -9292,8 +9645,36 @@ function bindShell() {
       scheduleDebouncedCommit(false);
     });
     debounceInput.addEventListener('change', async () => {
-      if (!DEMO) await saveConfig();
+      if (!DEMO) {
+        await saveConfig();
+        if (api.deviceSetDebounce) await api.deviceSetDebounce(cfg.keyDebounceMs);
+      }
     });
+  }
+
+  const hudBox = $('prefHudEnabled');
+  if (hudBox) {
+    hudBox.checked = cfg.hudEnabled !== false;
+    hudBox.addEventListener('change', async (e) => {
+      cfg.hudEnabled = e.target.checked;
+      if (!DEMO) await saveConfig();
+      toast(e.target.checked ? '已开启桌面毛玻璃 HUD 悬浮提示窗' : '已关闭桌面 HUD 悬浮提示窗');
+    });
+  }
+  const btnPrevHud = $('btnPreviewHud');
+  if (btnPrevHud) {
+    btnPrevHud.onclick = () => {
+      if (!DEMO && api.hudShow) {
+        api.hudShow({
+          icon: 'sparkles',
+          title: 'AKP153 悬浮胶囊提示',
+          subtitle: '无焦点穿透毛玻璃 OSD 已就绪',
+          accent: '#3b82f6'
+        });
+      } else {
+        toast('✨ 桌面 HUD 胶囊预览（真机模式下在屏幕顶部中央弹出）');
+      }
+    };
   }
 
   const closeToTrayBox = $('prefCloseToTray');
@@ -9883,6 +10264,16 @@ function bindShell() {
   const pGrad = $('pageGradientBtn');
   if (pGrad) pGrad.onclick = () => select(null);
 
+  const hwMirrorBtn = $('hwMirrorToggleBtn');
+  if (hwMirrorBtn) {
+    hwMirrorBtn.onclick = () => {
+      hwMirrorEnabled = !hwMirrorEnabled;
+      hwMirrorBtn.classList.toggle('active-mirror', hwMirrorEnabled);
+      refreshGrid();
+      toast(hwMirrorEnabled ? '🖥️ 已开启 1:1 硬件真彩 Canvas 镜像预览' : '已切换为标准矢量 DOM 预览');
+    };
+  }
+
   const stage = document.querySelector('.stage');
   if (stage) {
     stage.addEventListener('click', (e) => {
@@ -9927,6 +10318,156 @@ function bindShell() {
       await libraryAdd(spec);
     });
   }
+}
+
+function renderProfileSwitcherBar() {
+  const bar = $('profileSwitcherBar');
+  if (!bar || !cfg) return;
+  if (!Array.isArray(cfg.profiles) || !cfg.profiles.length) {
+    cfg.profiles = [
+      { id: 'office', name: '办公模式', icon: '💼', accent: '#3b82f6', pages: cfg.pages, currentPage: cfg.currentPage },
+      { id: 'stream', name: '直播模式', icon: '📡', accent: '#a855f7', pages: cfg.pages, currentPage: cfg.currentPage },
+      { id: 'edit',   name: '剪辑模式', icon: '🎬', accent: '#f59e0b', pages: cfg.pages, currentPage: cfg.currentPage },
+      { id: 'gaming', name: '游戏模式', icon: '🎮', accent: '#10b981', pages: cfg.pages, currentPage: cfg.currentPage },
+    ];
+    cfg.currentProfile = 'office';
+  }
+  bar.innerHTML = '';
+  for (const prof of cfg.profiles) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `profile-pill-btn ${prof.id === cfg.currentProfile ? 'active' : ''}`;
+    btn.style.setProperty('--prof-accent', prof.accent || '#2563eb');
+    btn.textContent = `${prof.icon || '🗂️'} ${prof.name}`;
+    btn.title = `一键切换整机模式至「${prof.name}」`;
+    btn.onclick = async () => {
+      if (prof.id === cfg.currentProfile) return;
+      if (!DEMO && api.profileSwitch) {
+        const res = await api.profileSwitch(prof.id);
+        if (res && res.config) {
+          cfg = res.config;
+          selected = null;
+          renderProfileSwitcherBar();
+          renderPageTabs();
+          buildGrid();
+          renderInspector();
+          await repaintAll(true);
+          toast(`🗂️ 已切换整机模式：「${prof.name}」`);
+        }
+      } else {
+        cfg.currentProfile = prof.id;
+        renderProfileSwitcherBar();
+        toast(`🗂️ 已切换至「${prof.name}」`);
+      }
+    };
+    bar.appendChild(btn);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'profile-pill-btn profile-pill-add';
+  addBtn.textContent = '＋';
+  addBtn.title = '新建或管理多套顶层配置文件 (Profiles)';
+  addBtn.onclick = () => openProfileManagerModal();
+  bar.appendChild(addBtn);
+}
+
+function openProfileManagerModal() {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal';
+  wrap.id = 'profileManagerModal';
+  const profiles = (cfg && cfg.profiles) || [];
+  wrap.innerHTML = `
+    <div class="modalbox" style="width: 520px; max-width: 92vw; padding: 18px 20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h3 style="margin:0; font-size:15px;">🗂️ 多套顶层配置文件管理 (Profiles)</h3>
+        <button type="button" class="ghost tiny" id="profModalClose">✕ 关闭</button>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">每套 Profile 拥有独立的整机页面树，支持顶栏一键热切、托盘菜单切换与物理按键绑定。</div>
+      <div id="profModalList" style="display:flex; flex-direction:column; gap:7px; max-height:220px; overflow-y:auto; margin-bottom:12px;">
+        ${profiles.map(p => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 11px; border:1px solid var(--line); border-radius:8px; background:var(--bg);">
+            <span><b>${escapeHtml(p.icon || '🗂️')} ${escapeHtml(p.name)}</b> ${p.id === cfg.currentProfile ? '<span style="color:#10b981;font-size:11px;margin-left:6px;">● 当前激活</span>' : ''}</span>
+            <div style="display:flex; gap:6px;">
+              <button type="button" class="ghost tiny" data-prof-switch="${escapeAttr(p.id)}">切换</button>
+              ${profiles.length > 1 ? `<button type="button" class="ghost tiny danger" data-prof-del="${escapeAttr(p.id)}">删除</button>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="border-top:1px solid var(--line); padding-top:12px; display:flex; gap:8px; align-items:center;">
+        <input id="newProfNameInput" type="text" placeholder="新模式名称 (如：会议模式 / 设计模式)" style="flex:1;" />
+        <select id="newProfPresetSel" style="width:140px;">
+          <option value="clone">克隆当前页面树</option>
+          <option value="stream">预设：直播模式</option>
+          <option value="edit">预设：剪辑模式</option>
+          <option value="gaming">预设：游戏模式</option>
+        </select>
+        <button type="button" class="primary tiny" id="btnAddProfConfirm">＋ 新建模式</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.querySelector('#profModalClose').onclick = close;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelectorAll('[data-prof-switch]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.profSwitch;
+      if (!DEMO && api.profileSwitch) {
+        const res = await api.profileSwitch(id);
+        if (res && res.config) cfg = res.config;
+      } else {
+        cfg.currentProfile = id;
+      }
+      close();
+      renderProfileSwitcherBar();
+      renderPageTabs();
+      buildGrid();
+      renderInspector();
+      await repaintAll(true);
+    };
+  });
+  wrap.querySelectorAll('[data-prof-del]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.profDel;
+      if (!DEMO && api.profileDelete) {
+        const res = await api.profileDelete(id);
+        if (res && res.config) cfg = res.config;
+      } else {
+        cfg.profiles = (cfg.profiles || []).filter(p => p.id !== id);
+      }
+      close();
+      renderProfileSwitcherBar();
+      renderPageTabs();
+      buildGrid();
+      renderInspector();
+      toast('已删除模式');
+    };
+  });
+  wrap.querySelector('#btnAddProfConfirm').onclick = async () => {
+    const name = wrap.querySelector('#newProfNameInput').value.trim() || '自定义模式';
+    const presetVal = wrap.querySelector('#newProfPresetSel').value;
+    if (!DEMO && api.profileCreate) {
+      const res = await api.profileCreate({
+        name,
+        cloneCurrent: presetVal === 'clone',
+        preset: presetVal !== 'clone' ? presetVal : '',
+        switchNow: true,
+      });
+      if (res && res.config) cfg = res.config;
+    } else {
+      const id = 'prof_' + Date.now().toString(36);
+      cfg.profiles.push({ id, name, icon: '🗂️', accent: '#3b82f6', pages: cfg.pages, currentPage: cfg.currentPage });
+      cfg.currentProfile = id;
+    }
+    close();
+    renderProfileSwitcherBar();
+    renderPageTabs();
+    buildGrid();
+    renderInspector();
+    await repaintAll(true);
+    toast(`✅ 已创建并切换至模式：「${name}」`);
+  };
 }
 
 function applyTheme() {
@@ -10134,6 +10675,21 @@ function bindDevice() {
 
   // A key on the device switched pages (or a sub page's back key was pressed).
   // Config already holds the new page - reload and redraw everything.
+  api.on('window:visibility', (st) => {
+    isWindowVisible = !!(st && st.visible);
+    if (isWindowVisible) refreshGrid();
+  });
+
+  api.on('profile:changed', async () => {
+    cfg = await api.configLoad();
+    selected = null;
+    renderProfileSwitcherBar();
+    renderPageTabs();
+    buildGrid();
+    renderInspector();
+    await repaintAll(true);
+  });
+
   api.on('page:changed', async () => {
     cfg = await api.configLoad();
     selected = null;
@@ -10252,6 +10808,12 @@ async function boot() {
   updateUndoRedoUI();
   applyTheme();
   setDrawer(false);
+  if (!DEMO && window.api && api.pluginsList) {
+    api.pluginsList().then((list) => {
+      if (Array.isArray(list) && list.length) cachedPluginSchemas = list;
+    }).catch(() => {});
+  }
+  renderProfileSwitcherBar();
   renderLibrary();
   renderPageTabs();
   renderInspector();
@@ -10300,12 +10862,27 @@ async function boot() {
 
     if (!activeStripRows.length && !widgetCoords.length) return;
 
+    const pluginConfigs = {};
+    for (const { row, col } of widgetCoords) {
+      const sp = buttons[`${row},${col}`];
+      if (sp && sp.widgetKind === 'plugin' && sp.pluginId && sp.pluginConfig) {
+        pluginConfigs[sp.pluginId] = sp.pluginConfig;
+      }
+    }
+    for (const row of activeStripRows) {
+      const st = strips[String(row)];
+      if (st && st.type === 'plugin' && st.pluginId && st.pluginConfig) {
+        pluginConfigs[st.pluginId] = st.pluginConfig;
+      }
+    }
+
     let sharedStats = null;
     if (api.systemStats) {
       try {
         sharedStats = await api.systemStats({
           types: Array.from(neededTypes),
           pluginIds: Array.from(neededPluginIds),
+          pluginConfigs,
         });
         if (sharedStats) {
           lastSysStats = Object.assign({}, lastSysStats, sharedStats);
@@ -10327,10 +10904,12 @@ async function boot() {
     for (const row of activeStripRows) {
       await pushStrip(row, false, sharedStats);
     }
-    if (widgetCoords.length > 0) {
-      refreshGrid();
-    } else {
-      refreshStripCells(sharedStats);
+    if (isWindowVisible) {
+      if (widgetCoords.length > 0) {
+        refreshGrid();
+      } else {
+        refreshStripCells(sharedStats);
+      }
     }
   }, 2500);
 

@@ -15,15 +15,19 @@ module.exports = {
   name: 'GitHub PR 与 CI 监控',
   category: '开发者工具',
   author: 'AKP153 Community',
-  version: '0.9.0',
+  version: '0.9.5',
+  configSchema: [
+    { key: 'repo', label: 'GitHub 仓库名', type: 'text', default: '', placeholder: '例如：electron/electron' },
+    { key: 'branch', label: '监控分支', type: 'text', default: 'main', placeholder: 'main' }
+  ],
   description: '实时监控 GitHub 仓库待审 PR 数量、Actions CI 状态与近期提交活跃度趋势',
   color: '#0d1117',
 
-  async render() {
+  async render({ config = {} }) {
     const r = REPOS[repoIdx % REPOS.length];
     const isPass = r.ciStatus === 'PASS';
     return {
-      title: `🐙 ${r.repo}`,
+      title: `🐙 ${config.repo || r.repo}`,
       value: `${r.openPrs} PRs`,
       sub: r.branch,
       subValue: r.branch,

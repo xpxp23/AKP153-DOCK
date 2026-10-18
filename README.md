@@ -5,6 +5,14 @@
 核心交互只有一条：**把文件拖到格子里，按下设备上的键就执行。**
 
 
+## 🚀 v0.9.5 架构级演进与深度优化
+
+- **⚡ 事件驱动架构替代轮询风暴（`WinEventHook` + `IAudioEndpointVolumeCallback` + 原生媒体/进程监控）**：在 `src/main/native-input.cs`（`akp-input.exe`）中内建 Win32 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND | EVENT_OBJECT_NAMECHANGE)` 与 CoreAudio `IAudioEndpointVolumeCallback` 事件订阅，当切换前台窗口、修改窗口标题、调节系统音量/静音或切歌时，主动向 `stdout` 推送 `@evt fg`、`@evt volume`、`@evt media`、`@evt procs` 事件流，实现 **0% 闲置 CPU 占用** 与 **`<5ms` 即时状态同步**。
+- **🧵 离屏渲染架构重构（`OffscreenCanvas` Web Worker + 托盘低内存模式）**：将 90° 硬件画面旋转与 JPEG 编码抽离至独立 `OffscreenCanvas` Web Worker（通过 `ImageBitmap` 零拷贝传输），复杂 DOM 交互绝不阻塞硬件刷屏；窗口最小化隐藏至系统托盘后自动挂起前台 DOM 预览刷新，双击托盘毫秒级秒开。
+- **🔌 声明式插件配置表单（`Plugin Schema Config`）与生态升级**：为 `plugins/*.plugin.js` 增加声明式 `configSchema` 定义，在右侧属性检查器与副屏面板中自动生成可视化插件参数表单并持久化至 `spec.pluginConfig`，无需手改 JS 代码即可配置 HomeAssistant 地址/实体 ID、股票代码、GitHub 仓库名等参数，并支持一键从本地安装 `.plugin.js`。
+- **✨ OSD 桌面毛玻璃悬浮提示窗（`HUD Overlay`）与多套配置文件热切（`Profiles`）**：当用户在全屏游戏或未打开主界面时按下控制台切页、切换 Profile、调节音量、切换声卡、启停宏或番茄钟，屏幕顶部中央自动弹出无焦点穿透（`setIgnoreMouseEvents(true)`）的毛玻璃 HUD 胶囊提示 1.5s；原生支持 **办公模式 / 直播模式 / 剪辑模式 / 游戏模式** 等多套顶层 Profile 一键切换整机页面树。
+- **🛠️ 核心硬件与窗口置顶深度修复**：修复独立供电拓展坞关机后亮屏问题（移除末尾会唤醒固件的 `DEVICE_CLOSE` 指令、增加 MCU 消化延时、主进程与 `ShutdownGuardForm` 握手防冲突、接入 `lock-screen` 与系统空闲自动休眠）；彻底修复任务栏窗口模式后台置顶闪烁与托盘应用唤醒 2s 卡顿问题（基于 `EnumWindows` + `DwmGetWindowAttribute` + `SPI_SETFOREGROUNDLOCKTIMEOUT` + `SwitchToThisWindow`）。
+
 ## 🚀 v0.9.0 架构级演进与四大核心新特性
 
 - **📊 插件化与实时数据源生态（Dynamic Widgets & Plugins）**：开放轻量级 JS 插件钩子（`plugins/*.plugin.js`），支持 15 键主控区与 3 块副屏实时显示 **GPU 温度/显存（NVML）、实时上下行网速、实时天气、番茄钟专注倒计时（按键启停/重置）、OBS 推流/录制监控、Spotify/网易云音乐当前播放歌词与曲目卡片**，并支持 1:1 硬件级 Canvas 实时预览。
@@ -39,7 +47,7 @@ npm run build:portable
 ```
 将自动输出：
 - `dist/AKP153-Dock/`：绿色解压即用目录，内含独立的 `AKP153 控制台.exe`，免安装 Node.js 与环境；
-- `dist/AKP153-Dock-v0.9.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
+- `dist/AKP153-Dock-v0.9.5-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
 
 ## USB 热插拔自愈
 

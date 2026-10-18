@@ -163,6 +163,30 @@ runCli(['strip', '1', '--type', 'gpu']);
 updated = freshModule().load();
 check('cli 支持配置 gpu (NVML) 动态监控副屏', updated.pages[0].strips['1'].type === 'gpu');
 
+// -------------------------------------------------- 6) v0.9.5 自愈备份 / 多套 Profile / pluginConfig ---
+check('save 自动维护 .bak 备份文件', fs.existsSync(FILE + '.bak'));
+fs.writeFileSync(FILE, '{corrupted_json_syntax', 'utf8');
+const healed = freshModule().load();
+check('config.json 损坏时自动从 .bak 自愈恢复且不丢数据',
+  healed.pages[0].name === '被外部改过的名字' && healed.pages.length === 3);
+
+runCli(['set', 'r0c4', '--type', 'widget', '--kind', 'plugin:stock_crypto_ticker', '--plugin-config', '{"symbol":"TSLA","colorScheme":"us"}']);
+updated = freshModule().load();
+check('cli 支持配置 widget 动态插件与 --plugin-config 参数持久化',
+  updated.pages[0].buttons['0,4'] &&
+  updated.pages[0].buttons['0,4'].pluginConfig &&
+  updated.pages[0].buttons['0,4'].pluginConfig.symbol === 'TSLA');
+
+runCli(['profile-switch', 'stream']);
+updated = freshModule().load();
+check('cli profile-switch 切换至直播模式并替换整机页面树',
+  updated.currentProfile === 'stream' && updated.pages[0].id === 'stream_main');
+
+runCli(['profile-switch', 'office']);
+updated = freshModule().load();
+check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个页面',
+  updated.currentProfile === 'office' && updated.pages.length === 3 && updated.pages[0].name === '被外部改过的名字');
+
 // ------------------------------------------------------------- 收尾 ------
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
 

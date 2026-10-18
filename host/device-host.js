@@ -337,15 +337,30 @@ class Device {
       catch (e) { report.push(name + '=FAIL:' + e.message); }
     };
 
+    const wasAlreadyAsleep = this.asleep;
+    if (this.brightness > 0) {
+      this.savedBrightness = this.brightness;
+    }
     this.asleep = true;
     this.lastFrames.clear();
+    const waitHw = (ms) => new Promise((r) => setTimeout(r, ms));
     if (m === 'blackout') {
-      await step('CLEAR_ALL', () => this.clearScreen());
+      // 若此前未处于深度休眠，先清屏并等待 45ms 让 MCU 完成 18 路帧缓冲擦除；
+      // 若已处于休眠则跳过 CLEAR_ALL，避免唤醒外接带电拓展坞上的 LCD 控制器。
+      if (!wasAlreadyAsleep) {
+        await step('CLEAR_ALL', () => this.clearScreen());
+        await waitHw(45);
+      }
       await step('LBLIG0', () => this.setLedBrightness(0));
+      await waitHw(20);
       await step('LIG0', () => this.setBrightness(0));
+      await waitHw(20);
       await step('HAN', () => this.cmd(CMD.HAN));
+      await waitHw(20);
+      // 严禁在 sleep 后发送 CMD.DEVICE_CLOSE (CLE..DC)！
+      // 在独立供电拓展坞/关机不断电主板上，CLE..DC 会使固件退出 sleep 重新点亮开机 Logo。
       await step('sleep', () => this.cmd(CMD.SLEEP));
-      await step('DEVICE_CLOSE', () => this.cmd(CMD.DEVICE_CLOSE));
+      await waitHw(35);
     } else if (m === 'zeros-last') {
       await step('LBLIG0', () => this.setLedBrightness(0));
       await step('LIG0', () => this.setBrightness(0));
@@ -403,13 +418,9 @@ class Device {
     if (this.watchdog) return;
     this.watchdog = setInterval(async () => {
       if (this.stopped || !HID) return;
-      let present = false;
-      try {
-        present = HID.devices().some((d) => d.path === (this.info && this.info.path));
-      } catch (e) {
-        present = false;
-      }
-      if (this.isOpen && present) return;
+      // 当设备已打开且未报错时无需每 2s 调用同步阻塞的 HID.devices() 枚举全系统 USB 总线；
+      // 物理拔出时 node-hid 的 error 事件会毫秒级将 this.broken 置为 true。
+      if (this.isOpen) return;
 
       const wasAsleep = this.asleep;
       try {
@@ -522,7 +533,24 @@ if (require.main === module) {
     }
   });
 
-  process.on('SIGINT', () => { device.close(); process.exit(0); });
+  let shuttingDown = false;
+  const gracefulShutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    device.stopped = true;
+    try {
+      if (device.isOpen) {
+        await device.sleep('blackout', true);
+      }
+    } catch (_) {}
+    device.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGHUP', gracefulShutdown);
+  process.stdin.on('end', gracefulShutdown);
+  process.stdin.on('close', gracefulShutdown);
 
   emit({ event: 'ready', pid: process.pid, node: process.version });
 }

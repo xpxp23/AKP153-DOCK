@@ -14,43 +14,39 @@ function getGitHubToken() {
 
 const PKG = require(path.resolve(__dirname, '..', 'package.json'));
 const TAG = `v${PKG.version}`;
-const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (SMTC同步歌词 + 多通道柱状电平图 + 24点负载折线 + 社区精选插件生态 + 窗口状态精准感知)`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (WinEventHook事件驱动 + OffscreenCanvas多线程渲染 + OSD毛玻璃HUD + 插件Schema可视化配置 + 多Profile热切)`;
 const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
 const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version}
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
-此版本重磅推出 Windows SMTC 系统媒体双行同步滚动歌词、多通道推子电平柱状图、GPU/网络 24 点历史走势折线、4 款开箱即用社区精选插件与原生前台窗口状态精准感知。
+此版本重磅推出 Win32 事件驱动架构、OffscreenCanvas Web Worker 多线程离屏渲染、OSD 桌面毛玻璃 HUD 提示、插件 Schema 可视化配置表单、多 Profile 配置热切以及关机灭屏深度加固。
 
 ---
 
-## 🌟 v0.9.0 核心更新与架构升级
+## 🌟 v0.9.5 核心架构演进与深度优化
 
-### 🎵 1. Windows SMTC 系统媒体会话与同步滚动歌词
-- **媒体信息全面解析**：深度打通 Windows SMTC 媒体层与网易云音乐、QQ音乐、Spotify 本地接口，实时提取曲名、歌手、播放/暂停状态与进度百分比；
-- **双行同步滚动歌词**：支持在 96×96 按键与副屏上渲染双行平滑歌词滚动与专辑专属主色动态调色；
-- **丰富交互动作**：按键支持播放/暂停切换、上下一曲跳转与进度刷新。
+### ⚡ 1. 事件驱动架构替代轮询风暴 (0% 闲置 CPU 占用)
+- **WinEventHook & AudioEndpointCallback**：在 C# 底层内建 Win32 \`SetWinEventHook\` 与 CoreAudio \`IAudioEndpointVolumeCallback\` 原生事件订阅；
+- **主动推流机制**：前台窗口切换、窗口标题改变、系统音量调节/静音或切歌时，底层主动向主进程推送 \`@evt fg\`、\`@evt volume\`、\`@evt media\`、\`@evt procs\` 事件流，实现 **0% 闲置 CPU** 与 **<5ms 极速状态同步**。
 
-### 📊 2. 画布可视化高级图表引擎 (Sparkline & Multi-Channel Bars)
-- **24 点实时历史趋势折线 (Sparkline)**：GPU 核心负载与网络上下行速率配备 24 点历史环形缓冲区，动态绘制平滑折线走势图；
-- **多通道柱状图 (Bars API)**：动态组件与插件支持定义多路音量/电平/指标柱状图，支持自定义渐变色与独立通道 Label。
+### 🧵 2. 离屏渲染架构重构 (OffscreenCanvas Web Worker)
+- **多线程无阻塞刷屏**：将 90° 硬件图像旋转与 JPEG 压缩剥离至后台 Web Worker（通过 \`ImageBitmap\` 零拷贝流转），复杂前台 DOM 交互绝不卡顿硬件 USB 传输；
+- **托盘低内存模式**：窗口最小化或隐藏至托盘后自动挂起前台 DOM 画布重绘，大幅缩减内存与能耗，双击托盘秒级唤醒。
 
-### 🧩 3. 插件系统升级与 4 款社区精选插件
-- **精选插件生态**：
-  - \`plugins/audio-fader-meter.plugin.js\`：声卡多路推子与电平表监控，支持一键切换主通道静音；
-  - \`plugins/github-pr-monitor.plugin.js\`：GitHub 待审 PR 数量监控与仓库健康看板；
-  - \`plugins/home-assistant-switch.plugin.js\`：智能家居实体状态监控与一键开关控制；
-  - \`plugins/stock-crypto-ticker.plugin.js\`：实时股市/加密货币行情走势与涨跌幅看板；
-  - \`plugins/uptime-greeting.plugin.js\`：系统运行看板升级版（含内存柱状走势折线与按键切换维度）。
-- **生命周期完善**：插件全面支持 \`sparkline\`、\`bars\`、\`progress\`、\`badge\` 等高级视觉元素，支持按键点击回调与蜂鸣反馈。
+### 🔌 3. 插件可视化声明配置表单 (Plugin Schema Config)
+- **声明式参数 Schema**：插件支持定义 \`configSchema\`（包含 string、number、select、boolean、password 等字段）；
+- **可视化配置面板**：前端属性检查器自动渲染参数表单并持久化至 \`spec.pluginConfig\`，无需手动修改 JS 源码即可配置 Home Assistant 地址/实体 ID、股票代码、GitHub 仓库等参数；
+- **本地一键安装插件**：支持在插件面板直接选择本地 \`*.plugin.js\` 导入并立即热生效。
 
-### 🪟 4. 原生前台窗口状态感知 (QueryWindowState & Multi-PID Group)
-- **多进程组精准匹配**：在 C# 底层实现基于进程名所有子进程 PID 的全量窗口比对，彻底解决 Chrome、Discord、Steam 等多进程应用前台聚焦误判；
-- **窗口状态枚举**：支持精准识别 \`FOREGROUND\`（前台置顶）、\`BACKGROUND\`（后台运行）、\`MINIMIZED\`（最小化）与 \`NOT_RUNNING\`（未启动），为双态应用智能唤醒与切换提供坚固基石。
+### ✨ 4. OSD 桌面毛玻璃悬浮提示窗 (HUD Overlay) 与多套 Profile 热切
+- **穿透式桌面毛玻璃 HUD**：切页、切换 Profile、调节音量、切换声卡、启停宏或番茄钟时，屏幕顶部自动弹出 1.5s 优雅的无焦点毛玻璃胶囊提示；
+- **多套 Profile 配置热切**：支持创建 **办公模式 / 直播模式 / 剪辑模式 / 游戏模式** 等多套独立的顶层页面树，一键全局热切。
 
-### ⏱️ 5. 动态按键消抖与全量稳定性增强
-- 支持按键级自定义消抖毫秒阈值（20ms~1000ms），硬件定时器与事件防抖闭环，彻底消除老旧轴体连击。
+### 🛠️ 5. 拓展坞关机灭屏与窗口唤醒深度加固
+- **独立供电拓展坞彻底黑屏**：移除引发固件二次点亮的末尾指令，增加 MCU 消化延迟，主进程与 \`ShutdownGuardForm\` 协同握手，支持锁屏与系统空闲深度休眠；
+- **无卡顿置顶与还原**：基于 \`EnumWindows\` + \`DwmGetWindowAttribute\` + \`SPI_SETFOREGROUNDLOCKTIMEOUT\` + \`SwitchToThisWindow\`，彻底解决后台窗口置顶闪烁与托盘唤醒 2 秒卡顿。
 
 ### 🛡️ 1. 独立供电拓展坞关机硬件彻底灭屏 + 定时休眠防频闪
 - **C# STA 关机灭屏守护**：新增独立 STA 消息泵窗口拦截系统 \`WM_QUERYENDSESSION\` (0x0011) 与 \`WM_ENDSESSION\` (0x0016)，通过 Win32 SetupAPI 直写 6 步硬件休眠指令，即使主机插在独立供电拓展坞上也能在关机瞬间彻底黑屏断流，杜绝电脑关机控制台常亮；

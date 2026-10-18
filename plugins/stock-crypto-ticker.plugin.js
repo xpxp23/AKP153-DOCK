@@ -20,12 +20,26 @@ module.exports = {
   name: '行情与 K 线趋势监控',
   category: '金融行情',
   author: 'AKP153 Community',
-  version: '0.9.0',
+  version: '0.9.5',
+  configSchema: [
+    { key: 'symbol', label: '监控股票/币种代码', type: 'select', default: '', options: [
+      { label: '自动轮播 (按击切换)', value: '' },
+      { label: 'BTC/USD · 比特币', value: 'BTC/USD' },
+      { label: 'ETH/USD · 以太坊', value: 'ETH/USD' },
+      { label: 'NVDA · 英伟达', value: 'NVDA' },
+      { label: 'AAPL · 苹果', value: 'AAPL' }
+    ] },
+    { key: 'colorScheme', label: '涨跌配色方案', type: 'select', default: 'us', options: [
+      { label: '国际标准 (绿涨红跌)', value: 'us' },
+      { label: 'A股习惯 (红涨绿跌)', value: 'cn' }
+    ] }
+  ],
   description: '实时展示 BTC / ETH / NVDA / AAPL 价格走势与迷你 K 线折线图，按击切换标的',
   color: '#091526',
 
-  async render() {
-    const item = SYMBOLS[activeIdx % SYMBOLS.length];
+  async render({ config = {} }) {
+    const reqSym = String(config.symbol || '').trim().toUpperCase();
+    const item = (reqSym && SYMBOLS.find(s => s.code.toUpperCase().startsWith(reqSym))) || SYMBOLS[activeIdx % SYMBOLS.length];
     const now = Date.now();
     if (now - lastTickAt > 2500) {
       lastTickAt = now;
@@ -38,7 +52,8 @@ module.exports = {
       item.changePct = Number((((nextVal - first) / first) * 100).toFixed(2));
     }
 
-    const isUp = item.changePct >= 0;
+    const rawUp = item.changePct >= 0;
+    const isUp = config.colorScheme === 'cn' ? !rawUp : rawUp;
     const sign = isUp ? '+' : '';
     const priceStr = `${item.unit}${item.base.toLocaleString('en-US', { minimumFractionDigits: item.decimals, maximumFractionDigits: item.decimals })}`;
 

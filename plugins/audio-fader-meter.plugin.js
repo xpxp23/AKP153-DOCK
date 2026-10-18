@@ -10,11 +10,19 @@ module.exports = {
   name: '声卡多路推子电平表',
   category: '音频与直播',
   author: 'AKP153 Community',
-  version: '0.9.0',
+  version: '0.9.5',
+  configSchema: [
+    { key: 'title', label: '面板显示标题', type: 'text', default: '🎚️ 混音推子监控', placeholder: '例如：直播混音台' },
+    { key: 'theme', label: '推子配色方案', type: 'select', default: 'cyber', options: [
+      { label: '赛博青紫 (Cyber)', value: 'cyber' },
+      { label: '录音室绿金 (Studio)', value: 'studio' },
+      { label: '烈焰暖橙 (Warm)', value: 'warm' }
+    ] }
+  ],
   description: '可视化展示 Master / 麦克风 / 音乐 / 游戏四通道实时推子电平柱状图，按击一键静音',
   color: '#111827',
 
-  async render({ NativeInput }) {
+  async render({ NativeInput, config = {} }) {
     let masterVol = 68;
     let isMute = false;
     try {
@@ -33,7 +41,7 @@ module.exports = {
     const gameLvl = isMute ? 0 : Math.round(masterVol * 0.72 + Math.sin(t * 2.1) * 12);
 
     return {
-      title: '🎚️ 混音推子监控',
+      title: config.title || '🎚️ 混音推子监控',
       value: isMute ? 'MUTE' : `${masterVol}%`,
       sub: isMute ? '主通道已静音' : `MIC ${micLvl}% · BGM ${ Math.min(100, Math.max(0, bgmLvl))}%`,
       subValue: isMute ? '主通道已静音' : `MIC ${micLvl}% · BGM ${Math.min(100, Math.max(0, bgmLvl))}%`,

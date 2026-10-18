@@ -51,8 +51,14 @@ contextBridge.exposeInMainWorld('api', {
   pluginsReload: () => ipcRenderer.invoke('plugins:reload'),
   pluginsMarket: () => ipcRenderer.invoke('plugins:market'),
   pluginsInstall: (pluginId) => ipcRenderer.invoke('plugins:install', pluginId),
+  pluginsEvaluate: (pluginId, pluginConfig) => ipcRenderer.invoke('plugins:evaluate', { pluginId, pluginConfig }),
   pluginsTrigger: (pluginId, args) => ipcRenderer.invoke('plugins:trigger', { pluginId, args }),
   pageManualSwitch: (pageId) => ipcRenderer.invoke('page:manualSwitch', pageId),
+  profileSwitch: (ref) => ipcRenderer.invoke('profile:switch', ref),
+  profileCreate: (opts) => ipcRenderer.invoke('profile:create', opts),
+  profileRename: (id, name, icon, accent) => ipcRenderer.invoke('profile:rename', { id, name, icon, accent }),
+  profileDelete: (id) => ipcRenderer.invoke('profile:delete', id),
+  hudShow: (payload) => ipcRenderer.invoke('hud:show', payload),
 
   libraryExport: (a) => ipcRenderer.invoke('library:export', a),
   libraryImport: () => ipcRenderer.invoke('library:import'),
@@ -92,7 +98,7 @@ contextBridge.exposeInMainWorld('api', {
       'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
       'device:key-state', 'audio:state', 'app:runningStates', 'device:sleep-state',
       'login:changed', 'telemetry:update', 'telemetry:data', 'pomodoro:tick',
-      'macro:recordState'
+      'macro:recordState', 'profile:changed', 'window:visibility'
     ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);

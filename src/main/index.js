@@ -273,6 +273,183 @@ async function doWake() {
 
 let isQuitting = false;
 let mainHwndStr = null;
+let hudWin = null;
+let hudHideTimer = null;
+let sleptBySystemIdle = false;
+let lastRealFgProc = '';
+
+const HUD_OVERLAY_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><style>
+*{box-sizing:border-box;margin:0;padding:0;user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:transparent;font-family:"Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif}
+.hud-wrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:6px 10px}
+.hud-capsule{display:flex;align-items:center;gap:12px;min-width:240px;max-width:320px;padding:10px 16px;border-radius:999px;background:rgba(11,15,25,0.88);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid rgba(255,255,255,0.15);box-shadow:0 12px 32px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,255,255,0.12);transform:translateY(-10px) scale(0.95);opacity:0;transition:transform 0.2s cubic-bezier(0.16,1,0.3,1),opacity 0.18s ease}
+.hud-capsule.visible{transform:translateY(0) scale(1);opacity:1}
+.hud-icon-box{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--hud-accent,#3b82f6),rgba(30,64,175,0.85));display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0;box-shadow:0 0 14px rgba(59,130,246,0.45)}
+.hud-icon-box svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.hud-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.hud-title{font-size:13px;font-weight:700;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-sub{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-progress-track{margin-top:4px;height:4px;width:100%;background:rgba(255,255,255,0.12);border-radius:99px;overflow:hidden;display:none}
+.hud-progress-fill{height:100%;width:50%;background:linear-gradient(90deg,#3b82f6,#38bdf8);border-radius:99px;transition:width 0.12s ease}
+</style></head><body>
+<div class="hud-wrap"><div id="capsule" class="hud-capsule">
+  <div id="iconBox" class="hud-icon-box"></div>
+  <div class="hud-body">
+    <div id="hudTitle" class="hud-title">AKP153 控制台</div>
+    <div id="hudSub" class="hud-sub">Ready</div>
+    <div id="progTrack" class="hud-progress-track"><div id="progFill" class="hud-progress-fill"></div></div>
+  </div>
+</div></div>
+<script>
+const ICONS = {
+  layers: '<svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
+  sparkles: '<svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"/></svg>',
+  vol_up: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',
+  vol_down: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>',
+  vol_mute: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
+  headphones: '<svg viewBox="0 0 24 24"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  zap: '<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+  square: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>'
+};
+let hideTimer = null;
+window.__updateHud = function(payload) {
+  if (hideTimer) clearTimeout(hideTimer);
+  const capsule = document.getElementById('capsule');
+  const iconBox = document.getElementById('iconBox');
+  const hudTitle = document.getElementById('hudTitle');
+  const hudSub = document.getElementById('hudSub');
+  const progTrack = document.getElementById('progTrack');
+  const progFill = document.getElementById('progFill');
+  hudTitle.textContent = payload.title || 'AKP153 控制台';
+  hudSub.textContent = payload.subtitle || '';
+  hudSub.style.display = payload.subtitle ? 'block' : 'none';
+  iconBox.style.setProperty('--hud-accent', payload.accent || '#3b82f6');
+  iconBox.innerHTML = ICONS[payload.icon] || ICONS.sparkles;
+  if (typeof payload.progress === 'number') {
+    progTrack.style.display = 'block';
+    progFill.style.width = Math.max(0, Math.min(100, payload.progress)) + '%';
+  } else {
+    progTrack.style.display = 'none';
+  }
+  capsule.classList.add('visible');
+  hideTimer = setTimeout(() => capsule.classList.remove('visible'), payload.duration || 1400);
+};
+</script></body></html>`;
+
+function ensureHudWindow() {
+  if (hudWin && !hudWin.isDestroyed()) return hudWin;
+  const primary = screen.getPrimaryDisplay();
+  const wa = (primary && primary.workArea) || { x: 0, y: 0, width: 1920, height: 1080 };
+  const width = 340;
+  const height = 78;
+  const x = Math.round(wa.x + (wa.width - width) / 2);
+  const y = Math.round(wa.y + 24);
+
+  hudWin = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    focusable: false,
+    show: false,
+    hasShadow: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  hudWin.setIgnoreMouseEvents(true, { forward: true });
+  try { hudWin.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+  hudWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(HUD_OVERLAY_HTML));
+  hudWin.on('closed', () => { hudWin = null; });
+  return hudWin;
+}
+
+function showHudOverlay(payload = {}, forceShow = false) {
+  try {
+    const cfg = config.load();
+    if (cfg.hudEnabled === false) return;
+    const winFocused = Boolean(win && !win.isDestroyed() && win.isVisible() && win.isFocused());
+    if (!forceShow && winFocused) return;
+
+    const hWin = ensureHudWindow();
+    const primary = screen.getPrimaryDisplay();
+    if (primary && primary.workArea) {
+      const x = Math.round(primary.workArea.x + (primary.workArea.width - 340) / 2);
+      const y = Math.round(primary.workArea.y + 24);
+      hWin.setPosition(x, y, false);
+    }
+    const duration = payload.duration || 1450;
+    const fullPayload = Object.assign({ duration }, payload);
+    const pushHud = () => {
+      if (!hWin || hWin.isDestroyed()) return;
+      hWin.showInactive();
+      hWin.webContents.executeJavaScript(`window.__updateHud && window.__updateHud(${JSON.stringify(fullPayload)})`).catch(() => {});
+    };
+    if (hWin.webContents.isLoading()) {
+      hWin.webContents.once('did-finish-load', pushHud);
+    } else {
+      pushHud();
+    }
+    if (hudHideTimer) clearTimeout(hudHideTimer);
+    hudHideTimer = setTimeout(() => {
+      if (hudWin && !hudWin.isDestroyed()) hudWin.hide();
+    }, duration + 240);
+  } catch (_) {}
+}
+
+async function syncWatchedProcsToNative() {
+  try {
+    const page = config.currentPage();
+    if (!page || !page.buttons) return;
+    const names = [];
+    for (const spec of Object.values(page.buttons)) {
+      if (spec && spec.type === 'app' && (spec.toggleAction || spec.badgeToggle)) {
+        const p = await resolveButtonProcessName(spec);
+        if (p) names.push(p);
+      }
+    }
+    if (NativeInput && typeof NativeInput.watchProcesses === 'function') {
+      NativeInput.watchProcesses(names);
+    }
+  } catch (_) {}
+}
+
+async function switchProfileAndBroadcast(targetRef, viaLabel = '') {
+  const nextProf = config.switchProfile(targetRef);
+  if (!nextProf) return null;
+  const cfg = config.load();
+  manualBasePageId = cfg.currentPage;
+  autoActiveRootPageId = null;
+  rebuildTrayMenu();
+  syncWatchedProcsToNative();
+  broadcast('profile:changed', {
+    profileId: nextProf.id,
+    profileName: nextProf.name,
+    pageId: cfg.currentPage,
+  });
+  broadcast('config:external', { pageId: cfg.currentPage, profileId: nextProf.id });
+  repaintSoon(true);
+  showHudOverlay({
+    icon: 'sparkles',
+    title: `模式 · ${nextProf.name}`,
+    subtitle: viaLabel || `已切换整机页面树 (${(nextProf.pages || []).length} 页)`,
+    accent: nextProf.accent || '#3b82f6',
+  }, true);
+  return nextProf;
+}
+
 async function prepareExitAndSleep() {
   if (isQuitting) return;
   isQuitting = true;
@@ -286,6 +463,9 @@ async function prepareExitAndSleep() {
       const res = await safeRpc('sleep', { mode: 'blackout', force: true });
       await safeRpc('close', {});
       hostBlackoutOk = !!(res && res.ok);
+      if (hostBlackoutOk && NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
+        try { await NativeInput.ackHostBlackout(); } catch (_) {}
+      }
     }
 
     if (process.platform === 'win32' && !hostBlackoutOk) {
@@ -385,7 +565,14 @@ async function goToPage(id, why, isAutoSwitch = false) {
     config.save(cfg);
   }
   log(`page -> 「${target.name}」${target.parent ? ' (子页)' : ''}${why ? '  via ' + why : ''}`);
+  syncWatchedProcsToNative();
   broadcast('page:changed', { pageId: id, isAutoSwitch });
+  showHudOverlay({
+    icon: 'layers',
+    title: `页面 · ${target.name}`,
+    subtitle: isAutoSwitch ? `自动跟随 (${why || '前台窗口'})` : '控制台页面切换',
+    accent: (target.gradient && target.gradient.enabled && target.gradient.from) || '#3b82f6',
+  });
   return true;
 }
 
@@ -509,9 +696,10 @@ async function onKeyDown(row, col) {
   const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio');
   const isMedia = spec && (spec.type === 'media');
   const isPage = spec && (spec.type === 'page');
+  const isProfile = spec && (spec.type === 'profile');
   const isWidget = spec && (spec.type === 'widget');
   const isWinToggle = spec && (spec.type === 'window_toggle');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isWidget && !isWinToggle)) {
+  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isProfile && !isWidget && !isWinToggle)) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
@@ -537,7 +725,7 @@ async function onKeyDown(row, col) {
       // HWND 窗口句柄级任务栏双态模式：未启动则启动 -> 后台/最小化则置顶激活 -> 已在前台则最小化隐藏
       const procName = await resolveButtonProcessName(spec);
       const winState = procName ? await NativeInput.queryWindowState(procName) : 'NOT_RUNNING';
-      if (winState === 'NOT_RUNNING') {
+      if (winState === 'NOT_RUNNING' || winState === 'TRAY_HIDDEN') {
         actionToRun = spec;
         spec._activeState = 1;
         spec._windowSubState = 'focused';
@@ -590,6 +778,12 @@ async function onKeyDown(row, col) {
     }
   }
 
+  if (actionToRun && actionToRun.type === 'profile') {
+    const ref = (actionToRun.mode === 'goto' && actionToRun.profileId) ? actionToRun.profileId : (actionToRun.mode || '__next__');
+    await switchProfileAndBroadcast(ref, `按键 r${row}c${col} 触发`);
+    return;
+  }
+
   if (actionToRun && actionToRun.type === 'page') {
     const target = resolvePageAction(actionToRun, page);
     if (!target) {
@@ -606,6 +800,38 @@ async function onKeyDown(row, col) {
   const res = await runner.run(actionToRun, { row: effectiveRow, col: effectiveCol, pageId: page.id, spanOffset, spanCols });
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
+  if (res && res.ok) {
+    if (res.action === 'loop_started' || res.action === 'loop_stopped') {
+      showHudOverlay({
+        icon: res.action === 'loop_started' ? 'play' : 'square',
+        title: res.action === 'loop_started' ? `宏已启动 · ${actionToRun.label || '循环宏'}` : `宏已停止 · ${actionToRun.label || '循环宏'}`,
+        subtitle: res.action === 'loop_started' ? '按 Ctrl+Alt+Esc 可紧急中止' : '循环序列已终止',
+        accent: res.action === 'loop_started' ? '#10b981' : '#f59e0b',
+      });
+    } else if (res.action === 'audio_device_switched' && res.device) {
+      showHudOverlay({
+        icon: 'headphones',
+        title: '声卡输出已切换',
+        subtitle: String(res.device),
+        accent: '#06b6d4',
+      });
+    } else if (res.level !== undefined || res.isMute !== undefined) {
+      showHudOverlay({
+        icon: res.isMute ? 'vol_mute' : (res.level < 35 ? 'vol_down' : 'vol_up'),
+        title: res.isMute ? '系统已静音' : `主音量 ${res.level}%`,
+        subtitle: actionToRun.label || '硬件音量控制',
+        progress: res.isMute ? 0 : res.level,
+      });
+    } else if (actionToRun && actionToRun.type === 'widget' && actionToRun.widgetKind === 'pomodoro') {
+      const pSnap = telemetry.getPomodoroSnapshot();
+      showHudOverlay({
+        icon: 'clock',
+        title: pSnap.running ? '番茄钟专注中' : '番茄钟已暂停',
+        subtitle: `${pSnap.phaseText || '专注'} · 剩余 ${pSnap.timeText || '25:00'}`,
+        accent: '#e11d48',
+      });
+    }
+  }
   if (res && ((res.action && (res.action.startsWith('volume') || res.action.startsWith('audio') || res.action.startsWith('media') || res.action.startsWith('widget'))) || (actionToRun && (actionToRun.type === 'volume' || actionToRun.type === 'audio' || actionToRun.type === 'media' || actionToRun.type === 'widget')))) {
     broadcast('device:repaint-strips', { row: effectiveRow, col: effectiveCol });
     if (res.level !== undefined || res.isMute !== undefined) {
@@ -635,13 +861,31 @@ function resetIdleTimer() {
   const minutes = Number(cfg.idleSleepMinutes || 0);
   if (!minutes || minutes <= 0) return;
   idleTimer = setInterval(() => {
-    if (deviceAsleep) return;
-    const idleMs = Date.now() - lastActivity;
-    if (idleMs > minutes * 60 * 1000) {
+    let sysIdleSec = 0;
+    try {
+      if (powerMonitor && typeof powerMonitor.getSystemIdleTime === 'function') {
+        sysIdleSec = powerMonitor.getSystemIdleTime();
+      }
+    } catch (_) {}
+
+    if (deviceAsleep) {
+      if (sleptBySystemIdle && sysIdleSec < 3) {
+        sleptBySystemIdle = false;
+        lastActivity = Date.now();
+        doWake();
+      }
+      return;
+    }
+
+    const consoleIdleMs = Date.now() - lastActivity;
+    const sysIdleMs = sysIdleSec * 1000;
+    const thresholdMs = minutes * 60 * 1000;
+    if (consoleIdleMs > thresholdMs && (sysIdleMs === 0 || sysIdleMs > thresholdMs || consoleIdleMs > thresholdMs)) {
+      sleptBySystemIdle = sysIdleMs >= thresholdMs;
       doSleep();
       lastActivity = Date.now();
     }
-  }, 15000);
+  }, 5000);
 }
 
 /**
@@ -650,7 +894,7 @@ function resetIdleTimer() {
  * 2. 当前页应用程序真实进程存活与 HWND 前后台状态同步（智能识别瞬态脚本与启动器，绝不误重置手动状态）
  */
 let isPollingState = false;
-async function pollForegroundAndProcessState() {
+async function pollForegroundAndProcessState(pushedFg = null) {
   if (deviceAsleep || isPollingState) return;
   isPollingState = true;
   try {
@@ -664,12 +908,15 @@ async function pollForegroundAndProcessState() {
     let currentFgProc = '';
     const hasAutoRules = cfg.pages.some((p) => (p.autoApp && p.autoApp.trim()) || (p.autoTitle && p.autoTitle.trim()));
     try {
-      const fg = await NativeInput.getForegroundWindow();
+      const fg = pushedFg || await NativeInput.getForegroundWindow();
       currentFgProc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
       const winTitle = (fg && fg.title) ? fg.title.trim() : '';
+      const isSelfOrShell = !currentFgProc || currentFgProc === 'electron' || currentFgProc === 'akp153 控制台' || currentFgProc === 'akp-input' || currentFgProc === 'searchhost' || currentFgProc === 'shellexperiencehost' || currentFgProc === 'explorer';
+      if (!isSelfOrShell) {
+        lastRealFgProc = currentFgProc;
+      }
 
       if (cfg.autoSwitchPage !== false && hasAutoRules) {
-        const isSelfOrShell = !currentFgProc || currentFgProc === 'electron' || currentFgProc === 'akp153 控制台' || currentFgProc === 'akp-input' || currentFgProc === 'searchhost' || currentFgProc === 'shellexperiencehost';
         const sig = `${currentFgProc}|${winTitle}`;
 
         if (!isSelfOrShell && sig !== lastFgSignature) {
@@ -745,8 +992,9 @@ async function pollForegroundAndProcessState() {
           }
 
           const realState = isAlive ? 1 : 0;
+          const effectiveFg = lastRealFgProc || currentFgProc;
           const nextWinSub = isAlive
-            ? (currentFgProc === procName ? 'focused' : 'minimized')
+            ? (effectiveFg === procName ? 'focused' : 'minimized')
             : 'stopped';
           const winSubChanged = (syncMode === 'window') && (spec._windowSubState !== nextWinSub);
 
@@ -836,7 +1084,8 @@ function createWindow() {
     }
   });
   win.on('closed', () => { win = null; });
-  win.on('hide', () => {});
+  win.on('hide', () => { broadcast('window:visibility', { visible: false }); });
+  win.on('show', () => { broadcast('window:visibility', { visible: true }); });
 
   if (process.platform === 'win32') {
     try {
@@ -867,8 +1116,14 @@ function createWindow() {
 
 function rebuildTrayMenu() {
   if (!tray) return;
+  const cfg = config.load();
+  const profileSubmenu = (cfg.profiles || []).map((prof) => ({
+    label: `${prof.id === cfg.currentProfile ? '● ' : '   '}${prof.icon || ''} ${prof.name}`.trim(),
+    click: () => switchProfileAndBroadcast(prof.id, '托盘快捷切换'),
+  }));
   const menu = Menu.buildFromTemplate([
     { label: '打开配置', click: () => showWindow() },
+    { label: '切换整机模式 (Profiles)', submenu: profileSubmenu },
     { label: '重连设备（插拔 USB 后用这个）', click: () => openDevice(true) },
     { type: 'separator' },
     { label: '休眠屏幕', click: () => doSleep() },
@@ -1379,8 +1634,67 @@ ipcMain.handle('plugins:market', () => {
   return telemetry.listMarketplacePlugins();
 });
 
+ipcMain.handle('plugins:install', async (e, pluginIdOrMode) => {
+  if (!pluginIdOrMode || pluginIdOrMode === '__pick__') {
+    if (!win) return { ok: false };
+    const res = await dialog.showOpenDialog(win, {
+      title: '选择要安装的 AKP153 插件脚本 (.plugin.js)',
+      properties: ['openFile'],
+      filters: [{ name: 'AKP153 Plugin', extensions: ['js'] }],
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths[0]) return { ok: false, canceled: true };
+    return telemetry.installPluginFile(res.filePaths[0]);
+  }
+  const list = telemetry.listAvailablePlugins(true);
+  return { ok: true, pluginId: pluginIdOrMode, plugins: list };
+});
+
+ipcMain.handle('plugins:evaluate', async (e, { pluginId, pluginConfig } = {}) => {
+  return await telemetry.evaluatePlugin(pluginId, pluginConfig || {});
+});
+
 ipcMain.handle('plugins:trigger', async (e, { pluginId, args } = {}) => {
   return await telemetry.triggerPluginPress(pluginId, args);
+});
+
+ipcMain.handle('profile:switch', async (e, ref) => {
+  const next = await switchProfileAndBroadcast(ref, '顶栏一键切换');
+  return { ok: !!next, profile: next, config: config.load() };
+});
+
+ipcMain.handle('profile:create', async (e, opts = {}) => {
+  const created = config.createProfile(opts);
+  const cfg = config.load();
+  manualBasePageId = cfg.currentPage;
+  autoActiveRootPageId = null;
+  rebuildTrayMenu();
+  syncWatchedProcsToNative();
+  broadcast('profile:changed', { profileId: cfg.currentProfile, pageId: cfg.currentPage });
+  repaintSoon(true);
+  return { ok: true, profile: created, config: cfg };
+});
+
+ipcMain.handle('profile:rename', async (e, { id, name, icon, accent } = {}) => {
+  const updated = config.renameProfile(id, name, icon, accent);
+  rebuildTrayMenu();
+  return { ok: !!updated, profile: updated, config: config.load() };
+});
+
+ipcMain.handle('profile:delete', async (e, id) => {
+  const ok = config.deleteProfile(id);
+  const cfg = config.load();
+  manualBasePageId = cfg.currentPage;
+  autoActiveRootPageId = null;
+  rebuildTrayMenu();
+  syncWatchedProcsToNative();
+  broadcast('profile:changed', { profileId: cfg.currentProfile, pageId: cfg.currentPage });
+  repaintSoon(true);
+  return { ok, config: cfg };
+});
+
+ipcMain.handle('hud:show', (e, payload = {}) => {
+  showHudOverlay(payload, true);
+  return { ok: true };
 });
 
 ipcMain.handle('dialog:pick', async (e, opts) => {
@@ -1784,13 +2098,36 @@ if (!gotLock) {
     if (config.load().openAtLogin) {
       setStartupRegistry(true);
     }
+    syncWatchedProcsToNative();
+
+    // 绑定 akp-input.exe 原生事件流 (SetWinEventHook + IAudioEndpointVolumeCallback + 媒体/进程监控)
+    if (NativeInput && typeof NativeInput.on === 'function') {
+      NativeInput.on('fg', (fg) => {
+        pollForegroundAndProcessState(fg);
+      });
+      NativeInput.on('volume', (vol) => {
+        broadcast('audio:state', vol);
+        if (!deviceAsleep) broadcast('device:repaint-strips', {});
+      });
+      NativeInput.on('media', () => {
+        if (!deviceAsleep) broadcast('device:repaint-strips', {});
+      });
+      NativeInput.on('procs', () => {
+        pollForegroundAndProcessState();
+      });
+      NativeInput.on('shutdown', () => {
+        prepareExitAndSleep();
+      });
+    }
+
     setInterval(() => {
       if (!deviceAsleep) broadcast('device:repaint-strips', {});
     }, 30000);
 
+    // 降频兜底巡检（前台切换与进程变更已由 WinEventHook 与原生监控实时推送）
     setInterval(() => {
       pollForegroundAndProcessState();
-    }, 2000);
+    }, 10000);
 
     try {
       globalShortcut.register('Ctrl+Alt+Escape', () => {
@@ -1820,6 +2157,16 @@ if (!gotLock) {
 
     powerMonitor.on('resume', async () => {
       log('powerMonitor: 捕获到系统唤醒恢复信号，唤醒 AKP153 控制台...');
+      await doWake();
+    });
+
+    powerMonitor.on('lock-screen', async () => {
+      log('powerMonitor: 捕获到系统锁屏信号 (Win+L)，休眠 AKP153 控制台...');
+      await doSleep();
+    });
+
+    powerMonitor.on('unlock-screen', async () => {
+      log('powerMonitor: 捕获到系统解锁信号，唤醒 AKP153 控制台...');
       await doWake();
     });
   }

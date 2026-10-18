@@ -17,16 +17,20 @@ module.exports = {
   name: '系统运行时长看板',
   category: '系统监控',
   author: 'AKP153 Official',
-  version: '0.9.0',
+  version: '0.9.5',
+  configSchema: [
+    { key: 'customGreet', label: '自定义问候语', type: 'text', default: '', placeholder: '留空则按时段自动问候' },
+    { key: 'memWarnPct', label: '内存告警阈值 (%)', type: 'number', default: 85, placeholder: '85' }
+  ],
   description: '实时展示本机开机累计运行时长、时段问候语与系统负载折线，按击可切换维度',
   color: '#0f172a',
 
-  async render({ os, now }) {
+  async render({ os, now, config = {} }) {
     const upSec = Math.floor(os.uptime());
     const hours = Math.floor(upSec / 3600);
     const mins = Math.floor((upSec % 3600) / 60);
     const h = now.getHours();
-    const greet = h < 6 ? '🌙 夜深了' : h < 12 ? '☀️ 早安' : h < 18 ? '⚡ 下午好' : '🌆 晚上好';
+    const greet = config.customGreet || (h < 6 ? '🌙 夜深了' : h < 12 ? '☀️ 早安' : h < 18 ? '⚡ 下午好' : '🌆 晚上好');
 
     const totalMem = os.totalmem() || 1;
     const freeMem = os.freemem() || 0;
