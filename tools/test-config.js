@@ -187,6 +187,30 @@ updated = freshModule().load();
 check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个页面',
   updated.currentProfile === 'office' && updated.pages.length === 3 && updated.pages[0].name === '被外部改过的名字');
 
+{
+  const fakeB64 = "data:image/png;base64," + "A".repeat(600);
+  const mod = freshModule();
+  const c = mod.load();
+  c.pages[0].buttons["0,0"] = {
+    type: "app",
+    label: "测试去重",
+    target: "C:\\test.exe",
+    icon: fakeB64,
+    longPressEnabled: true,
+    longAction: { type: "volume", action: "switch_device", icon: fakeB64 },
+  };
+  mod.save(c);
+  const rawDisk = fs.readFileSync(mod.FILE, "utf8");
+  const parsedDisk = JSON.parse(rawDisk);
+  const storeKeys = Object.keys(parsedDisk.iconStore || {});
+  check("磁盘落盘自动生成 iconStore 哈希去重池", storeKeys.length === 1);
+  check("磁盘按钮 icon 字段转为轻量 @icon: 引用", String(parsedDisk.pages[0].buttons["0,0"].icon).startsWith("@icon:"));
+  const reloaded = freshModule().load();
+  check("内存加载后透明还原完整 Base64 图标", reloaded.pages[0].buttons["0,0"].icon === fakeB64);
+  check("长按副动作 (longAction) 与图标完整持久化还原", reloaded.pages[0].buttons["0,0"].longAction && reloaded.pages[0].buttons["0,0"].longAction.icon === fakeB64);
+  check("智能上下文副屏栏 (contextBars) 默认规则自动初始化", Array.isArray(reloaded.contextBars) && reloaded.contextBars.length >= 4);
+}
+
 // ------------------------------------------------------------- 收尾 ------
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
 

@@ -78,9 +78,13 @@ const mainKeyDebounceMap = new Map();
 // ------------------------------------------------------------ 智能前台感知状态栈 (Runtime Page Stack)
 // manualBasePageId 记录用户手动选择的基准页面（持久化到磁盘的真实意愿页）
 // autoActiveRootPageId 记录当前由 Auto-Profile 触发的根页面 ID（支持用户在其下钻取多级子页后仍能精准退回）
+let manualBaseProfileId = null;
 let manualBasePageId = null;
+let autoActiveProfileId = null;
 let autoActiveRootPageId = null;
 let lastFgSignature = '';
+let activeContextBar = null;
+const singlePacketTapTimers = new Map();
 
 function isPageDescendantOrSame(cfg, targetPageId, ancestorPageId) {
   if (!cfg || !targetPageId || !ancestorPageId) return false;
@@ -97,15 +101,17 @@ function isPageDescendantOrSame(cfg, targetPageId, ancestorPageId) {
 
 function matchProcessRule(procName, autoAppStr) {
   if (!procName || !autoAppStr) return false;
+  const normProc = String(procName).trim().toLowerCase().replace(/\.exe$/i, '');
+  // 修复：支持竖线 |、逗号、分号与换行分隔，且绝不按空格切分（支持 "Adobe Premiere Pro.exe|Resolve.exe"）
   const rules = String(autoAppStr)
-    .split(/[,;，；\s]+/)
+    .split(/[|,;，；\r\n]+/)
     .map((s) => s.trim().toLowerCase().replace(/\.exe$/i, ''))
     .filter(Boolean);
   for (const r of rules) {
     if (r.includes('*')) {
       const re = new RegExp('^' + r.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
-      if (re.test(procName)) return true;
-    } else if (procName === r) {
+      if (re.test(normProc)) return true;
+    } else if (normProc === r || normProc.includes(r)) {
       return true;
     }
   }
@@ -190,7 +196,11 @@ function spawnHost() {
           broadcast('host:status', { ready: true });
           openDevice();
         } else if (msg.event === 'down') {
-          onKeyDown(msg.row, msg.col);
+          onHardwareKeyEvent('down', msg);
+        } else if (msg.event === 'longpress') {
+          onHardwareKeyEvent('longpress', msg);
+        } else if (msg.event === 'up') {
+          onHardwareKeyEvent('up', msg);
         } else if (msg.event === 'wake') {
           onWakeByKey(msg.row, msg.col);
         } else if (msg.event === 'lost') {
@@ -251,11 +261,15 @@ function repaintSoon(force = false) {
   }
 }
 
-async function doSleep(force = false) {
-  if (deviceAsleep && !force) return;
+async function doSleep(force = false, modeOverride = null) {
+  if (deviceAsleep && !force && !modeOverride) return;
   deviceAsleep = true;
+  if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+    NativeInput.setSleepState(true).catch(() => {});
+  }
   broadcast('device:sleep-state', { asleep: true });
-  const r = await safeRpc('sleep', { mode: config.load().sleepMode || 'zeros-last', force: !!force });
+  const mode = modeOverride || config.load().sleepMode || 'zeros-last';
+  const r = await safeRpc('sleep', { mode, force: !!force });
   log('sleep:', JSON.stringify((r && r.report) || r));
   return r;
 }
@@ -263,6 +277,9 @@ async function doSleep(force = false) {
 async function doWake() {
   const r = await safeRpc('wake', { brightness: config.load().brightness, force: true });
   deviceAsleep = false;
+  if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+    NativeInput.setSleepState(false).catch(() => {});
+  }
   lastWakeTime = Date.now();
   lastActivity = Date.now();
   broadcast('device:sleep-state', { asleep: false });
@@ -426,12 +443,16 @@ async function syncWatchedProcsToNative() {
   } catch (_) {}
 }
 
-async function switchProfileAndBroadcast(targetRef, viaLabel = '') {
+async function switchProfileAndBroadcast(targetRef, viaLabel = '', isAutoSwitch = false) {
   const nextProf = config.switchProfile(targetRef);
   if (!nextProf) return null;
   const cfg = config.load();
-  manualBasePageId = cfg.currentPage;
-  autoActiveRootPageId = null;
+  if (!isAutoSwitch) {
+    manualBaseProfileId = cfg.currentProfile;
+    manualBasePageId = cfg.currentPage;
+    autoActiveProfileId = null;
+    autoActiveRootPageId = null;
+  }
   rebuildTrayMenu();
   syncWatchedProcsToNative();
   broadcast('profile:changed', {
@@ -519,8 +540,12 @@ async function openDevice(hard) {
   }
   await safeRpc('brightness', { value: cfg.brightness });
   await safeRpc('setDebounce', { value: cfg.keyDebounceMs || 100 });
+  await safeRpc('setLongPressMs', { value: cfg.longPressMs || 360 });
   hostError = null;
   deviceAsleep = false;
+  if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+    NativeInput.setSleepState(false).catch(() => {});
+  }
   broadcast('host:status', { ready: true, device: true, error: null });
   repaintSoon(true);
   return true;
@@ -633,54 +658,26 @@ function resolveEffectiveSyncMode(spec) {
   return 'auto';
 }
 
-async function onKeyDown(row, col) {
-  const now = Date.now();
-  lastActivity = now;
+function isValidActionSpec(act) {
+  if (!act || typeof act !== 'object') return false;
+  const t = String(act.type || '').toLowerCase();
+  return Boolean(
+    act.target || act.hotkey ||
+    t === 'volume' || t === 'audio' || t === 'app_volume' ||
+    t === 'media' || t === 'multi' || t === 'macro' ||
+    t === 'qr_decode' || t === 'qr' || t === 'page' ||
+    t === 'profile' || t === 'widget' || t === 'window_toggle' ||
+    t === 'plugin_action'
+  );
+}
 
-  const cfgNow = config.load();
-  const debounceMs = (cfgNow.keyDebounceMs !== undefined) ? Number(cfgNow.keyDebounceMs) : 100;
-  const wakeGuardMs = 180;
-
-  if (deviceAsleep || (now - lastWakeTime < wakeGuardMs)) {
-    if (deviceAsleep) {
-      deviceAsleep = false;
-      lastWakeTime = now;
-      broadcast('device:sleep-state', { asleep: false });
-      await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
-      repaintSoon(true);
-      broadcast('key:flash', { row, col });
-      log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
-    } else {
-      log(`key r${row}c${col} suppressed (within ${wakeGuardMs}ms wake guard)`);
-    }
-    return;
-  }
-
-  // 同键连击物理防抖守卫（与设置面板 keyDebounceMs 实时联动）
-  const posKey = `${row},${col}`;
-  const prevPress = mainKeyDebounceMap.get(posKey) || 0;
-  if (now - prevPress < debounceMs) {
-    log(`key r${row}c${col} debounced (${now - prevPress}ms < ${debounceMs}ms)`);
-    return;
-  }
-  mainKeyDebounceMap.set(posKey, now);
-
-  const page = config.currentPage();
-  broadcast('key:flash', { row, col });
-
-  if (page.parent && row === BACK_ROW && col === BACK_COL) {
-    log(`key r${row}c${col} -> 返回上级 (from 「${page.name}」)`);
-    await goToPage(page.parent, 'back key');
-    return;
-  }
-
+function resolveKeySpecAt(page, row, col) {
+  if (!page || !page.buttons) return { effectiveRow: row, effectiveCol: col, spanOffset: 0, spanCols: 1, spec: null };
   let effectiveRow = row;
   let effectiveCol = col;
   let spanOffset = 0;
   let spanCols = 1;
   let spec = page.buttons[row + ',' + col];
-
-  // 支持跨格联合画布 (Multi-Key Span Widget 2x1 / 3x1)：从属格按键自动路由至主格
   const spanMaster = findSpanMasterInRow(page, row, col);
   if (spanMaster) {
     effectiveCol = spanMaster.masterCol;
@@ -690,16 +687,106 @@ async function onKeyDown(row, col) {
   } else if (spec && Number(spec.spanCols) > 1) {
     spanCols = Math.max(1, Math.min(5 - col, Number(spec.spanCols) || 1));
   }
+  return { effectiveRow, effectiveCol, spanOffset, spanCols, spec };
+}
 
-  const isMulti = spec && (spec.type === 'multi' || spec.type === 'macro');
-  const isQr = spec && (spec.type === 'qr_decode' || spec.type === 'qr');
-  const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio');
-  const isMedia = spec && (spec.type === 'media');
-  const isPage = spec && (spec.type === 'page');
-  const isProfile = spec && (spec.type === 'profile');
-  const isWidget = spec && (spec.type === 'widget');
-  const isWinToggle = spec && (spec.type === 'window_toggle');
-  if (!spec || (!spec.target && !spec.hotkey && !isMulti && !isQr && !isVolume && !isMedia && !isPage && !isProfile && !isWidget && !isWinToggle)) {
+async function onHardwareKeyEvent(phase, msg) {
+  const { row, col } = msg;
+  const now = Date.now();
+  lastActivity = now;
+
+  const cfgNow = config.load();
+  const wakeGuardMs = 180;
+
+  if (deviceAsleep || (now - lastWakeTime < wakeGuardMs)) {
+    if (deviceAsleep && phase === 'down') {
+      deviceAsleep = false;
+      if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+        NativeInput.setSleepState(false).catch(() => {});
+      }
+      lastWakeTime = now;
+      broadcast('device:sleep-state', { asleep: false });
+      await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
+      repaintSoon(true);
+      broadcast('key:flash', { row, col, phase: 'wake' });
+      log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
+    }
+    return;
+  }
+
+  const page = config.currentPage();
+  if (!page) return;
+  const { spec } = resolveKeySpecAt(page, row, col);
+  const hasLong = Boolean(spec && spec.longPressEnabled && isValidActionSpec(spec.longAction));
+
+  if (phase === 'down') {
+    broadcast('key:flash', { row, col, phase: 'down', hasLong });
+    if (!hasLong) {
+      // 未绑定长按动作：按下瞬间 0ms 延迟直接触发主动作
+      await onKeyDown(row, col, false);
+      return;
+    }
+    if (!msg.hasHoldSupport) {
+      // 针对仅上报单帧脉冲的旧版固件：支持 340ms 双击作为长按副动作触发器
+      const posKey = `${row},${col}`;
+      if (singlePacketTapTimers.has(posKey)) {
+        clearTimeout(singlePacketTapTimers.get(posKey));
+        singlePacketTapTimers.delete(posKey);
+        broadcast('key:flash', { row, col, phase: 'longpress' });
+        await onKeyDown(row, col, true);
+      } else {
+        const timer = setTimeout(() => {
+          singlePacketTapTimers.delete(posKey);
+          onKeyDown(row, col, false);
+        }, 330);
+        singlePacketTapTimers.set(posKey, timer);
+      }
+    }
+    return;
+  }
+
+  if (phase === 'longpress') {
+    if (hasLong) {
+      broadcast('key:flash', { row, col, phase: 'longpress' });
+      await onKeyDown(row, col, true);
+    }
+    return;
+  }
+
+  if (phase === 'up') {
+    if (hasLong && msg.hasHoldSupport && !msg.longFired) {
+      await onKeyDown(row, col, false);
+    }
+  }
+}
+
+async function onKeyDown(row, col, isLongPress = false) {
+  const now = Date.now();
+  lastActivity = now;
+
+  const cfgNow = config.load();
+  const debounceMs = (cfgNow.keyDebounceMs !== undefined) ? Number(cfgNow.keyDebounceMs) : 100;
+
+  if (!isLongPress) {
+    const posKey = `${row},${col}`;
+    const prevPress = mainKeyDebounceMap.get(posKey) || 0;
+    if (now - prevPress < debounceMs) {
+      log(`key r${row}c${col} debounced (${now - prevPress}ms < ${debounceMs}ms)`);
+      return;
+    }
+    mainKeyDebounceMap.set(posKey, now);
+  }
+
+  const page = config.currentPage();
+  if (!isLongPress && page.parent && row === BACK_ROW && col === BACK_COL) {
+    log(`key r${row}c${col} -> 返回上级 (from 「${page.name}」)`);
+    await goToPage(page.parent, 'back key');
+    return;
+  }
+
+  const { effectiveRow, effectiveCol, spanOffset, spanCols, spec } = resolveKeySpecAt(page, row, col);
+
+  if (!spec || (!isValidActionSpec(spec) && !(isLongPress && isValidActionSpec(spec.longAction)))) {
     log(`key r${row}c${col} pressed - NOT CONFIGURED`);
     broadcast('key:unconfigured', { row, col });
     notify(`r${row}c${col} 这个键还没配置 —— 在窗口里把程序拖到对应格子`);
@@ -707,43 +794,70 @@ async function onKeyDown(row, col) {
   }
 
   let actionToRun = spec;
-  const isDualMode = Boolean(spec.toggleAction || (spec.badgeToggle && !isVolume));
+  if (isLongPress && spec.longPressEnabled && isValidActionSpec(spec.longAction)) {
+    actionToRun = spec.longAction;
+    showHudOverlay({
+      icon: 'zap',
+      title: `长按触发 · ${actionToRun.label || spec.label || '副动作'}`,
+      subtitle: `r${effectiveRow + 1}c${effectiveCol + 1} 长按动作已执行`,
+      accent: '#f59e0b',
+    });
+  } else {
+    const isVolume = spec && (spec.type === 'volume' || spec.type === 'audio' || spec.type === 'app_volume');
+    const isDualMode = Boolean(spec.toggleAction || (spec.badgeToggle && !isVolume));
 
-  if (isDualMode) {
-    let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
-    const syncMode = resolveEffectiveSyncMode(spec);
-    const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target, args: spec.act2Args || '' } : null);
-    const hasAction2 = spec.toggleAction && act2 && (
-      act2.target || act2.hotkey ||
-      act2.type === 'volume' || act2.type === 'audio' ||
-      act2.type === 'media' || act2.type === 'multi' ||
-      act2.type === 'macro' || act2.type === 'qr_decode' ||
-      act2.type === 'page' || act2.type === 'widget' || act2.type === 'window_toggle'
-    );
+    if (isDualMode) {
+      let curState = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
+      const syncMode = resolveEffectiveSyncMode(spec);
+      const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target, args: spec.act2Args || '' } : null);
+      const hasAction2 = spec.toggleAction && isValidActionSpec(act2);
 
-    if (syncMode === 'window') {
-      // HWND 窗口句柄级任务栏双态模式：未启动则启动 -> 后台/最小化则置顶激活 -> 已在前台则最小化隐藏
-      const procName = await resolveButtonProcessName(spec);
-      const winState = procName ? await NativeInput.queryWindowState(procName) : 'NOT_RUNNING';
-      if (winState === 'NOT_RUNNING' || winState === 'TRAY_HIDDEN') {
-        actionToRun = spec;
-        spec._activeState = 1;
-        spec._windowSubState = 'focused';
-        spec._graceUntil = Date.now() + 7000;
-        spec._everSeenRunning = false;
+      if (syncMode === 'window') {
+        // HWND 窗口句柄级任务栏双态模式：单次直接调用 activateOrToggleWindow，免除二次枚举窗口开销
+        const procName = await resolveButtonProcessName(spec);
+        if (!hasAction2 && procName) {
+          const actRes = await NativeInput.activateOrToggleWindow(procName, true);
+          if (!actRes || actRes.state === 'NOT_RUNNING' || actRes.state === 'TRAY_HIDDEN' || actRes.state === 'EMPTY') {
+            actionToRun = spec;
+            spec._activeState = 1;
+            spec._windowSubState = 'focused';
+            spec._graceUntil = Date.now() + 7000;
+            spec._everSeenRunning = false;
+          } else {
+            spec._activeState = 1;
+            spec._windowSubState = (actRes.state === 'MINIMIZED') ? 'minimized' : 'focused';
+            broadcast('key:toggleState', {
+              pageId: page.id,
+              row: effectiveRow,
+              col: effectiveCol,
+              activeState: spec._activeState,
+              windowSubState: spec._windowSubState,
+            });
+            log(`key r${row}c${col} -> window_toggle (${procName}) => ${actRes.state}`);
+            return;
+          }
+        } else {
+          const winState = procName ? await NativeInput.queryWindowState(procName) : 'NOT_RUNNING';
+          if (winState === 'NOT_RUNNING' || winState === 'TRAY_HIDDEN') {
+            actionToRun = spec;
+            spec._activeState = 1;
+            spec._windowSubState = 'focused';
+            spec._graceUntil = Date.now() + 7000;
+            spec._everSeenRunning = false;
+          } else {
+            actionToRun = hasAction2 ? act2 : { type: 'window_toggle', target: procName, watchProcess: procName };
+            spec._activeState = 1;
+            spec._windowSubState = (winState === 'FOREGROUND') ? 'minimized' : 'focused';
+          }
+        }
+        broadcast('key:toggleState', {
+          pageId: page.id,
+          row: effectiveRow,
+          col: effectiveCol,
+          activeState: spec._activeState,
+          windowSubState: spec._windowSubState,
+        });
       } else {
-        actionToRun = hasAction2 ? act2 : { type: 'window_toggle', target: procName, watchProcess: procName };
-        spec._activeState = 1;
-        spec._windowSubState = (winState === 'FOREGROUND') ? 'minimized' : 'focused';
-      }
-      broadcast('key:toggleState', {
-        pageId: page.id,
-        row: effectiveRow,
-        col: effectiveCol,
-        activeState: spec._activeState,
-        windowSubState: spec._windowSubState,
-      });
-    } else {
       // 'auto' | 'process' | 'manual'
       const inGrace = spec._graceUntil && Date.now() < spec._graceUntil;
       if ((syncMode === 'process' || syncMode === 'auto') && spec.toggleAction && !inGrace) {
@@ -775,6 +889,7 @@ async function onKeyDown(row, col) {
         col: effectiveCol,
         activeState: nextState,
       });
+    }
     }
   }
 
@@ -916,36 +1031,92 @@ async function pollForegroundAndProcessState(pushedFg = null) {
         lastRealFgProc = currentFgProc;
       }
 
-      if (cfg.autoSwitchPage !== false && hasAutoRules) {
-        const sig = `${currentFgProc}|${winTitle}`;
+      const sig = `${currentFgProc}|${winTitle}`;
+      if (!isSelfOrShell && sig !== lastFgSignature) {
+        lastFgSignature = sig;
 
-        if (!isSelfOrShell && sig !== lastFgSignature) {
-          lastFgSignature = sig;
-          const matchedPage = cfg.pages.find((p) => {
+        // A. 场景上下文感知动态副屏栏 (Context-Aware Dynamic Bar): 无感切换右侧 3 个副屏格
+        if (cfg.contextBarEnabled !== false && Array.isArray(cfg.contextBars)) {
+          const matchedBar = cfg.contextBars.find((bar) => {
+            if (!bar || bar.enabled === false) return false;
+            const hasApp = !!(bar.matchApp && bar.matchApp.trim());
+            const hasTitle = !!(bar.matchTitle && bar.matchTitle.trim());
+            if (!hasApp && !hasTitle) return false;
+            const appOk = !hasApp || matchProcessRule(currentFgProc, bar.matchApp);
+            const titleOk = !hasTitle || matchTitleRule(winTitle, bar.matchTitle);
+            return appOk && titleOk;
+          }) || null;
+
+          const prevBarId = activeContextBar ? activeContextBar.id : null;
+          const nextBarId = matchedBar ? matchedBar.id : null;
+          if (prevBarId !== nextBarId) {
+            activeContextBar = matchedBar;
+            broadcast('contextbar:changed', { activeBar: matchedBar, fgProc: currentFgProc, fgTitle: winTitle });
+            broadcast('device:repaint-strips', { contextBar: matchedBar });
+          }
+        } else if (activeContextBar) {
+          activeContextBar = null;
+          broadcast('contextbar:changed', { activeBar: null });
+          broadcast('device:repaint-strips', { contextBar: null });
+        }
+
+        // B. 支持跨 Profile 与当前页树的自动跟随切换
+        if (cfg.autoSwitchPage !== false) {
+          const pageMatchPredicate = (p) => {
             const hasApp = !!(p.autoApp && p.autoApp.trim());
             const hasTitle = !!(p.autoTitle && p.autoTitle.trim());
             if (!hasApp && !hasTitle) return false;
             const appOk = !hasApp || matchProcessRule(currentFgProc, p.autoApp);
             const titleOk = !hasTitle || matchTitleRule(winTitle, p.autoTitle);
             return appOk && titleOk;
-          });
+          };
+
+          let matchedProfileId = cfg.currentProfile;
+          let matchedPage = cfg.pages.find(pageMatchPredicate);
+
+          if (!matchedPage && Array.isArray(cfg.profiles)) {
+            for (const prof of cfg.profiles) {
+              if (prof.id === cfg.currentProfile || !Array.isArray(prof.pages)) continue;
+              const foundInProf = prof.pages.find(pageMatchPredicate);
+              if (foundInProf) {
+                matchedProfileId = prof.id;
+                matchedPage = foundInProf;
+                break;
+              }
+            }
+          }
 
           if (matchedPage) {
             if (!autoActiveRootPageId) {
+              manualBaseProfileId = cfg.currentProfile;
               manualBasePageId = cfg.currentPage;
             }
-            if (autoActiveRootPageId !== matchedPage.id && !isPageDescendantOrSame(cfg, cfg.currentPage, matchedPage.id)) {
+            if (matchedProfileId !== cfg.currentProfile) {
+              autoActiveProfileId = matchedProfileId;
+              autoActiveRootPageId = matchedPage.id;
+              await switchProfileAndBroadcast(matchedProfileId, `自动跟随 (${currentFgProc})`, true);
+              await goToPage(matchedPage.id, `auto-switch (${currentFgProc})`, true);
+            } else if (autoActiveRootPageId !== matchedPage.id && !isPageDescendantOrSame(cfg, cfg.currentPage, matchedPage.id)) {
               autoActiveRootPageId = matchedPage.id;
               await goToPage(matchedPage.id, `auto-switch (${currentFgProc})`, true);
             } else {
               autoActiveRootPageId = matchedPage.id;
             }
-          } else if (autoActiveRootPageId && isPageDescendantOrSame(cfg, cfg.currentPage, autoActiveRootPageId)) {
-            const restoreId = (manualBasePageId && cfg.pages.some((p) => p.id === manualBasePageId))
-              ? manualBasePageId
-              : cfg.pages[0].id;
-            autoActiveRootPageId = null;
-            await goToPage(restoreId, `auto-restore (left ${currentFgProc})`, true);
+          } else if (autoActiveRootPageId) {
+            if (autoActiveProfileId && manualBaseProfileId && manualBaseProfileId !== cfg.currentProfile) {
+              const restoreProf = manualBaseProfileId;
+              const restorePg = manualBasePageId;
+              autoActiveProfileId = null;
+              autoActiveRootPageId = null;
+              await switchProfileAndBroadcast(restoreProf, `离开 ${currentFgProc} 自动还原`, true);
+              if (restorePg) await goToPage(restorePg, `auto-restore`, true);
+            } else if (isPageDescendantOrSame(cfg, cfg.currentPage, autoActiveRootPageId)) {
+              const restoreId = (manualBasePageId && cfg.pages.some((p) => p.id === manualBasePageId))
+                ? manualBasePageId
+                : cfg.pages[0].id;
+              autoActiveRootPageId = null;
+              await goToPage(restoreId, `auto-restore (left ${currentFgProc})`, true);
+            }
           }
         }
       }
@@ -1211,6 +1382,23 @@ ipcMain.handle('device:batchDraw', async (e, items) => {
 
 ipcMain.handle('device:brightness', (e, v) => safeRpc('brightness', { value: v }));
 ipcMain.handle('device:setDebounce', (e, ms) => safeRpc('setDebounce', { value: ms }));
+ipcMain.handle('device:setLongPressMs', (e, ms) => safeRpc('setLongPressMs', { value: ms }));
+ipcMain.handle('device:startAnim', (e, payload) => {
+  if (deviceAsleep) return { ok: true, skipped: true };
+  return safeRpc('startAnim', payload || {});
+});
+ipcMain.handle('device:stopAnim', (e, payload) => safeRpc('stopAnim', payload || {}));
+ipcMain.handle('device:clearAnims', () => safeRpc('clearAnims', {}));
+ipcMain.handle('contextbar:get', () => ({
+  activeBar: activeContextBar,
+  enabled: config.load().contextBarEnabled !== false,
+  bars: config.load().contextBars || [],
+}));
+ipcMain.handle('key:triggerPhysical', async (e, { row, col, isLongPress } = {}) => {
+  if (row === undefined || col === undefined) return { ok: false };
+  await onKeyDown(Number(row), Number(col), !!isLongPress);
+  return { ok: true };
+});
 ipcMain.handle('device:sleep', () => doSleep());
 ipcMain.handle('device:wake', () => doWake());
 ipcMain.handle('device:reconnect', () => openDevice(true));
@@ -1280,6 +1468,24 @@ ipcMain.handle('audio:switchDevice', async (e, target) => {
   const res = await NativeInput.switchAudioDevice(target);
   broadcast('device:repaint-strips', {});
   broadcast('audio:state', res);
+  return res;
+});
+ipcMain.handle('audio:getPeak', async () => NativeInput.getAudioPeak());
+ipcMain.handle('audio:listAppSessions', async () => NativeInput.listAppAudioSessions());
+ipcMain.handle('audio:getAppAudio', async (e, target) => NativeInput.getAppAudio(target));
+ipcMain.handle('audio:setAppVolume', async (e, { target, level } = {}) => {
+  const res = await NativeInput.setAppAudioVolume(target, level);
+  broadcast('device:repaint-strips', {});
+  return res;
+});
+ipcMain.handle('audio:stepAppVolume', async (e, { target, delta } = {}) => {
+  const res = await NativeInput.stepAppAudioVolume(target, delta);
+  broadcast('device:repaint-strips', {});
+  return res;
+});
+ipcMain.handle('audio:toggleAppMute', async (e, { target, mode } = {}) => {
+  const res = await NativeInput.toggleAppAudioMute(target, mode);
+  broadcast('device:repaint-strips', {});
   return res;
 });
 
@@ -2071,7 +2277,6 @@ function watchConfig() {
 
   try {
     fs.watch(config.FILE, { persistent: false }, debounce);
-    setInterval(check, 4000);
   } catch (e) {
     log('无法监听 config.json：', e.message);
   }
@@ -2100,6 +2305,14 @@ if (!gotLock) {
     }
     syncWatchedProcsToNative();
 
+    if (telemetry && typeof telemetry.setPluginStateListener === 'function') {
+      telemetry.setPluginStateListener((pluginId, pluginState) => {
+        if (!deviceAsleep) {
+          broadcast('telemetry:update', { pluginId, pluginState });
+        }
+      });
+    }
+
     // 绑定 akp-input.exe 原生事件流 (SetWinEventHook + IAudioEndpointVolumeCallback + 媒体/进程监控)
     if (NativeInput && typeof NativeInput.on === 'function') {
       NativeInput.on('fg', (fg) => {
@@ -2109,14 +2322,25 @@ if (!gotLock) {
         broadcast('audio:state', vol);
         if (!deviceAsleep) broadcast('device:repaint-strips', {});
       });
+      NativeInput.on('audio_device', () => {
+        if (!deviceAsleep) broadcast('device:repaint-strips', {});
+      });
       NativeInput.on('media', () => {
         if (!deviceAsleep) broadcast('device:repaint-strips', {});
       });
       NativeInput.on('procs', () => {
         pollForegroundAndProcessState();
       });
-      NativeInput.on('shutdown', () => {
-        prepareExitAndSleep();
+      NativeInput.on('shutdown', (payload) => {
+        if (payload && payload.mode === 'suspend') {
+          doSleep(true, 'blackout').then(() => {
+            if (NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
+              NativeInput.ackHostBlackout().catch(() => {});
+            }
+          });
+        } else {
+          prepareExitAndSleep();
+        }
       });
     }
 
@@ -2151,8 +2375,11 @@ if (!gotLock) {
     });
 
     powerMonitor.on('suspend', async () => {
-      log('powerMonitor: 捕获到系统待机休眠信号，熄灭 AKP153 控制台...');
-      await doSleep();
+      log('powerMonitor: 捕获到系统待机/快速启动休眠信号，执行 blackout 彻底灭屏...');
+      await doSleep(true, 'blackout');
+      if (NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
+        try { await NativeInput.ackHostBlackout(); } catch (_) {}
+      }
     });
 
     powerMonitor.on('resume', async () => {

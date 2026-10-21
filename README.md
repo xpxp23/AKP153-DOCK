@@ -5,6 +5,15 @@
 核心交互只有一条：**把文件拖到格子里，按下设备上的键就执行。**
 
 
+## 🚀 v0.10.0 架构级演进与深度优化
+
+- **独立供电拓展坞关机/睡眠彻底灭屏保护**：修复 `DirectHardwareBlackout` 中设备路径大小写去重失效导致同一端点二次写入唤醒屏幕的底层 Bug；新增设备休眠状态追踪避免向已休眠面板下发 `CLEAR_ALL`；支持 `sleep("blackout")` 抢占中断 `batchDraw` 队列并覆盖 Windows 快速启动（S4 混合关机 / `PBT_APMSUSPEND`）。
+- **任务栏窗口模式 100% 置顶唤醒**：将 `ActivateOrToggleWindow` 封送至拥有真实 Win32 消息循环的守护窗 UI 线程执行，使 `AttachThreadInput` 100% 生效；修正多窗口进程 `FindBestProcessWindow` 评分与微小辅助窗口过滤，彻底消除后台窗口无法置顶、仅在任务栏空闪的问题。
+- **双形态 1/2 动作配置完全对称统一**：移除音量编辑器点击胶囊破坏双形态配置的代码，使形态 1、形态 2 与长按副动作 100% 共享完整子编辑器（音量步进/声卡下拉、应用级混音、复合宏编排、多媒体指令、页面跳转与双向插件动作）。
+- **双向状态插件 SDK 与生产力深度集成**：扩展 `telemetry-plugins.js` 双向 `onPress` + `emitState` 实时推流协议，内置 **OBS Studio WebSocket v5 导播插件**、**CoreAudio `IAudioSessionManager2` 系统应用级独立混音器 (`Per-App Volume Mixer`)** 与 **HomeAssistant / Webhook 双向节点**。
+- **硬件动效帧缓冲引擎 (`FrameScheduler`) 与短按/长按 (`360ms`) 双触发**：`device-host.js` 内置非阻塞动效帧调度器支持按压微缩回弹帧动画与动态电平表，并为全部 15 键解锁短按执行动作 A / 长按执行副动作 B。
+- **场景上下文感知动态副屏栏 (`Context-Aware Dynamic Bar`)**：主 15 键保持不变，根据前台活动软件（浏览器、IDE、剪辑/OBS、资源管理器）自动无感切换右侧 3 块副屏快捷工具。
+
 ## 🚀 v0.9.5 架构级演进与深度优化
 
 - **⚡ 事件驱动架构替代轮询风暴（`WinEventHook` + `IAudioEndpointVolumeCallback` + 原生媒体/进程监控）**：在 `src/main/native-input.cs`（`akp-input.exe`）中内建 Win32 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND | EVENT_OBJECT_NAMECHANGE)` 与 CoreAudio `IAudioEndpointVolumeCallback` 事件订阅，当切换前台窗口、修改窗口标题、调节系统音量/静音或切歌时，主动向 `stdout` 推送 `@evt fg`、`@evt volume`、`@evt media`、`@evt procs` 事件流，实现 **0% 闲置 CPU 占用** 与 **`<5ms` 即时状态同步**。
@@ -47,7 +56,7 @@ npm run build:portable
 ```
 将自动输出：
 - `dist/AKP153-Dock/`：绿色解压即用目录，内含独立的 `AKP153 控制台.exe`，免安装 Node.js 与环境；
-- `dist/AKP153-Dock-v0.9.5-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
+- `dist/AKP153-Dock-v0.10.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
 
 ## USB 热插拔自愈
 

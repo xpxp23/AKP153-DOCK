@@ -300,8 +300,13 @@ if ($ok) { Write-Output 'AKP_RESULT=focused' } else { Write-Output 'AKP_RESULT=n
   return null;
 }
 
-async function focusExisting(target, allowMinimize = false) {
+async function focusExisting(target, allowMinimize = false, watchProcess = '') {
   try {
+    const customProc = String(watchProcess || '').trim().replace(/\.exe$/i, '');
+    if (customProc) {
+      const winRes = await activateWindow(customProc, allowMinimize);
+      if (winRes) return winRes;
+    }
     const name = await processNameFor(target);
     if (!name || !(await isRunningAsync(name))) return null;
     return await activateWindow(name, allowMinimize);
@@ -727,7 +732,7 @@ async function run(spec, context) {
     }
     if (wKind === 'plugin' || act === 'plugin_click') {
       const pid = spec.pluginId || 'uptime_greeting';
-      const pRes = await telemetry.triggerPluginPress(pid, spec.args);
+      const pRes = await telemetry.triggerPluginPress(pid, spec.args, spec.pluginConfig || {}, context || {});
       return Object.assign({ ok: true, action: 'widget_plugin' }, pRes || {});
     }
     return { ok: true, action: 'widget_refresh' };
@@ -747,6 +752,33 @@ async function run(spec, context) {
       return await run(Object.assign({}, spec, { type: 'app', target: spec.launchTarget || spec.target }));
     }
     return { ok: false, error: '目标程序尚未运行：' + procName };
+  }
+
+  if (type === 'plugin_action') {
+    const pid = spec.pluginId || spec.target || 'obs_studio';
+    const pRes = await telemetry.triggerPluginPress(pid, { action: spec.action || spec.cmd, pluginConfig: spec.pluginConfig || {} }, spec.pluginConfig || {}, context || {});
+    return Object.assign({ ok: true, action: 'plugin_action' }, pRes || {});
+  }
+
+  if (type === 'app_volume' || ((type === 'volume' || type === 'audio') && String(spec.action || '').toLowerCase().startsWith('app_'))) {
+    const rawAct = String(spec.action || 'app_mute').toLowerCase().replace(/^app_/, '');
+    const appTarget = String(spec.appTarget || spec.target || '@foreground').trim() || '@foreground';
+    const baseStep = Math.max(1, parseInt(spec.step, 10) || 10);
+    if (rawAct.includes('up')) {
+      const res = await NativeInput.stepAppAudioVolume(appTarget, baseStep);
+      return Object.assign({ ok: true, action: 'app_volume_up', appTarget }, res);
+    }
+    if (rawAct.includes('down')) {
+      const res = await NativeInput.stepAppAudioVolume(appTarget, -baseStep);
+      return Object.assign({ ok: true, action: 'app_volume_down', appTarget }, res);
+    }
+    if (rawAct.includes('set')) {
+      const lvl = Math.max(0, Math.min(100, parseInt(spec.level !== undefined ? spec.level : 50, 10)));
+      const res = await NativeInput.setAppAudioVolume(appTarget, lvl);
+      return Object.assign({ ok: true, action: 'app_volume_set', appTarget, level: lvl }, res);
+    }
+    const res = await NativeInput.toggleAppAudioMute(appTarget, 'toggle');
+    return Object.assign({ ok: true, action: 'app_volume_mute', appTarget }, res);
   }
 
   if (type === 'volume' || type === 'audio') {
@@ -774,7 +806,7 @@ async function run(spec, context) {
     if (act.includes('switch') || act.includes('device')) {
       const targetDev = String(spec.target || spec.device || '').trim();
       const res = await NativeInput.switchAudioDevice(targetDev);
-      return Object.assign({ ok: true, action: 'audio_switch' }, res);
+      return Object.assign({ ok: true, action: 'audio_device_switched' }, res);
     }
     const step = computeVolStep(baseStep);
     const res = await NativeInput.stepVolume(step);
@@ -782,7 +814,14 @@ async function run(spec, context) {
   }
 
   if (type === 'media') {
-    const cmd = String(spec.cmd || spec.action || spec.target || 'play_pause').toLowerCase();
+    const VALID_MEDIA = ['play_pause', 'next', 'prev', 'mute', 'vol_up', 'vol_down', 'stop'];
+    const rawTargetCmd = String(spec.target || '').trim().toLowerCase();
+    const rawActionCmd = String(spec.action || '').trim().toLowerCase();
+    const rawSpecCmd = String(spec.cmd || '').trim().toLowerCase();
+    // 修复形态 2 默认写入 cmd: 'play_pause' 覆盖 target 输入 'next'/'prev' 的问题
+    const cmd = (rawTargetCmd && VALID_MEDIA.some((k) => rawTargetCmd.includes(k)))
+      ? rawTargetCmd
+      : (rawActionCmd || rawSpecCmd || rawTargetCmd || 'play_pause');
     await NativeInput.sendMedia(cmd);
     return { ok: true, action: 'media_' + cmd };
   }
@@ -879,7 +918,7 @@ async function run(spec, context) {
 
         if (FOCUSABLE.has(ext) && !wantsArgs) {
           const allowMinimize = spec.smartToggle !== false;
-          const focusResult = await focusExisting(target, allowMinimize);
+          const focusResult = await focusExisting(target, allowMinimize, spec.watchProcess);
           if (focusResult) return { ok: true, action: focusResult };
         }
 

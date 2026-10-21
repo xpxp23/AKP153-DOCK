@@ -11,6 +11,7 @@ backups/
 
 # Personal local configuration (preserves developer's private shortcuts)
 config.json
+*.bak
 
 # Python cache (from skill scripts)
 __pycache__/

@@ -600,6 +600,8 @@ app.whenReady().then(async () => {
     await js('document.getElementById("i-toggle-action2-box").style.display !== "none" && document.getElementById("i-single-action-box").style.display === "none"'));
   check('包含形态 1 卡片与形态 2 卡片及一键对调按钮',
     await js('!!document.querySelector(".state1-card") && !!document.querySelector(".state2-card") && !!document.getElementById("i-swap-actions")'));
+  await js('document.getElementById("i-act2-pickhk").click()');
+  await sleep2(100);
   check('形态 2 动作支持类型选择与快捷键构建器',
     await js('!!document.getElementById("i-toggle-action2-type") && !!document.getElementById("i-toggle-action2-hk")'));
 

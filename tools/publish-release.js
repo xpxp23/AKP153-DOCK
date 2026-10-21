@@ -14,18 +14,18 @@ function getGitHubToken() {
 
 const PKG = require(path.resolve(__dirname, '..', 'package.json'));
 const TAG = `v${PKG.version}`;
-const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (WinEventHook事件驱动 + OffscreenCanvas多线程渲染 + OSD毛玻璃HUD + 插件Schema可视化配置 + 多Profile热切)`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (拓展坞灭屏底层修复 + 任务栏100%置顶 + 动效帧调度引擎 + OBS/应用级混音双向插件 + 场景副屏栏)`;
 const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
 const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version}
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
-此版本重磅推出 Win32 事件驱动架构、OffscreenCanvas Web Worker 多线程离屏渲染、OSD 桌面毛玻璃 HUD 提示、插件 Schema 可视化配置表单、多 Profile 配置热切以及关机灭屏深度加固。
+此版本重磅推出独立供电拓展坞端点去重灭屏、UI 线程封送 100% 窗口置顶、硬件动效帧缓冲调度器、短长按（360ms）双触发、OBS WebSocket v5 导播插件、系统应用独立混音器与场景感知动态副屏栏。
 
 ---
 
-## 🌟 v0.9.5 核心架构演进与深度优化
+## 🌟 v0.10.0 核心架构演进与深度优化
 
 ### ⚡ 1. 事件驱动架构替代轮询风暴 (0% 闲置 CPU 占用)
 - **WinEventHook & AudioEndpointCallback**：在 C# 底层内建 Win32 \`SetWinEventHook\` 与 CoreAudio \`IAudioEndpointVolumeCallback\` 原生事件订阅；

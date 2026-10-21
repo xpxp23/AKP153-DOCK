@@ -163,13 +163,40 @@
           </div>
 
           <div class="settings-card">
-            <h5 class="card-title">物理按键输入保护</h5>
+            <h5 class="card-title">物理按键输入保护与长按/动效引擎 (v0.10.0)</h5>
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">按键连击防抖时间</span>
                 <span class="pref-desc">实时同步至底层 HID 驱动，防止微动物理抖动导致的二次触发</span>
               </div>
               <span class="inline"><input type="range" id="prefDebounce" min="30" max="300" step="10" value="100" /> <b id="prefDebounceVal">100</b>ms</span>
+            </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">按键长按触发阈值 (Short / Long Press)</span>
+                <span class="pref-desc">为按键配置“长按副动作”后，按住达到该时长触发副动作 B，短按抬起触发主动作 A</span>
+              </div>
+              <span class="inline"><input type="range" id="prefLongPressMs" min="220" max="1000" step="20" value="360" /> <b id="prefLongPressVal">360</b>ms</span>
+            </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">场景上下文感知动态副屏栏 (Context-Aware Dynamic Bar)</span>
+                <span class="pref-desc">主 15 键保持不变，根据前台软件（浏览器/IDE/剪辑/资源管理器）自动切换右侧 3 块副屏快捷工具</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="prefContextBarEnabled" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="pref-row" style="margin-top: 12px;">
+              <div class="pref-info">
+                <span class="pref-name">硬件动效帧缓冲与按压微缩回弹 (Frame Scheduler)</span>
+                <span class="pref-desc">启用 12 FPS 局部动态帧缓冲推送（音频电平跳动、按压回弹微动效）</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="prefKeyPressAnim" checked />
+                <span class="switch-slider"></span>
+              </label>
             </div>
           </div>
 
@@ -259,7 +286,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.9.5 (Event-Driven · OffscreenWorker · Plugin Schema · HUD &amp; Profiles)</span>
+                <span class="about-v">v0.10.0 (Bi-Directional SDK · Per-App Mixer · FrameScheduler · LongPress · ContextBar)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -320,6 +347,7 @@
         <div class="device-brand-info">
           <span class="logo">AJAZZ</span>
           <span class="model">AKP-153</span>
+          <span id="contextBarBadge" class="context-bar-badge" hidden title="当前右侧 3 块副屏正处于智能上下文感知模式（点击可切换开关）">✨ 智能副屏</span>
           <span id="multiSelectHint" class="multi-select-badge" hidden>已多选 0 格</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
@@ -599,15 +627,23 @@
               <div class="lkm-subcard">
                 <span class="lkm-subcard-title">形态 2 执行动作</span>
                 <div style="display:flex; gap:6px; margin-top:4px;">
-                  <select id="lkmDualAct2Type" class="lkm-select" style="width:110px;">
+                  <select id="lkmDualAct2Type" class="lkm-select" style="width:128px;">
+                    <option value="window_toggle">窗口置顶/最小化</option>
                     <option value="command">命令行</option>
                     <option value="app">应用程序</option>
                     <option value="hotkey">快捷键</option>
+                    <option value="volume">系统音量控制</option>
+                    <option value="app_volume">应用独立混音</option>
+                    <option value="media">多媒体控制</option>
+                    <option value="plugin_action">双向插件动作</option>
                     <option value="url">网址</option>
-                    <option value="volume">音量控制</option>
-                    <option value="media">多媒体</option>
                     <option value="ps1">PS1 脚本</option>
                     <option value="folder">文件夹</option>
+                    <option value="file">打开文件</option>
+                    <option value="page">切换页面</option>
+                    <option value="profile">切换模式</option>
+                    <option value="multi">复合宏</option>
+                    <option value="qr_decode">二维码解码</option>
                   </select>
                   <input id="lkmDualAct2Target" class="lkm-input" style="flex:1;" placeholder="形态 2 目标" />
                 </div>

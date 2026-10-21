@@ -749,7 +749,47 @@ const loadedPlugins = new Map();
 const pluginAliases = new Map();
 let pluginsLoadedAt = 0;
 
+let onPluginStateChange = null;
+const pluginStateStore = new Map();
+
+function setPluginStateListener(fn) {
+  onPluginStateChange = typeof fn === 'function' ? fn : null;
+}
+
+function makeEmitState(pluginId) {
+  return (patch = {}) => {
+    const prev = pluginStateStore.get(pluginId) || {};
+    const next = Object.assign({}, prev, patch, { _updatedAt: Date.now() });
+    pluginStateStore.set(pluginId, next);
+    if (onPluginStateChange) {
+      try { onPluginStateChange(pluginId, next); } catch (_) {}
+    }
+  };
+}
+
 const MARKETPLACE_CATALOG = [
+  {
+    id: 'obs_studio',
+    file: 'obs-studio.plugin.js',
+    name: 'OBS Studio WebSocket v5 导播台',
+    category: '音频与直播',
+    author: 'AKP153 Official',
+    version: '0.10.0',
+    description: '基于 OBS WebSocket v5 实时显示录制/推流状态、当前场景高亮、麦克风分贝表与一键切景',
+    features: ['bars', 'badge', 'bidirectional'],
+    color: '#1e1b4b',
+  },
+  {
+    id: 'app_volume_mixer',
+    file: 'app-mixer.plugin.js',
+    name: '应用级独立混音器 (Per-App Mixer)',
+    category: '音频与直播',
+    author: 'AKP153 Official',
+    version: '0.10.0',
+    description: '基于 CoreAudio IAudioSessionManager2 独立控制指定软件或当前前台游戏的音量与静音',
+    features: ['bars', 'progress', 'badge', 'bidirectional'],
+    color: '#0f172a',
+  },
   {
     id: 'uptime_greeting',
     file: 'uptime-greeting.plugin.js',
@@ -903,7 +943,9 @@ async function evaluatePlugin(pluginId, customConfig = {}) {
   }
   try {
     const config = resolvePluginConfig(p, customConfig);
-    const res = await p.render({ os, now: new Date(), NativeInput, config });
+    const state = pluginStateStore.get(p.id) || {};
+    const emitState = makeEmitState(p.id);
+    const res = await p.render({ os, now: new Date(), NativeInput, config, state, emitState });
     const merged = Object.assign({
       id: p.id,
       title: p.name,
@@ -927,16 +969,19 @@ async function evaluatePlugin(pluginId, customConfig = {}) {
   }
 }
 
-async function triggerPluginPress(pluginId, args, customConfig = {}) {
+async function triggerPluginPress(pluginId, args, customConfig = {}, context = {}) {
   loadExternalPlugins();
   const normId = normalizePluginId(pluginId);
   const p = loadedPlugins.get(normId);
   if (p && p.onPress) {
-    const cfgObj = (args && args.pluginConfig && typeof args.pluginConfig === 'object')
+    const cfgObj = (args && typeof args === 'object' && args.pluginConfig && typeof args.pluginConfig === 'object')
       ? args.pluginConfig
       : customConfig;
+    const action = (args && typeof args === 'object' && args.action) ? args.action : (typeof args === 'string' ? args : undefined);
     const config = resolvePluginConfig(p, cfgObj);
-    return await p.onPress({ args, config, os, now: new Date(), NativeInput });
+    const state = pluginStateStore.get(p.id) || {};
+    const emitState = makeEmitState(p.id);
+    return await p.onPress({ args, action, config, state, emitState, context, os, now: new Date(), NativeInput });
   }
   return { ok: true };
 }
@@ -1046,6 +1091,7 @@ module.exports = {
   controlPomodoro,
   getPomodoroSnapshot,
   setPomodoroListener,
+  setPluginStateListener,
   listAvailablePlugins,
   listMarketplacePlugins,
   loadExternalPlugins,

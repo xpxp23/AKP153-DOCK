@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const FILE = process.env.AKP153_CONFIG
   ? path.resolve(process.env.AKP153_CONFIG)
@@ -34,8 +35,12 @@ const DEFAULTS = {
   // 'smart': 智能单键任务栏模式(启动/置顶/最小化切换+真实状态监控) | 'graceful': 优雅关闭双态(WM_CLOSE) | 'dual': 强退双态(taskkill) | 'single': 普通单动作
   appDropMode: 'dual',
   keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
+  longPressMs: 360,          // 物理按键长按触发阈值 (ms)
+  keyPressAnim: true,        // 按键按下时启用硬件动效帧缓冲微缩回弹反馈
   closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
   autoSwitchPage: true,      // 按前台活动应用或窗口标题正则自动切换关联页面 (Auto-Profile Switching)
+  contextBarEnabled: true,   // 启用场景上下文感知动态副屏栏 (Context-Aware Dynamic Bar)
+  contextBars: [],           // 场景上下文副屏栏规则列表
   weatherCity: 'Auto',       // 动态天气组件默认城市
   pomodoroMinutes: 25,       // 番茄钟默认专注分钟数
   hudEnabled: true,          // 全屏游戏/后台切页、调音量、启停宏时顶部毛玻璃 HUD 胶囊提示
@@ -45,7 +50,65 @@ const DEFAULTS = {
   currentPage: null,
   pageSnapshots: [],
   library: [],
+  iconStore: {},             // Base64 图标 SHA1 哈希去重池
 };
+
+function buildDefaultContextBars() {
+  return [
+    {
+      id: 'ctx_browser',
+      name: '浏览器上下文栏',
+      enabled: true,
+      matchApp: 'chrome.exe|msedge.exe|firefox.exe|brave.exe|arc.exe',
+      matchTitle: '',
+      accent: '#0284c7',
+      strips: {
+        '0': { type: 'telemetry', telemetryType: 'net', label: '实时网速', color: '#0c4a6e', action: { type: 'hotkey', hotkey: 'Ctrl+Shift+T', label: '恢复标签' } },
+        '1': { type: 'text', label: '网页浏览\nCtrl+Tab', color: '#0369a1', action: { type: 'hotkey', hotkey: 'Ctrl+Tab', label: '切换标签' } },
+        '2': { type: 'clock', label: 'F12 调试', color: '#0f172a', action: { type: 'hotkey', hotkey: 'F12', label: '开发者工具' } },
+      },
+    },
+    {
+      id: 'ctx_ide',
+      name: '代码研发上下文栏',
+      enabled: true,
+      matchApp: 'Code.exe|cursor.exe|devenv.exe|idea64.exe|webstorm64.exe|pycharm64.exe',
+      matchTitle: 'Visual Studio|VS Code|Cursor|IntelliJ|WebStorm|PyCharm',
+      accent: '#6366f1',
+      strips: {
+        '0': { type: 'cpu', label: 'CPU 负载', color: '#1e1b4b', action: { type: 'hotkey', hotkey: 'Ctrl+Shift+F', label: '全局搜索' } },
+        '1': { type: 'ram', label: '内存占用', color: '#312e81', action: { type: 'hotkey', hotkey: 'Ctrl+`', label: '终端开关' } },
+        '2': { type: 'telemetry', telemetryType: 'pomodoro', label: '专注计时', color: '#0f172a', action: { type: 'widget', widgetKind: 'pomodoro', action: 'pomodoro_toggle' } },
+      },
+    },
+    {
+      id: 'ctx_creator',
+      name: '剪辑与直播上下文栏',
+      enabled: true,
+      matchApp: 'obs64.exe|Adobe Premiere Pro.exe|Resolve.exe|JianyingPro.exe',
+      matchTitle: 'OBS|Premiere|DaVinci Resolve|剪映',
+      accent: '#f59e0b',
+      strips: {
+        '0': { type: 'telemetry', telemetryType: 'gpu', label: 'GPU 渲染', color: '#451a03', action: { type: 'hotkey', hotkey: 'Ctrl+S', label: '快速保存' } },
+        '1': { type: 'telemetry', telemetryType: 'obs', label: '导播状态', color: '#78350f', action: { type: 'plugin_action', pluginId: 'obs_studio', action: 'toggle_record' } },
+        '2': { type: 'clock', label: '场记时间', color: '#0f172a', action: { type: 'volume', action: 'mute' } },
+      },
+    },
+    {
+      id: 'ctx_explorer',
+      name: '资源管理器上下文栏',
+      enabled: true,
+      matchApp: 'explorer.exe',
+      matchTitle: '',
+      accent: '#10b981',
+      strips: {
+        '0': { type: 'disk', label: '磁盘空间', color: '#064e3b', action: { type: 'hotkey', hotkey: 'Ctrl+Shift+N', label: '新建文件夹' } },
+        '1': { type: 'text', label: '文件管理\nAlt+Up', color: '#065f46', action: { type: 'hotkey', hotkey: 'Alt+Up', label: '返回上层' } },
+        '2': { type: 'clock', label: '系统时钟', color: '#0f172a', action: { type: 'command', target: 'wt.exe', label: '打开终端' } },
+      },
+    },
+  ];
+}
 
 function buildPresetProfilePages(presetKey) {
   if (presetKey === 'stream') {
@@ -263,6 +326,46 @@ function normalize(rawObj) {
   }
   target.library = cleanLib;
   if (typeof target.hudEnabled !== 'boolean') target.hudEnabled = true;
+  if (typeof target.contextBarEnabled !== 'boolean') target.contextBarEnabled = true;
+  if (typeof target.keyPressAnim !== 'boolean') target.keyPressAnim = true;
+  target.longPressMs = Math.max(200, Math.min(2000, Number(target.longPressMs) || 360));
+  if (!Array.isArray(target.contextBars) || !target.contextBars.length) {
+    target.contextBars = buildDefaultContextBars();
+  }
+  if (!target.iconStore || typeof target.iconStore !== 'object') {
+    target.iconStore = {};
+  }
+
+  // Hydrate @icon: refs from iconStore into memory so renderer & host work transparently
+  const hydrateIconObj = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const k of ['icon', 'icon2']) {
+      if (typeof obj[k] === 'string' && obj[k].startsWith('@icon:')) {
+        const ref = obj[k].slice(6);
+        if (target.iconStore[ref]) obj[k] = target.iconStore[ref];
+      }
+    }
+    if (obj.action2 && typeof obj.action2 === 'object') hydrateIconObj(obj.action2);
+    if (obj.longAction && typeof obj.longAction === 'object') hydrateIconObj(obj.longAction);
+  };
+  const hydratePages = (pagesArr) => {
+    if (!Array.isArray(pagesArr)) return;
+    for (const pg of pagesArr) {
+      if (!pg || typeof pg !== 'object') continue;
+      for (const b of Object.values(pg.buttons || {})) hydrateIconObj(b);
+      for (const st of Object.values(pg.strips || {})) hydrateIconObj(st);
+    }
+  };
+  hydratePages(target.pages);
+  if (Array.isArray(target.profiles)) {
+    for (const pf of target.profiles) hydratePages(pf && pf.pages);
+  }
+  for (const libItem of target.library) {
+    if (libItem && libItem.spec) hydrateIconObj(libItem.spec);
+  }
+  for (const snap of target.pageSnapshots) {
+    if (snap && snap.page) hydratePages([snap.page]);
+  }
 
   // Normalize multi-profiles and keep active profile synchronized with top-level pages/currentPage
   if (!Array.isArray(target.profiles) || !target.profiles.length) {
@@ -378,24 +481,70 @@ function syncActiveProfile(cfg) {
   }
 }
 
+let lastBakWriteTs = 0;
+
+function dehydrateIconsForDisk(normalized) {
+  const diskCopy = clone(normalized);
+  const store = {};
+  const internIcon = (val) => {
+    if (typeof val === 'string' && val.startsWith('data:image/') && val.length > 256) {
+      const ref = 'ico_' + crypto.createHash('sha1').update(val).digest('hex').slice(0, 16);
+      store[ref] = val;
+      return '@icon:' + ref;
+    }
+    return val;
+  };
+  const visitObj = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    if (obj.icon) obj.icon = internIcon(obj.icon);
+    if (obj.icon2) obj.icon2 = internIcon(obj.icon2);
+    if (obj.action2 && typeof obj.action2 === 'object') visitObj(obj.action2);
+    if (obj.longAction && typeof obj.longAction === 'object') visitObj(obj.longAction);
+  };
+  const visitPages = (pagesArr) => {
+    if (!Array.isArray(pagesArr)) return;
+    for (const pg of pagesArr) {
+      if (!pg || typeof pg !== 'object') continue;
+      for (const b of Object.values(pg.buttons || {})) visitObj(b);
+      for (const st of Object.values(pg.strips || {})) visitObj(st);
+    }
+  };
+  visitPages(diskCopy.pages);
+  if (Array.isArray(diskCopy.profiles)) {
+    for (const pf of diskCopy.profiles) visitPages(pf && pf.pages);
+  }
+  if (Array.isArray(diskCopy.library)) {
+    for (const item of diskCopy.library) {
+      if (item && item.spec) visitObj(item.spec);
+    }
+  }
+  if (Array.isArray(diskCopy.pageSnapshots)) {
+    for (const snap of diskCopy.pageSnapshots) {
+      if (snap && snap.page) visitPages([snap.page]);
+    }
+  }
+  diskCopy.iconStore = store;
+  return diskCopy;
+}
+
 function save(cfg) {
   syncActiveProfile(cfg);
   const normalized = normalize(cfg);
   cache = normalized;
-  const text = JSON.stringify(normalized, (key, value) => key.startsWith('_') ? undefined : value, 2);
+  const diskObj = dehydrateIconsForDisk(normalized);
+  const text = JSON.stringify(diskObj, (key, value) => key.startsWith('_') ? undefined : value, 2);
   if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
-    try {
-      if (!fs.existsSync(FILE + '.bak')) fs.writeFileSync(FILE + '.bak', text, 'utf8');
-    } catch (_) {}
     return true;
   }
   const tmp = FILE + '.tmp';
   fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, FILE);
-  try {
-    fs.writeFileSync(FILE + '.bak', text, 'utf8');
-  } catch (_) {}
-  lastRaw = text;          // remember exactly what we wrote - see changedOnDisk()
+  const now = Date.now();
+  if (now - lastBakWriteTs > 25000 || !fs.existsSync(FILE + '.bak')) {
+    lastBakWriteTs = now;
+    fs.promises.writeFile(FILE + '.bak', text, 'utf8').catch(() => {});
+  }
+  lastRaw = text;
   return true;
 }
 
@@ -499,5 +648,5 @@ module.exports = {
   load, save, get, set, normalize, DEFAULTS, FILE,
   currentPage, childPages, pageTree, newPageId, DEFAULT_STRIPS, DEFAULT_GRADIENT,
   invalidate, changedOnDisk, normalizeTags, readRaw,
-  switchProfile, createProfile, renameProfile, deleteProfile, buildPresetProfilePages,
+  switchProfile, createProfile, renameProfile, deleteProfile, buildPresetProfilePages, buildDefaultContextBars,
 };

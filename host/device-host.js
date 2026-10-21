@@ -71,8 +71,15 @@ class Device {
     this.queue = Promise.resolve();
     this.watchdog = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
+    this.longPressMs = 360; // threshold for short-press vs long-press (ms)
     this.lastPress = new Map();
+    this.keyHoldState = new Map(); // "${row},${col}" -> { downAt, timer, longFired, hasState1 }
     this.lastFrames = new Map(); // "${row},${col}" -> jpegBase64 (Frame Diff Cache)
+    this.animations = new Map(); // "${row},${col}" -> { frames, fps, loop, idx, lastTick }
+    this.animTimer = null;
+    this._animBusy = false;
+    this._abortDraw = false;
+    this.drawGen = 0;
     this._pktBuf = Buffer.alloc(PKT);
   }
 
@@ -88,6 +95,107 @@ class Device {
     return this.debounceMs;
   }
 
+  setLongPressMs(ms) {
+    const val = Number(ms);
+    if (!Number.isNaN(val) && val >= 200 && val <= 2000) {
+      this.longPressMs = Math.round(val);
+    }
+    return this.longPressMs;
+  }
+
+  clearHoldTimers() {
+    for (const st of this.keyHoldState.values()) {
+      if (st && st.timer) clearTimeout(st.timer);
+    }
+    this.keyHoldState.clear();
+  }
+
+  startAnim(row, col, frames, fps = 12, loop = true) {
+    if (!Array.isArray(frames) || frames.length === 0) return false;
+    const key = `${row},${col}`;
+    const clampedFps = Math.max(2, Math.min(20, Number(fps) || 12));
+    this.animations.set(key, {
+      row: Number(row),
+      col: Number(col),
+      frames,
+      fps: clampedFps,
+      intervalMs: Math.round(1000 / clampedFps),
+      loop: loop !== false,
+      idx: 0,
+      lastTick: 0,
+    });
+    this._ensureAnimLoop();
+    return true;
+  }
+
+  stopAnim(row, col, restoreFrame = null) {
+    const key = `${row},${col}`;
+    this.animations.delete(key);
+    if (this.animations.size === 0 && this.animTimer) {
+      clearInterval(this.animTimer);
+      this.animTimer = null;
+    }
+    if (restoreFrame && this.isOpen && !this.asleep) {
+      this.draw(Number(row), Number(col), restoreFrame, true).catch(() => {});
+    }
+    return true;
+  }
+
+  clearAnims() {
+    this.animations.clear();
+    if (this.animTimer) {
+      clearInterval(this.animTimer);
+      this.animTimer = null;
+    }
+  }
+
+  _ensureAnimLoop() {
+    if (this.animTimer) return;
+    this.animTimer = setInterval(async () => {
+      if (this._animBusy || this.asleep || !this.isOpen || this._abortDraw || this.animations.size === 0) {
+        if (this.animations.size === 0 && this.animTimer) {
+          clearInterval(this.animTimer);
+          this.animTimer = null;
+        }
+        return;
+      }
+      const now = Date.now();
+      const due = [];
+      for (const [key, anim] of this.animations.entries()) {
+        if (now - anim.lastTick >= anim.intervalMs) {
+          anim.lastTick = now;
+          const frameData = anim.frames[anim.idx];
+          if (frameData) {
+            due.push({ row: anim.row, col: anim.col, data: frameData, force: false });
+          }
+          anim.idx++;
+          if (anim.idx >= anim.frames.length) {
+            if (anim.loop) {
+              anim.idx = 0;
+            } else {
+              this.animations.delete(key);
+            }
+          }
+        }
+      }
+      if (due.length > 0) {
+        this._animBusy = true;
+        try {
+          await this.lock(async () => {
+            for (const it of due) {
+              if (this.asleep || this._abortDraw || !this.isOpen) break;
+              this._drawUnlocked(it.row, it.col, it.data, false);
+            }
+          });
+        } catch (_) {
+        } finally {
+          this._animBusy = false;
+        }
+      }
+    }, 45);
+    if (this.animTimer.unref) this.animTimer.unref();
+  }
+
   lock(fn) {
     const next = this.queue.then(fn, fn);
     this.queue = next.catch(() => {});
@@ -95,6 +203,8 @@ class Device {
   }
 
   close() {
+    this.clearHoldTimers();
+    this.clearAnims();
     this.lastFrames.clear();
     if (this.hid) {
       try { this.hid.removeAllListeners('data'); } catch (e) { /* ignore */ }
@@ -162,21 +272,71 @@ class Device {
       const key = pos.row + ',' + pos.col;
       const now = Date.now();
       const threshold = Math.max(20, Number(this.debounceMs) || 100);
-      if (now - (this.lastPress.get(key) || 0) < threshold) return;
-      this.lastPress.set(key, now);
+      const holdSt = this.keyHoldState.get(key);
 
       if (this.asleep) {
+        if (state === 0 && holdSt && holdSt.hasState1) {
+          this.keyHoldState.delete(key);
+          return;
+        }
         process.stderr.write(`[input] key press while asleep at r${pos.row}c${pos.col} -> wake only\n`);
         this.asleep = false;
         this.lastPress.delete(key);
+        this.clearHoldTimers();
         const wakeB = this.savedBrightness || this.brightness || 80;
         this.wake(wakeB, true).catch(() => {});
         emit({ event: 'wake', by: 'key', row: pos.row, col: pos.col });
         return;
       }
 
-      emit({ event: 'down', row: pos.row, col: pos.col });
-      emit({ event: 'up', row: pos.row, col: pos.col });
+      // Case 1: 标准固件上报 state === 1 (按下) 与 state === 0 (抬起)
+      if (state === 1) {
+        if (now - (this.lastPress.get(key) || 0) < threshold) return;
+        this.lastPress.set(key, now);
+        if (holdSt && holdSt.timer) clearTimeout(holdSt.timer);
+        const newSt = {
+          downAt: now,
+          hasState1: true,
+          longFired: false,
+          timer: setTimeout(() => {
+            const cur = this.keyHoldState.get(key);
+            if (cur && !cur.longFired) {
+              cur.longFired = true;
+              emit({ event: 'longpress', row: pos.row, col: pos.col, heldMs: Date.now() - cur.downAt });
+            }
+          }, this.longPressMs),
+        };
+        this.keyHoldState.set(key, newSt);
+        emit({ event: 'down', row: pos.row, col: pos.col, hasHoldSupport: true });
+        return;
+      }
+
+      if (state === 0 && holdSt && holdSt.hasState1) {
+        if (holdSt.timer) clearTimeout(holdSt.timer);
+        const heldMs = Math.max(0, now - holdSt.downAt);
+        const longFired = !!holdSt.longFired;
+        this.keyHoldState.delete(key);
+        emit({ event: 'up', row: pos.row, col: pos.col, heldMs, longFired, hasHoldSupport: true });
+        return;
+      }
+
+      // Case 2: 单报文/连发脉冲型固件 (state 恒为 0)
+      if (holdSt && !holdSt.hasState1 && (now - holdSt.lastPacketAt) <= 320) {
+        holdSt.lastPacketAt = now;
+        const heldMs = now - holdSt.downAt;
+        if (!holdSt.longFired && heldMs >= this.longPressMs) {
+          holdSt.longFired = true;
+          if (holdSt.timer) clearTimeout(holdSt.timer);
+          emit({ event: 'longpress', row: pos.row, col: pos.col, heldMs });
+        }
+        return;
+      }
+
+      if (now - (this.lastPress.get(key) || 0) < threshold) return;
+      this.lastPress.set(key, now);
+
+      emit({ event: 'down', row: pos.row, col: pos.col, hasHoldSupport: false });
+      emit({ event: 'up', row: pos.row, col: pos.col, heldMs: 0, longFired: false, hasHoldSupport: false });
     });
   }
 
@@ -289,12 +449,14 @@ class Device {
     }
     const list = Array.isArray(items) ? items : [];
     if (list.length === 0) return { drawn: 0, skipped: 0 };
+    const myGen = ++this.drawGen;
 
     return this.lock(async () => {
       let drawn = 0;
       let skipped = 0;
       for (const it of list) {
-        if (!it || this.asleep) {
+        // 若收到关机熄屏抢占 (_abortDraw) 或已有更新一整页的 batchDraw 世代到达，立即中止剩余旧帧写入
+        if (!it || this.asleep || this._abortDraw || (list.length >= 15 && myGen !== this.drawGen)) {
           skipped++;
           continue;
         }
@@ -323,8 +485,6 @@ class Device {
     if (m !== 'blackout') {
       this.lastSleepMode = m;
     }
-    // 若面板已处于休眠状态，且非关机彻底灭屏 (blackout) 亦非强制重发，则立即幂等返回，
-    // 严禁向休眠中的硬件重复发送 LIG 0 / LBLIG 0，避免单片机 PWM 背光电路产生瞬态频闪。
     if (this.asleep && m !== 'blackout' && !force) {
       return ['mode=' + m, 'already_asleep=ok'];
     }
@@ -341,7 +501,11 @@ class Device {
     if (this.brightness > 0) {
       this.savedBrightness = this.brightness;
     }
+    // 立即置位 asleep 与 _abortDraw，抢占中断任何正在进行的 batchDraw 与动效帧循环
     this.asleep = true;
+    this._abortDraw = true;
+    this.clearHoldTimers();
+    this.clearAnims();
     this.lastFrames.clear();
     const waitHw = (ms) => new Promise((r) => setTimeout(r, ms));
     if (m === 'blackout') {
@@ -385,6 +549,7 @@ class Device {
   async wake(brightness, force) {
     const was = this.asleep;
     this.asleep = false;
+    this._abortDraw = false;
     this.lastFrames.clear();
     if (!was && !force) return false;
     let b = brightness == null ? this.savedBrightness : Number(brightness);
@@ -499,12 +664,30 @@ async function handle(msg) {
     case 'wake':
       await device.wake(msg.brightness, !!msg.force);
       return reply(id, {});
+    case 'setLongPressMs': {
+      const lp = device.setLongPressMs(msg.value !== undefined ? msg.value : msg.longPressMs);
+      return reply(id, { longPressMs: lp });
+    }
+    case 'startAnim': {
+      const ok = device.startAnim(msg.row, msg.col, msg.frames, msg.fps, msg.loop);
+      return reply(id, { started: ok });
+    }
+    case 'stopAnim': {
+      device.stopAnim(msg.row, msg.col, msg.restoreFrame);
+      return reply(id, { stopped: true });
+    }
+    case 'clearAnims': {
+      device.clearAnims();
+      return reply(id, { cleared: true });
+    }
     case 'status':
       return reply(id, {
         open: device.isOpen,
         asleep: device.asleep,
         brightness: device.brightness,
         debounceMs: device.debounceMs,
+        longPressMs: device.longPressMs,
+        activeAnims: device.animations.size,
       });
     default:
       return fail(id, 'UNKNOWN_CMD ' + cmd);

@@ -1297,17 +1297,18 @@ body[data-theme="dark"] .minigrid i.empty { background: #2b323b; }
 }
 
 .toast {
-  /* 置于顶部标题栏中央安全区：绝不遮挡模态弹窗标题栏、画布顶部流光按钮或底部抽屉 */
-  position: fixed; top: 8px; left: 42%; transform: translateX(-50%);
-  background: rgba(15, 23, 42, 0.94); color: #fff; padding: 6px 16px; border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(8px);
-  font-size: 12px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .2s;
-  max-width: 56vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* 悬浮于画布底部中央安全区：彻底消除遮挡顶部 Profile 模式切换栏的问题 */
+  position: fixed; bottom: 46px; left: 50%; transform: translateX(-50%) translateY(10px);
+  background: rgba(15, 23, 42, 0.92); color: #f8fafc; padding: 7px 18px; border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  backdrop-filter: blur(14px) saturate(160%);
+  font-size: 12.5px; font-weight: 500; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  max-width: 62vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   text-align: center; z-index: 10000;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
 }
-.toast.show { opacity: 1; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* -------------------------------------------------------- gradient presets */
 
@@ -4352,4 +4353,192 @@ body[data-theme="dark"] .dual-sync-policy-card {
   font-size: 11px;
   color: var(--muted, #64748b);
   margin: 0;
+}
+
+
+/* ============================================================================
+ * v0.10.0 UI/UX 工业级视觉升级：
+ * 1. 真实还原 AKP153「左 15 颗独立水晶微动键 + 右 1×3 一体化镜面副屏」物理隔断
+ * 2. 底部资产库抽屉改为非挤压式毛玻璃浮层，打开抽屉时中央硬件画布绝不跳动变形
+ * 3. 双形态 A/B 分段胶囊切换器与长按副动作 (Long Press) 专属视觉样式
+ * ============================================================================ */
+
+header#bar .brand {
+  max-width: calc(100vw - 380px);
+}
+.profile-switcher-bar {
+  overflow-x: auto;
+  max-width: 44vw;
+  scrollbar-width: none;
+}
+.profile-switcher-bar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 硬件网格：第 5 列与第 6 列（副屏）之间营造物理机身隔断感 */
+.grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 0.92fr);
+  column-gap: 10px;
+  row-gap: 10px;
+  padding: 6px;
+}
+
+.cell:not(.display) {
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.38),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.24),
+    0 4px 10px rgba(15, 23, 42, 0.14);
+}
+
+.cell:not(.display):active,
+.cell.flash {
+  transform: scale(0.94) !important;
+  transition: transform 0.08s ease !important;
+}
+
+/* 右侧第 6 列：一体化镜面 LCD 侧屏视觉还原（去除粗糙的 dotted 虚线框） */
+.cell.display {
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: rgba(56, 189, 248, 0.22) !important;
+  margin-left: 8px;
+  background: #0b111e !important;
+  box-shadow:
+    -9px 0 0 -4px rgba(148, 163, 184, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 4px 12px rgba(0, 0, 0, 0.32);
+}
+.cell.display[data-row="0"] {
+  border-radius: 12px 12px 4px 4px;
+}
+.cell.display[data-row="1"] {
+  border-radius: 4px;
+}
+.cell.display[data-row="2"] {
+  border-radius: 4px 4px 12px 12px;
+}
+.cell.display.ctx-active {
+  border-color: rgba(16, 185, 129, 0.55) !important;
+  box-shadow:
+    -9px 0 0 -4px rgba(16, 185, 129, 0.35),
+    0 0 12px rgba(16, 185, 129, 0.22);
+}
+
+.context-bar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.32);
+  cursor: pointer;
+}
+
+/* 底部抽屉：固定底栏高度，展开态向上浮动覆盖，绝不挤压主画布 */
+.drawer {
+  position: relative;
+  height: 38px;
+  flex: 0 0 38px;
+  z-index: 30;
+}
+.drawer.open {
+  max-height: 38px !important;
+}
+.drawer.open .library {
+  display: flex;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 38px;
+  max-height: min(250px, 36vh);
+  background: var(--card);
+  border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -14px 36px rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(18px);
+  z-index: 35;
+}
+body[data-theme="dark"] .drawer.open .library {
+  background: rgba(22, 27, 34, 0.96);
+  box-shadow: 0 -16px 42px rgba(0, 0, 0, 0.65);
+}
+
+/* 双态表单顶部 A/B 分段导航条 */
+.dual-form-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 5px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin-bottom: 8px;
+}
+.dual-form-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.dual-form-tab.active {
+  background: var(--card);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 长按副动作卡片 (Long Press Action Card) */
+.long-press-card {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.05) 0%, transparent 100%);
+}
+.long-press-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.long-press-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.long-press-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #d97706;
+  font-weight: 600;
+}
+body[data-theme="dark"] .long-press-pill {
+  color: #fbbf24;
+}
+.cell .long-badge {
+  position: absolute;
+  bottom: 3px;
+  left: 4px;
+  font-size: 8.5px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.88);
+  color: #fff;
+  font-weight: 700;
+  pointer-events: none;
+  z-index: 3;
 }

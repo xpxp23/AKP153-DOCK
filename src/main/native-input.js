@@ -12,12 +12,14 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { EventEmitter } = require('events');
 
 const evtBus = new EventEmitter();
 let lastWatchProcsCsv = '';
 
 const BIN_PATH = path.join(__dirname, '..', '..', 'bin', 'akp-input.exe');
+const SHA_PATH = path.join(__dirname, '..', '..', 'bin', 'akp-input.cs.sha1');
 const CS_PATH = path.join(__dirname, 'native-input.cs');
 
 let daemonProc = null;
@@ -27,7 +29,7 @@ let supportsIdPrefix = true;
 let compileChecked = false;
 
 /**
- * 若在 Windows 环境下发现 native-input.cs 源码比 akp-input.exe 更新，自动调用内置 .NET Framework csc.exe 编译
+ * 若在 Windows 环境下发现 native-input.cs 源码哈希或时间戳发生变更，自动调用内置 .NET Framework csc.exe 重编译
  */
 function ensureCompiledBinary() {
   if (compileChecked) return;
@@ -36,7 +38,14 @@ function ensureCompiledBinary() {
   if (!fs.existsSync(CS_PATH)) return;
 
   try {
-    let needBuild = !fs.existsSync(BIN_PATH);
+    const csBuf = fs.readFileSync(CS_PATH);
+    const csHash = crypto.createHash('sha1').update(csBuf).digest('hex');
+    let savedHash = '';
+    if (fs.existsSync(SHA_PATH)) {
+      try { savedHash = fs.readFileSync(SHA_PATH, 'utf8').trim(); } catch (_) {}
+    }
+
+    let needBuild = !fs.existsSync(BIN_PATH) || (savedHash !== csHash);
     if (!needBuild) {
       const csStat = fs.statSync(CS_PATH);
       const binStat = fs.statSync(BIN_PATH);
@@ -59,11 +68,12 @@ function ensureCompiledBinary() {
       `/out:${tmpOut}`, CS_PATH,
     ], {
       windowsHide: true,
-      timeout: 8000,
+      timeout: 10000,
     });
     if (r.status === 0 && fs.existsSync(tmpOut)) {
       try {
         fs.renameSync(tmpOut, BIN_PATH);
+        fs.writeFileSync(SHA_PATH, csHash, 'utf8');
       } catch (_) {
         try { fs.unlinkSync(tmpOut); } catch (e) {}
       }
@@ -123,8 +133,10 @@ function ensureDaemon() {
             evtBus.emit('media', evtPayload);
           } else if (evtType === 'procs') {
             evtBus.emit('procs', evtPayload);
+          } else if (evtType === 'audio_device') {
+            evtBus.emit('audio_device', { deviceId: evtPayload });
           } else if (evtType === 'shutdown') {
-            evtBus.emit('shutdown', {});
+            evtBus.emit('shutdown', { mode: evtPayload || '1' });
           }
           continue;
         }
@@ -586,6 +598,80 @@ const NativeInput = {
 
   ackHostBlackout: () => {
     return sendCmd('host_blackout_ack', 800);
+  },
+
+  setSleepState: (asleep) => {
+    return sendCmd(`set_sleep_state ${asleep ? '1' : '0'}`, 800);
+  },
+
+  getAudioPeak: async () => {
+    const res = await sendCmd('audio_peak', 1000);
+    if (res.startsWith('OK ')) {
+      const [masterPeak, micPeak] = res.slice(3).trim().split('|').map((v) => parseInt(v, 10) || 0);
+      return { ok: true, masterPeak, micPeak };
+    }
+    return { ok: false, masterPeak: 0, micPeak: 0 };
+  },
+
+  listAppAudioSessions: async () => {
+    const res = await sendCmd('app_audio_list', 1800);
+    if (res.startsWith('OK')) {
+      const raw = res.slice(2).trim();
+      if (!raw) return [];
+      return raw.split(';;').map((row) => {
+        const [processName, title, pct, mute, peak] = row.split('|');
+        return {
+          processName: (processName || '').trim(),
+          title: (title || processName || '').trim(),
+          level: Math.max(0, Math.min(100, parseInt(pct, 10) || 0)),
+          isMute: mute === '1',
+          peak: Math.max(0, Math.min(100, parseInt(peak, 10) || 0)),
+        };
+      }).filter((x) => x.processName);
+    }
+    return [];
+  },
+
+  parseAppAudioResp: (res) => {
+    if (typeof res === 'string' && res.startsWith('OK ')) {
+      const parts = res.slice(3).trim().split(/\s+/);
+      const processName = parts[0] || '';
+      const level = Math.max(0, Math.min(100, parseInt(parts[1], 10) || 0));
+      const isMute = res.includes('MUTE:1');
+      const peakMatch = res.match(/PEAK:(\d+)/);
+      const peak = peakMatch ? Math.max(0, Math.min(100, parseInt(peakMatch[1], 10) || 0)) : 0;
+      return { ok: true, processName, level, isMute, peak };
+    }
+    return { ok: false, processName: '', level: 0, isMute: false, peak: 0, error: String(res || '') };
+  },
+
+  getAppAudio: async (target = '@foreground') => {
+    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const res = await sendCmd(`app_audio_get ${clean}`, 1500);
+    return NativeInput.parseAppAudioResp(res);
+  },
+
+  setAppAudioVolume: async (target = '@foreground', level = 50) => {
+    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const lvl = Math.max(0, Math.min(100, parseInt(level, 10) || 0));
+    const res = await sendCmd(`app_audio_set ${clean} ${lvl}`, 1500);
+    return NativeInput.parseAppAudioResp(res);
+  },
+
+  stepAppAudioVolume: async (target = '@foreground', delta = 5) => {
+    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const d = Math.max(-100, Math.min(100, parseInt(delta, 10) || 5));
+    const res = await sendCmd(`app_audio_step ${clean} ${d}`, 1500);
+    return NativeInput.parseAppAudioResp(res);
+  },
+
+  toggleAppAudioMute: async (target = '@foreground', mode = 'toggle') => {
+    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const m = mode === true || mode === 1 || mode === '1' ? '1'
+      : mode === false || mode === 0 || mode === '0' ? '0'
+      : 'toggle';
+    const res = await sendCmd(`app_audio_mute ${clean} ${m}`, 1500);
+    return NativeInput.parseAppAudioResp(res);
   },
 
   stop: () => {

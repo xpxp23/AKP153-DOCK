@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('api', {
   deviceBatchDraw: (items) => ipcRenderer.invoke('device:batchDraw', items),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
   deviceSetDebounce: (ms) => ipcRenderer.invoke('device:setDebounce', ms),
+  deviceSetLongPressMs: (ms) => ipcRenderer.invoke('device:setLongPressMs', ms),
+  deviceStartAnim: (payload) => ipcRenderer.invoke('device:startAnim', payload),
+  deviceStopAnim: (payload) => ipcRenderer.invoke('device:stopAnim', payload),
+  deviceClearAnims: () => ipcRenderer.invoke('device:clearAnims'),
+  contextBarGet: () => ipcRenderer.invoke('contextbar:get'),
+  triggerPhysicalKey: (row, col, isLongPress = false) => ipcRenderer.invoke('key:triggerPhysical', { row, col, isLongPress }),
   deviceSleep: () => ipcRenderer.invoke('device:sleep'),
   deviceWake: () => ipcRenderer.invoke('device:wake'),
   deviceReconnect: () => ipcRenderer.invoke('device:reconnect'),
@@ -69,6 +75,12 @@ contextBridge.exposeInMainWorld('api', {
   audioToggleMute: (osd) => ipcRenderer.invoke('audio:toggleMute', osd),
   audioGetDevices: () => ipcRenderer.invoke('audio:getDevices'),
   audioSwitchDevice: (target) => ipcRenderer.invoke('audio:switchDevice', target),
+  audioGetPeak: () => ipcRenderer.invoke('audio:getPeak'),
+  audioListAppSessions: () => ipcRenderer.invoke('audio:listAppSessions'),
+  audioGetAppAudio: (target) => ipcRenderer.invoke('audio:getAppAudio', target),
+  audioSetAppVolume: (target, level) => ipcRenderer.invoke('audio:setAppVolume', { target, level }),
+  audioStepAppVolume: (target, delta) => ipcRenderer.invoke('audio:stepAppVolume', { target, delta }),
+  audioToggleAppMute: (target, mode) => ipcRenderer.invoke('audio:toggleAppMute', { target, mode }),
 
   macroGetCursor: () => ipcRenderer.invoke('macro:getCursor'),
   macroGetPixel: (x, y) => ipcRenderer.invoke('macro:getPixel', { x, y }),
@@ -98,7 +110,7 @@ contextBridge.exposeInMainWorld('api', {
       'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
       'device:key-state', 'audio:state', 'app:runningStates', 'device:sleep-state',
       'login:changed', 'telemetry:update', 'telemetry:data', 'pomodoro:tick',
-      'macro:recordState', 'profile:changed', 'window:visibility'
+      'macro:recordState', 'profile:changed', 'window:visibility', 'contextbar:changed'
     ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);
