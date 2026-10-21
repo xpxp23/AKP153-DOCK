@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 深度集成插件：HomeAssistant / Webhook / MQTT 智能家居双向节点 (v0.10.0)
+ * 深度集成插件：HomeAssistant / Webhook / MQTT 智能家居双向节点 (v0.10.5)
  *
  * 支持：
  * 1. Home Assistant REST API 双向状态拉取 (`/api/states/<entity_id>`) 与服务调用 (`/api/services/<domain>/toggle`)
@@ -65,7 +65,8 @@ module.exports = {
   name: 'HomeAssistant / Webhook 智能节点',
   category: '智能家居',
   author: 'AKP153 Community',
-  version: '0.10.0',
+  version: '0.10.5',
+  defaultIntervalMs: 5000,
   configSchema: [
     {
       key: 'nodeMode',

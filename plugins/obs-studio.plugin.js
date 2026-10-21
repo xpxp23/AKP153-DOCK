@@ -1,11 +1,12 @@
 'use strict';
 /**
- * 官方深度集成插件：OBS Studio WebSocket (v5) 双向导播与电平监控 (v0.10.0)
+ * 官方深度集成插件：OBS Studio WebSocket (v5) 双向导播与电平监控 (v0.10.5)
  *
  * 特性：
  * - 原生零依赖实现 RFC6455 WebSocket + OBS WebSocket v5 (SHA256 挑战认证、场景列表同步、推流/录制状态、一键切景)
  * - 实时融合 CoreAudio 麦克风/主输出分贝电平表 (dB Meter Bars)
  * - 当 OBS WebSocket 未开启时，无缝降级至窗口标题状态嗅探与快捷键控制
+ * - 支持 dispose() 生命周期清理，热重载插件时自动关闭旧 Socket 与挂起请求
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -90,7 +91,6 @@ function handleObsMessage(msg, password, emitState) {
   if (!msg || typeof msg.op !== 'number') return;
   const d = msg.d || {};
   if (msg.op === 0) {
-    // Hello -> compute authentication if required
     let authentication = undefined;
     if (d.authentication && d.authentication.challenge && d.authentication.salt) {
       const secret = crypto.createHash('sha256')
@@ -105,7 +105,6 @@ function handleObsMessage(msg, password, emitState) {
       d: Object.assign({ rpcVersion: 1 }, authentication ? { authentication } : {}),
     });
   } else if (msg.op === 2) {
-    // Identified
     obsClientState.identified = true;
     sendObsRequest('GetSceneList').then((res) => {
       if (res && res.responseData) {
@@ -131,7 +130,6 @@ function handleObsMessage(msg, password, emitState) {
     });
     if (typeof emitState === 'function') emitState({ connected: true });
   } else if (msg.op === 5) {
-    // Event
     const evType = d.eventType;
     const evData = d.eventData || {};
     if (evType === 'CurrentProgramSceneChanged' && evData.sceneName) {
@@ -143,7 +141,6 @@ function handleObsMessage(msg, password, emitState) {
     }
     if (typeof emitState === 'function') emitState({ event: evType });
   } else if (msg.op === 7) {
-    // RequestResponse
     const reqId = d.requestId;
     const pending = obsClientState.pendingReqs.get(reqId);
     if (pending) {
@@ -154,10 +151,31 @@ function handleObsMessage(msg, password, emitState) {
   }
 }
 
+function disposeObsConnection() {
+  for (const pending of obsClientState.pendingReqs.values()) {
+    if (pending && pending.timer) clearTimeout(pending.timer);
+    if (pending && typeof pending.resolve === 'function') pending.resolve(null);
+  }
+  obsClientState.pendingReqs.clear();
+  if (obsClientState.socket) {
+    try {
+      obsClientState.socket.removeAllListeners();
+      obsClientState.socket.destroy();
+    } catch (_) {}
+    obsClientState.socket = null;
+  }
+  obsClientState.connected = false;
+  obsClientState.connecting = false;
+  obsClientState.identified = false;
+}
+
 function ensureObsConnection(wsUrl = 'ws://127.0.0.1:4455', password = '', emitState = null) {
   const now = Date.now();
   if (obsClientState.connected && obsClientState.url === wsUrl) return;
   if (obsClientState.connecting || (now - obsClientState.lastConnectAttempt) < 4000) return;
+  if (obsClientState.socket && obsClientState.url !== wsUrl) {
+    disposeObsConnection();
+  }
   obsClientState.lastConnectAttempt = now;
   obsClientState.connecting = true;
   obsClientState.url = wsUrl;
@@ -249,7 +267,8 @@ module.exports = {
   name: 'OBS Studio WebSocket v5 导播台',
   category: '音频与直播',
   author: 'AKP153 Official',
-  version: '0.10.0',
+  version: '0.10.5',
+  defaultIntervalMs: 400,
   description: '基于 OBS WebSocket v5 协议实时显示录制/推流状态、当前场景高亮、麦克风分贝表与一键切景/启停录制',
   color: '#1e1b4b',
   configSchema: [
@@ -269,6 +288,10 @@ module.exports = {
     { key: 'wsUrl', label: 'OBS WebSocket v5 地址', type: 'text', default: 'ws://127.0.0.1:4455', placeholder: 'ws://127.0.0.1:4455' },
     { key: 'password', label: 'WebSocket 密码 (未设可留空)', type: 'password', default: '', placeholder: 'OBS WebSocket Password' },
   ],
+
+  dispose() {
+    disposeObsConnection();
+  },
 
   async render({ config = {}, NativeInput, emitState }) {
     ensureObsConnection(config.wsUrl || 'ws://127.0.0.1:4455', config.password || '', emitState);
@@ -351,7 +374,6 @@ module.exports = {
         await sendObsRequest('ToggleInputMute', { inputName: 'Mic/Aux' });
       }
     } else {
-      // 未开启 WebSocket 时优雅回退快捷键与本地状态切换
       if (act === 'toggle_stream') {
         obsClientState.streaming = !obsClientState.streaming;
         if (NativeInput && NativeInput.sendHotkey) await NativeInput.sendHotkey('Ctrl+Alt+S');

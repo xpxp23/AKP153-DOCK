@@ -21,6 +21,7 @@ module.exports = {
   category: '金融行情',
   author: 'AKP153 Community',
   version: '0.9.5',
+  defaultIntervalMs: 3000,
   configSchema: [
     { key: 'symbol', label: '监控股票/币种代码', type: 'select', default: '', options: [
       { label: '自动轮播 (按击切换)', value: '' },

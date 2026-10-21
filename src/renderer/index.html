@@ -85,6 +85,14 @@
                 <option value="none">不旋转</option>
               </select>
             </label>
+            <label class="fld">硬件设备型号自适应 (Hardware Profile Adapter)
+              <select id="hardwareModelSelect">
+                <option value="akp153">AJAZZ AKP153 / 153E / 153R (5×3 键 + 3 块一体副屏 · Push 协议)</option>
+                <option value="akp03">AJAZZ AKP03 / 03R 旋钮版 (3×2 键 + 3 颗无极旋钮编码器)</option>
+                <option value="streamdock_15">StreamDock 15 标准版 (5×3 纯矩阵键盘 · 无侧屏)</option>
+              </select>
+            </label>
+            <div class="card-hint muted" id="hardwareProtocolHint">⚡ 当前协议适配：单报文 Push 零延迟直通模式（已剥离长按等待副作用）</div>
           </div>
 
           <div class="settings-card">
@@ -163,20 +171,13 @@
           </div>
 
           <div class="settings-card">
-            <h5 class="card-title">物理按键输入保护与长按/动效引擎 (v0.10.0)</h5>
+            <h5 class="card-title">物理按键输入保护与差量帧缓冲引擎 (v0.10.5)</h5>
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">按键连击防抖时间</span>
-                <span class="pref-desc">实时同步至底层 HID 驱动，防止微动物理抖动导致的二次触发</span>
+                <span class="pref-desc">实时同步至底层 HID 驱动，单报文零延迟直通触发，防止微动物理抖动</span>
               </div>
               <span class="inline"><input type="range" id="prefDebounce" min="30" max="300" step="10" value="100" /> <b id="prefDebounceVal">100</b>ms</span>
-            </div>
-            <div class="pref-row" style="margin-top: 12px;">
-              <div class="pref-info">
-                <span class="pref-name">按键长按触发阈值 (Short / Long Press)</span>
-                <span class="pref-desc">为按键配置“长按副动作”后，按住达到该时长触发副动作 B，短按抬起触发主动作 A</span>
-              </div>
-              <span class="inline"><input type="range" id="prefLongPressMs" min="220" max="1000" step="20" value="360" /> <b id="prefLongPressVal">360</b>ms</span>
             </div>
             <div class="pref-row" style="margin-top: 12px;">
               <div class="pref-info">
@@ -229,7 +230,15 @@
                 <option value="dark">钛空黑（深色金属质感）</option>
               </select>
             </label>
-            <div class="card-hint muted">💡 支持在极光白与深空钛之间一键切换，包含机身磨砂质感与界面自适应。</div>
+            <label class="fld">页面与场景上下文切换过渡动效
+              <select id="transitionStyleSelect">
+                <option value="slide-left">平滑视差滑入 (Slide Transition)</option>
+                <option value="zoom">景深微缩聚焦 (Depth Zoom)</option>
+                <option value="fade">柔和交叉渐隐 (Cross Fade)</option>
+                <option value="none">瞬时无动效切换 (Instant)</option>
+              </select>
+            </label>
+            <div class="card-hint muted">💡 支持在极光白与深空钛之间一键切换，切页与自动跟随应用时呈现丝滑视觉过渡。</div>
           </div>
         </div>
 
@@ -286,7 +295,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.10.0 (Bi-Directional SDK · Per-App Mixer · FrameScheduler · LongPress · ContextBar)</span>
+                <span class="about-v">v0.10.5 (Unidirectional Store · Offscreen Dirty-Rect · Widget Studio · Hardware Profile Adapter)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -355,6 +364,7 @@
           <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
         </div>
       </div>
+      <div id="encoderDockBar" class="encoder-dock-bar" hidden></div>
       <div id="grid" class="grid"></div>
     </div>
   </section>
@@ -365,8 +375,9 @@
       <button id="inspHelp" class="help" title="怎么用">?</button>
     </div>
     <div id="inspTabs" class="insp-tabs" hidden>
-      <button id="tabAction" type="button" class="insp-tab active">⚡ 动作与快捷</button>
+      <button id="tabAction" type="button" class="insp-tab active">⚡ 动作与逻辑</button>
       <button id="tabStyle" type="button" class="insp-tab">🎨 外观与图标</button>
+      <button id="tabBadge" type="button" class="insp-tab">🏷️ 状态与角标</button>
     </div>
     <div class="insp-body">
       <div id="inspector" class="inspector empty">

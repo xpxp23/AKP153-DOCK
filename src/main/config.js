@@ -31,11 +31,12 @@ const DEFAULTS = {
   openAtLogin: true,
   theme: 'light',
   window: null,
+  hardwareModel: 'akp153',   // 多设备型号自适应抽象 ('akp153' | 'akp03' | 'streamdock_15')
+  transitionStyle: 'slide-left', // 页面/上下文切换过渡动效 ('slide-left' | 'fade' | 'zoom' | 'none')
   // 交互偏好与系统行为
   // 'smart': 智能单键任务栏模式(启动/置顶/最小化切换+真实状态监控) | 'graceful': 优雅关闭双态(WM_CLOSE) | 'dual': 强退双态(taskkill) | 'single': 普通单动作
   appDropMode: 'dual',
   keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
-  longPressMs: 360,          // 物理按键长按触发阈值 (ms)
   keyPressAnim: true,        // 按键按下时启用硬件动效帧缓冲微缩回弹反馈
   closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
   autoSwitchPage: true,      // 按前台活动应用或窗口标题正则自动切换关联页面 (Auto-Profile Switching)
@@ -123,7 +124,20 @@ function buildPresetProfilePages(presetKey) {
         '0,0': { type: 'hotkey', label: '主画面景', hotkey: 'Ctrl+Alt+F1', target: 'Ctrl+Alt+F1', color: '#7c3aed', badge: 'SCENE 1', pluginConfig: {} },
         '0,1': { type: 'hotkey', label: '游戏全屏', hotkey: 'Ctrl+Alt+F2', target: 'Ctrl+Alt+F2', color: '#6d28d9', badge: 'SCENE 2', pluginConfig: {} },
         '0,2': { type: 'hotkey', label: '中场休息', hotkey: 'Ctrl+Alt+F3', target: 'Ctrl+Alt+F3', color: '#4c1d95', badge: 'BRB', pluginConfig: {} },
-        '0,3': { type: 'hotkey', label: '开播/下播', hotkey: 'Ctrl+Alt+S', target: 'Ctrl+Alt+S', color: '#be123c', toggleAction: true, badge: 'LIVE', badge2: 'OFF', color2: '#15803d', action2: { type: 'hotkey', target: 'Ctrl+Alt+S' }, pluginConfig: {} },
+        '0,3': {
+          type: 'hotkey',
+          label: '开播/下播',
+          hotkey: 'Ctrl+Alt+S',
+          target: 'Ctrl+Alt+S',
+          color: '#be123c',
+          color2: '#15803d',
+          toggleAction: true,
+          badgeToggle: true,
+          badgeState1: { text: 'OFF', bg: '#475569', color: '#ffffff' },
+          badgeState2: { text: 'LIVE', bg: '#e11d48', color: '#ffffff' },
+          action2: { type: 'hotkey', target: 'Ctrl+Alt+S' },
+          pluginConfig: {},
+        },
         '0,4': { type: 'volume', action: 'switch_device', label: '切换声卡', target: '', color: '#0e7490', badge: 'AUDIO', pluginConfig: {} },
         '1,0': { type: 'volume', action: 'mute', step: 5, label: '麦克静音', color: '#991b1b', pluginConfig: {} },
         '1,1': { type: 'volume', action: 'down', step: 5, label: '音量 -5%', color: '#1e293b', pluginConfig: {} },
@@ -226,13 +240,91 @@ function normalizeTags(v) {
 }
 
 /**
+ * 规范化单个按键 Spec：
+ * 1. 彻底清理存量配置中的长按字段 (longPressEnabled / longAction)
+ * 2. 自动迁移旧版双态角标字段 (badge2 / 漏写 badgeToggle 的 badgeState1/2)
+ * 3. 校验跨格联屏 colSpan 不越过第 5 列边界
+ * 4. 规范化小组件独立刷新率 refreshIntervalMs 与图层编排数组 widgetLayers
+ */
+function normalizeKeySpec(s, posKey = null) {
+  if (!s || typeof s !== 'object') return s;
+  delete s.longPressEnabled;
+  delete s.longAction;
+
+  if (s.type === 'page' && !s.mode) s.mode = 'next';
+  if (s.type === 'profile' && !s.mode) s.mode = s.profileId ? 'goto' : 'next';
+  s.pluginConfig = (s.pluginConfig && typeof s.pluginConfig === 'object') ? Object.assign({}, s.pluginConfig) : {};
+
+  // 迁移旧版 toggleAction 动作字段
+  if (s.toggleAction && !s.action2 && (s.act2Target || s.act2Type)) {
+    s.action2 = {
+      type: s.act2Type || 'command',
+      target: s.act2Target || '',
+      args: s.act2Args || '',
+    };
+    delete s.act2Type;
+    delete s.act2Target;
+    delete s.act2Args;
+  }
+
+  // 迁移旧版 badge2 为标准 badgeState1 / badgeState2 + badgeToggle
+  if (typeof s.badge2 === 'string' && !s.badgeState2) {
+    s.badgeToggle = true;
+    s.badgeState1 = s.badgeState1 || {
+      text: s.badge || 'OFF',
+      bg: s.badgeBg || '#475569',
+      color: s.badgeColor || '#ffffff',
+    };
+    s.badgeState2 = {
+      text: s.badge2,
+      bg: s.color2 || '#10b981',
+      color: '#ffffff',
+    };
+    delete s.badge2;
+  }
+
+  // 若已配置 badgeState1 或 badgeState2 但未显式指定 badgeToggle，则自动激活 badgeToggle
+  if (s.badgeToggle === undefined && (s.badgeState1 || s.badgeState2)) {
+    s.badgeToggle = true;
+  }
+
+  // 跨格联屏越界保护：确保 col + colSpan <= 5
+  if (posKey && typeof posKey === 'string' && posKey.includes(',')) {
+    const [, colStr] = posKey.split(',');
+    const col = Number(colStr);
+    if (!Number.isNaN(col) && col >= 0 && col < 5) {
+      const maxSpan = 5 - col;
+      if (s.colSpan && Number(s.colSpan) > maxSpan) {
+        s.colSpan = maxSpan;
+      }
+    }
+  }
+
+  // 规范化自定义小组件刷新周期与图层编排
+  if (s.refreshIntervalMs !== undefined) {
+    s.refreshIntervalMs = Math.max(150, Math.min(600000, Number(s.refreshIntervalMs) || 2500));
+  }
+  if (Array.isArray(s.widgetLayers)) {
+    s.widgetLayers = s.widgetLayers.filter((l) => l && typeof l === 'object' && l.kind);
+  }
+  return s;
+}
+
+/**
  * Normalize & migrate any raw config object (v1 or v2) into a valid v2 config structure.
  */
 function normalize(rawObj) {
   const target = Object.assign({}, DEFAULTS, (rawObj && typeof rawObj === 'object') ? rawObj : {});
+  delete target.longPressMs;
 
   if (!['ccw', 'cw', 'none'].includes(target.rotate)) {
     target.rotate = 'ccw';
+  }
+  if (!['akp153', 'akp03', 'streamdock_15'].includes(target.hardwareModel)) {
+    target.hardwareModel = 'akp153';
+  }
+  if (!['slide-left', 'slide-right', 'fade', 'zoom', 'none'].includes(target.transitionStyle)) {
+    target.transitionStyle = 'slide-left';
   }
 
   // --- migrate the flat single-page layout (v1: top-level buttons/strips) ---
@@ -265,21 +357,9 @@ function normalize(rawObj) {
         st.pluginConfig = (st.pluginConfig && typeof st.pluginConfig === 'object') ? Object.assign({}, st.pluginConfig) : {};
       }
     }
-    for (const s of Object.values(p.buttons)) {
+    for (const [posKey, s] of Object.entries(p.buttons)) {
       if (!s || typeof s !== 'object') continue;
-      if (s.type === 'page' && !s.mode) s.mode = 'next';
-      if (s.type === 'profile' && !s.mode) s.mode = s.profileId ? 'goto' : 'next';
-      s.pluginConfig = (s.pluginConfig && typeof s.pluginConfig === 'object') ? Object.assign({}, s.pluginConfig) : {};
-      if (s && s.toggleAction && !s.action2 && (s.act2Target || s.act2Type)) {
-        s.action2 = {
-          type: s.act2Type || 'command',
-          target: s.act2Target || '',
-          args: s.act2Args || '',
-        };
-        delete s.act2Type;
-        delete s.act2Target;
-        delete s.act2Args;
-      }
+      normalizeKeySpec(s, posKey);
     }
   }
   // a page whose parent vanished becomes a top-level page
@@ -311,16 +391,7 @@ function normalize(rawObj) {
         });
       }
     } else {
-      if (e.spec && e.spec.toggleAction && !e.spec.action2 && (e.spec.act2Target || e.spec.act2Type)) {
-        e.spec.action2 = {
-          type: e.spec.act2Type || 'command',
-          target: e.spec.act2Target || '',
-          args: e.spec.act2Args || '',
-        };
-        delete e.spec.act2Type;
-        delete e.spec.act2Target;
-        delete e.spec.act2Args;
-      }
+      if (e.spec) normalizeKeySpec(e.spec, null);
       cleanLib.push(e);
     }
   }
@@ -328,7 +399,6 @@ function normalize(rawObj) {
   if (typeof target.hudEnabled !== 'boolean') target.hudEnabled = true;
   if (typeof target.contextBarEnabled !== 'boolean') target.contextBarEnabled = true;
   if (typeof target.keyPressAnim !== 'boolean') target.keyPressAnim = true;
-  target.longPressMs = Math.max(200, Math.min(2000, Number(target.longPressMs) || 360));
   if (!Array.isArray(target.contextBars) || !target.contextBars.length) {
     target.contextBars = buildDefaultContextBars();
   }
@@ -346,13 +416,15 @@ function normalize(rawObj) {
       }
     }
     if (obj.action2 && typeof obj.action2 === 'object') hydrateIconObj(obj.action2);
-    if (obj.longAction && typeof obj.longAction === 'object') hydrateIconObj(obj.longAction);
   };
   const hydratePages = (pagesArr) => {
     if (!Array.isArray(pagesArr)) return;
     for (const pg of pagesArr) {
       if (!pg || typeof pg !== 'object') continue;
-      for (const b of Object.values(pg.buttons || {})) hydrateIconObj(b);
+      for (const [posKey, b] of Object.entries(pg.buttons || {})) {
+        normalizeKeySpec(b, posKey);
+        hydrateIconObj(b);
+      }
       for (const st of Object.values(pg.strips || {})) hydrateIconObj(st);
     }
   };
@@ -399,6 +471,35 @@ function normalize(rawObj) {
   return target;
 }
 
+/**
+ * 在配置归一化/更新时保留内存中已有的运行时状态 (_activeState / _windowSubState / _graceUntil / _everSeenRunning)，
+ * 防止渲染进程调用 config:save 时将主进程正在追踪的进程状态抹除！
+ */
+function preserveRuntimeStates(prevCfg, nextCfg) {
+  if (!prevCfg || !nextCfg || !Array.isArray(prevCfg.pages) || !Array.isArray(nextCfg.pages)) return;
+  const prevPageMap = new Map(prevCfg.pages.map((p) => [p.id, p]));
+  for (const nextPage of nextCfg.pages) {
+    const prevPage = prevPageMap.get(nextPage.id);
+    if (!prevPage || !prevPage.buttons || !nextPage.buttons) continue;
+    for (const [posKey, nextSpec] of Object.entries(nextPage.buttons)) {
+      const prevSpec = prevPage.buttons[posKey];
+      if (!prevSpec || !nextSpec) continue;
+      if (prevSpec._activeState !== undefined && nextSpec._activeState === undefined) {
+        nextSpec._activeState = prevSpec._activeState;
+      }
+      if (prevSpec._windowSubState !== undefined && nextSpec._windowSubState === undefined) {
+        nextSpec._windowSubState = prevSpec._windowSubState;
+      }
+      if (prevSpec._graceUntil !== undefined) {
+        nextSpec._graceUntil = prevSpec._graceUntil;
+      }
+      if (prevSpec._everSeenRunning !== undefined) {
+        nextSpec._everSeenRunning = prevSpec._everSeenRunning;
+      }
+    }
+  }
+}
+
 function load() {
   if (cache) return cache;
   const raw = readRaw();
@@ -408,7 +509,6 @@ function load() {
     try {
       saved = JSON.parse(raw);
     } catch (e) {
-      // Self-healing recovery: preserve corrupted file and recover from .bak
       try {
         if (raw.trim().length > 0) {
           fs.writeFileSync(`${FILE}.corrupted.${Date.now()}.json`, raw, 'utf8');
@@ -482,13 +582,20 @@ function syncActiveProfile(cfg) {
 }
 
 let lastBakWriteTs = 0;
+// 内存 SHA1 图标哈希缓存，避免每次 save() 对相同的数 MB Base64 字符串重复做 SHA1 运算
+const iconHashMemo = new Map();
 
 function dehydrateIconsForDisk(normalized) {
   const diskCopy = clone(normalized);
   const store = {};
   const internIcon = (val) => {
     if (typeof val === 'string' && val.startsWith('data:image/') && val.length > 256) {
-      const ref = 'ico_' + crypto.createHash('sha1').update(val).digest('hex').slice(0, 16);
+      let ref = iconHashMemo.get(val);
+      if (!ref) {
+        ref = 'ico_' + crypto.createHash('sha1').update(val).digest('hex').slice(0, 16);
+        if (iconHashMemo.size > 500) iconHashMemo.clear();
+        iconHashMemo.set(val, ref);
+      }
       store[ref] = val;
       return '@icon:' + ref;
     }
@@ -499,7 +606,6 @@ function dehydrateIconsForDisk(normalized) {
     if (obj.icon) obj.icon = internIcon(obj.icon);
     if (obj.icon2) obj.icon2 = internIcon(obj.icon2);
     if (obj.action2 && typeof obj.action2 === 'object') visitObj(obj.action2);
-    if (obj.longAction && typeof obj.longAction === 'object') visitObj(obj.longAction);
   };
   const visitPages = (pagesArr) => {
     if (!Array.isArray(pagesArr)) return;
@@ -528,14 +634,19 @@ function dehydrateIconsForDisk(normalized) {
 }
 
 function save(cfg) {
+  const prevCache = cache;
   syncActiveProfile(cfg);
   const normalized = normalize(cfg);
+  if (prevCache) {
+    preserveRuntimeStates(prevCache, normalized);
+  }
   cache = normalized;
   const diskObj = dehydrateIconsForDisk(normalized);
   const text = JSON.stringify(diskObj, (key, value) => key.startsWith('_') ? undefined : value, 2);
   if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
     return true;
   }
+  lastRaw = text;
   const tmp = FILE + '.tmp';
   fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, FILE);
@@ -544,8 +655,46 @@ function save(cfg) {
     lastBakWriteTs = now;
     fs.promises.writeFile(FILE + '.bak', text, 'utf8').catch(() => {});
   }
-  lastRaw = text;
   return true;
+}
+
+/**
+ * 异步非阻塞原子保存（供 Electron 主进程高频 IPC config:save 调用，彻底消除主线程同步写盘卡顿）
+ */
+let asyncWritePromise = Promise.resolve();
+function saveAsync(cfg) {
+  const prevCache = cache;
+  syncActiveProfile(cfg);
+  const normalized = normalize(cfg);
+  if (prevCache) {
+    preserveRuntimeStates(prevCache, normalized);
+  }
+  cache = normalized;
+  const diskObj = dehydrateIconsForDisk(normalized);
+  const text = JSON.stringify(diskObj, (key, value) => key.startsWith('_') ? undefined : value, 2);
+  if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
+    return Promise.resolve(true);
+  }
+  lastRaw = text;
+  const tmp = FILE + '.tmp';
+  asyncWritePromise = asyncWritePromise.then(async () => {
+    try {
+      await fs.promises.writeFile(tmp, text, 'utf8');
+      await fs.promises.rename(tmp, FILE);
+      const now = Date.now();
+      if (now - lastBakWriteTs > 25000 || !fs.existsSync(FILE + '.bak')) {
+        lastBakWriteTs = now;
+        await fs.promises.writeFile(FILE + '.bak', text, 'utf8').catch(() => {});
+      }
+    } catch (_) {
+      // Fallback if concurrent rename collides
+      try {
+        fs.writeFileSync(FILE, text, 'utf8');
+      } catch (__) {}
+    }
+    return true;
+  });
+  return asyncWritePromise;
 }
 
 function switchProfile(targetRef, customCfg) {
@@ -645,7 +794,7 @@ function set(key, value) {
 }
 
 module.exports = {
-  load, save, get, set, normalize, DEFAULTS, FILE,
+  load, save, saveAsync, get, set, normalize, normalizeKeySpec, DEFAULTS, FILE,
   currentPage, childPages, pageTree, newPageId, DEFAULT_STRIPS, DEFAULT_GRADIENT,
   invalidate, changedOnDisk, normalizeTags, readRaw,
   switchProfile, createProfile, renameProfile, deleteProfile, buildPresetProfilePages, buildDefaultContextBars,

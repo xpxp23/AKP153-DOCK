@@ -198,6 +198,10 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
     icon: fakeB64,
     longPressEnabled: true,
     longAction: { type: "volume", action: "switch_device", icon: fakeB64 },
+    badgeToggle: true,
+    badgeState1: { text: "", bg: "#546e7a" },
+    badgeState2: { text: "运行中", bg: "#10b981" },
+    _activeState: 1,
   };
   mod.save(c);
   const rawDisk = fs.readFileSync(mod.FILE, "utf8");
@@ -205,10 +209,40 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
   const storeKeys = Object.keys(parsedDisk.iconStore || {});
   check("磁盘落盘自动生成 iconStore 哈希去重池", storeKeys.length === 1);
   check("磁盘按钮 icon 字段转为轻量 @icon: 引用", String(parsedDisk.pages[0].buttons["0,0"].icon).startsWith("@icon:"));
+  check("v0.10.5 自动剥离存量长按副动作字段 (longPressEnabled / longAction)",
+    parsedDisk.pages[0].buttons["0,0"].longPressEnabled === undefined &&
+    parsedDisk.pages[0].buttons["0,0"].longAction === undefined);
   const reloaded = freshModule().load();
   check("内存加载后透明还原完整 Base64 图标", reloaded.pages[0].buttons["0,0"].icon === fakeB64);
-  check("长按副动作 (longAction) 与图标完整持久化还原", reloaded.pages[0].buttons["0,0"].longAction && reloaded.pages[0].buttons["0,0"].longAction.icon === fakeB64);
   check("智能上下文副屏栏 (contextBars) 默认规则自动初始化", Array.isArray(reloaded.contextBars) && reloaded.contextBars.length >= 4);
+
+  // 测试 RuntimeStateStore & computeRenderModel 单向数据流与空角标不回退
+  const { RuntimeStateStore, computeRenderModel } = require("../src/main/runtime-store.js");
+  const { getHardwareProfile, parseHardwareInputPacket } = require("../src/main/hardware-profiles.js");
+  const rtStore = new RuntimeStateStore();
+  const sampleSpec = {
+    type: "app",
+    label: "VS Code",
+    badge: "污染旧值",
+    toggleAction: true,
+    badgeToggle: true,
+    badgeState1: { text: "", bg: "#546e7a" },
+    badgeState2: { text: "运行中", bg: "#10b981" },
+  };
+  rtStore.setKeyState("p1", 0, 0, { activeState: 0, windowSubState: "not_running" });
+  const modelState0 = computeRenderModel(sampleSpec, rtStore.getKeyState("p1", 0, 0), rtStore.globalState);
+  check("computeRenderModel: 当状态 1 角标设为空字符串时严格返回 null，绝不回退读取静态 spec.badge", modelState0.badge === null);
+  rtStore.setKeyState("p1", 0, 0, { activeState: 1, windowSubState: "foreground" });
+  const modelState1 = computeRenderModel(sampleSpec, rtStore.getKeyState("p1", 0, 0), rtStore.globalState);
+  check("computeRenderModel: 当状态 2 激活时精准返回「运行中」角标", modelState1.badge && modelState1.badge.text === "运行中");
+
+  const akp153Prof = getHardwareProfile("akp153");
+  const akp03Prof = getHardwareProfile("akp03");
+  check("HardwareProfileAdapter: AKP153 协议为 push 且无长按支持，AKP03 支持 3 路物理旋钮",
+    akp153Prof.protocol.inputMode === "push" && akp153Prof.protocol.supportsHold === false && akp03Prof.encoders.count === 3);
+  const knobPkt = Buffer.from([65, 67, 75, 0, 0, 8, 8, 8, 8, 0x51, 0]);
+  const parsedEnc = parseHardwareInputPacket(knobPkt, "akp03");
+  check("HardwareProfileAdapter: 正确解析 AKP03 旋钮顺时针旋转报文", parsedEnc && parsedEnc.eventType === "encoder" && parsedEnc.knob === 0 && parsedEnc.dir === "cw");
 }
 
 // ------------------------------------------------------------- 收尾 ------

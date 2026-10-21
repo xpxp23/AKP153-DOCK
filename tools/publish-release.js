@@ -14,39 +14,38 @@ function getGitHubToken() {
 
 const PKG = require(path.resolve(__dirname, '..', 'package.json'));
 const TAG = `v${PKG.version}`;
-const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (拓展坞灭屏底层修复 + 任务栏100%置顶 + 动效帧调度引擎 + OBS/应用级混音双向插件 + 场景副屏栏)`;
+const RELEASE_NAME = `AKP153 控制台 v${PKG.version} (RuntimeStateStore单向数据流 + 0ms零延迟直通 + DirtyRect差量合成 + Widget Studio图层编排 + 多硬件型号自适应)`;
 const ZIP_NAME = `AKP153-Dock-v${PKG.version}-portable.zip`;
 const ZIP_PATH = path.resolve(__dirname, '..', 'dist', ZIP_NAME);
 
 const RELEASE_BODY = `# 🚀 AKP153 控制台 v${PKG.version}
 
 黑爵 AJAZZ AKP153 液晶控制台（Stream Dock 15键 + 3副屏）的独立驱动与图形化配置中心。
-此版本重磅推出独立供电拓展坞端点去重灭屏、UI 线程封送 100% 窗口置顶、硬件动效帧缓冲调度器、短长按（360ms）双触发、OBS WebSocket v5 导播插件、系统应用独立混音器与场景感知动态副屏栏。
+此版本重磅推出配置与状态分离的单向数据流架构（RuntimeStateStore）、0ms 零延迟物理按键直通响应、离屏 Dirty-Rect 差量合成管线、可视化小组件图层编排工坊（Widget Studio）以及多硬件型号自适应抽象（AKP153 / AKP03 带旋钮 / StreamDock 15）。
 
 ---
 
-## 🌟 v0.10.0 核心架构演进与深度优化
+## 🌟 v0.10.5 核心架构演进与深度优化
 
-### ⚡ 1. 事件驱动架构替代轮询风暴 (0% 闲置 CPU 占用)
-- **WinEventHook & AudioEndpointCallback**：在 C# 底层内建 Win32 \`SetWinEventHook\` 与 CoreAudio \`IAudioEndpointVolumeCallback\` 原生事件订阅；
-- **主动推流机制**：前台窗口切换、窗口标题改变、系统音量调节/静音或切歌时，底层主动向主进程推送 \`@evt fg\`、\`@evt volume\`、\`@evt media\`、\`@evt procs\` 事件流，实现 **0% 闲置 CPU** 与 **<5ms 极速状态同步**。
+### 🔄 1. 状态与配置分离的单向数据流架构 (SpecStore + RuntimeStateStore)
+- **解耦核心状态**：静态持久化配置与进程存活、窗口前后台、系统音量/静音、插件遥测等动态运行时彻底解耦；
+- **纯函数计算渲染模型**：前后端共享 computeRenderModel(spec, runtimeState, globalState)，根治回弹动画覆盖角标、配置保存冲掉状态等同步难题。
 
-### 🧵 2. 离屏渲染架构重构 (OffscreenCanvas Web Worker)
-- **多线程无阻塞刷屏**：将 90° 硬件图像旋转与 JPEG 压缩剥离至后台 Web Worker（通过 \`ImageBitmap\` 零拷贝流转），复杂前台 DOM 交互绝不卡顿硬件 USB 传输；
-- **托盘低内存模式**：窗口最小化或隐藏至托盘后自动挂起前台 DOM 画布重绘，大幅缩减内存与能耗，双击托盘秒级唤醒。
+### ⚡ 2. 彻底剥离「长按」延迟等待与 0ms 零延迟直通响应
+- 针对 AKP153 单报文硬件协议，全链路移除 330ms/360ms 延迟等待定时器与长按误触发；
+- 物理按键瞬发直通，敲击响应延迟缩减至 **0ms 零感知**。
 
-### 🔌 3. 插件可视化声明配置表单 (Plugin Schema Config)
-- **声明式参数 Schema**：插件支持定义 \`configSchema\`（包含 string、number、select、boolean、password 等字段）；
-- **可视化配置面板**：前端属性检查器自动渲染参数表单并持久化至 \`spec.pluginConfig\`，无需手动修改 JS 源码即可配置 Home Assistant 地址/实体 ID、股票代码、GitHub 仓库等参数；
-- **本地一键安装插件**：支持在插件面板直接选择本地 \`*.plugin.js\` 导入并立即热生效。
+### 🧵 3. 离屏 Dirty-Rect 差量合成管线与托盘零节流刷新
+- **Dirty-Rect 差量管线**：通过 OffscreenCanvas Worker 结合帧哈希差量缓存（dirtyRectHashStore），仅重绘变化格子；
+- **单格局部 DOM 刷新**：efreshSingleCell(row, col) 彻底消除滑块拖拽与高频遥测时的全屏渲染掉帧。
 
-### ✨ 4. OSD 桌面毛玻璃悬浮提示窗 (HUD Overlay) 与多套 Profile 热切
-- **穿透式桌面毛玻璃 HUD**：切页、切换 Profile、调节音量、切换声卡、启停宏或番茄钟时，屏幕顶部自动弹出 1.5s 优雅的无焦点毛玻璃胶囊提示；
-- **多套 Profile 配置热切**：支持创建 **办公模式 / 直播模式 / 剪辑模式 / 游戏模式** 等多套独立的顶层页面树，一键全局热切。
+### 🎨 4. 可视化小组件图层编排工坊 (Widget Studio)
+- **自由图层编排**：单格（1×1）或跨格宽屏（2×1 / 3×1）自由叠加 CPU、GPU、实时网速、声卡电平、历史趋势图与时钟图层；
+- **多频独立调度**：支持为每个小组件独立配置 180ms 极速电平至 60s 慢速轮询的刷新周期。
 
-### 🛠️ 5. 拓展坞关机灭屏与窗口唤醒深度加固
-- **独立供电拓展坞彻底黑屏**：移除引发固件二次点亮的末尾指令，增加 MCU 消化延迟，主进程与 \`ShutdownGuardForm\` 协同握手，支持锁屏与系统空闲深度休眠；
-- **无卡顿置顶与还原**：基于 \`EnumWindows\` + \`DwmGetWindowAttribute\` + \`SPI_SETFOREGROUNDLOCKTIMEOUT\` + \`SwitchToThisWindow\`，彻底解决后台窗口置顶闪烁与托盘唤醒 2 秒卡顿。
+### 🎛️ 5. 多设备型号自适应抽象 (Hardware Profile Adapter)
+- 原生自适应 **AJAZZ AKP153 (5×3+3副屏)**、**AJAZZ AKP03 (3×2+3颗物理旋钮编码器)** 与 **StreamDock 15 标准版**；
+- 一体式黑晶玻璃副屏拟物外框、三栏分段式检查器与平滑切页动效。
 
 ### 🛡️ 1. 独立供电拓展坞关机硬件彻底灭屏 + 定时休眠防频闪
 - **C# STA 关机灭屏守护**：新增独立 STA 消息泵窗口拦截系统 \`WM_QUERYENDSESSION\` (0x0011) 与 \`WM_ENDSESSION\` (0x0016)，通过 Win32 SetupAPI 直写 6 步硬件休眠指令，即使主机插在独立供电拓展坞上也能在关机瞬间彻底黑屏断流，杜绝电脑关机控制台常亮；

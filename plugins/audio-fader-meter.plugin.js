@@ -11,6 +11,7 @@ module.exports = {
   category: '音频与直播',
   author: 'AKP153 Community',
   version: '0.9.5',
+  defaultIntervalMs: 180,
   configSchema: [
     { key: 'title', label: '面板显示标题', type: 'text', default: '🎚️ 混音推子监控', placeholder: '例如：直播混音台' },
     { key: 'theme', label: '推子配色方案', type: 'select', default: 'cyber', options: [

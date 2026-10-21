@@ -16,6 +16,7 @@ module.exports = {
   category: '开发者工具',
   author: 'AKP153 Community',
   version: '0.9.5',
+  defaultIntervalMs: 15000,
   configSchema: [
     { key: 'repo', label: 'GitHub 仓库名', type: 'text', default: '', placeholder: '例如：electron/electron' },
     { key: 'branch', label: '监控分支', type: 'text', default: 'main', placeholder: 'main' }

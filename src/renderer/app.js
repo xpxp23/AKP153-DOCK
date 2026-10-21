@@ -232,10 +232,152 @@ let lastTelemetry = {
   plugins: BUILTIN_MARKET_PLUGINS.map(p => Object.assign({}, p))
 };
 
+// v0.10.5: Unidirectional Renderer RuntimeStateStore & Dirty-Rect Hash Cache
+const rendererRuntimeStore = new Map(); // "${pageId}:${row},${col}" -> { activeState, windowSubState }
+const dirtyRectHashStore = new Map();   // "${pageId}:${row},${col}" -> visualHash
+const widgetLastTickMap = new Map();    // "${pageId}:${row},${col}" -> timestamp
+
+function getRuntimeCellState(pageId, row, col) {
+  const k = `${pageId || (curPage() && curPage().id) || 'p1'}:${row},${col}`;
+  return rendererRuntimeStore.get(k) || null;
+}
+
+function setRuntimeCellState(pageId, row, col, patch) {
+  const pid = pageId || (curPage() && curPage().id) || 'p1';
+  const k = `${pid}:${row},${col}`;
+  const prev = rendererRuntimeStore.get(k) || { activeState: 0, windowSubState: 'stopped' };
+  const next = Object.assign({}, prev, patch || {});
+  rendererRuntimeStore.set(k, next);
+  return next;
+}
+
+function syncRuntimeStoreToConfig(targetCfg) {
+  if (!targetCfg || !Array.isArray(targetCfg.pages)) return;
+  for (const p of targetCfg.pages) {
+    if (!p || !p.buttons) continue;
+    for (const [posKey, spec] of Object.entries(p.buttons)) {
+      if (!spec) continue;
+      const [r, c] = posKey.split(',').map(Number);
+      const rt = getRuntimeCellState(p.id, r, c);
+      if (rt) {
+        spec._activeState = rt.activeState;
+        if (rt.windowSubState !== undefined) spec._windowSubState = rt.windowSubState;
+      } else if (spec._activeState !== undefined) {
+        setRuntimeCellState(p.id, r, c, {
+          activeState: spec._activeState,
+          windowSubState: spec._windowSubState || 'stopped',
+        });
+      }
+    }
+  }
+}
+
+function triggerGridTransition(customStyle) {
+  const grid = document.getElementById('grid');
+  if (!grid) return;
+  const style = customStyle || (cfg && cfg.transitionStyle) || 'slide-left';
+  grid.classList.remove('transition-slide-left', 'transition-zoom', 'transition-fade');
+  if (style === 'none') return;
+  void grid.offsetWidth;
+  const cls = style === 'zoom' ? 'transition-zoom' : (style === 'fade' ? 'transition-fade' : 'transition-slide-left');
+  grid.classList.add(cls);
+  clearTimeout(grid._transTimer);
+  grid._transTimer = setTimeout(() => {
+    grid.classList.remove('transition-slide-left', 'transition-zoom', 'transition-fade');
+  }, 250);
+}
+
+function applyHardwareModelToUI(modelId) {
+  const model = modelId || (cfg && cfg.hardwareModel) || 'akp153';
+  const grid = document.getElementById('grid');
+  if (grid) {
+    grid.dataset.hwModel = model;
+    grid.querySelectorAll('.cell').forEach((cell) => {
+      const r = +cell.dataset.row;
+      const c = +cell.dataset.col;
+      if (model === 'akp03') {
+        cell.classList.toggle('hw-hidden', r >= 2 || c >= 3);
+      } else {
+        cell.classList.remove('hw-hidden');
+      }
+    });
+  }
+  const modelLabelEl = document.querySelector('.device-bar .model');
+  if (modelLabelEl) {
+    modelLabelEl.textContent = model === 'akp03' ? 'AKP-03 旋钮版' : (model === 'streamdock_15' ? 'StreamDock 15' : 'AKP-153');
+  }
+  const hintEl = document.getElementById('hardwareProtocolHint');
+  if (hintEl) {
+    if (model === 'akp03') {
+      hintEl.textContent = '🎛️ 当前协议适配：3×2 矩阵 + 3 路无极旋钮编码器（支持左旋/右旋/按压事件）';
+    } else if (model === 'streamdock_15') {
+      hintEl.textContent = '⚡ 当前协议适配：标准 5×3 15 键矩阵（单报文 Push 零延迟直通模式）';
+    } else {
+      hintEl.textContent = '⚡ 当前协议适配：AKP153 5×3 主键 + 3 段式一体副屏（单报文 Push 零延迟直通模式）';
+    }
+  }
+  renderEncoderDockBar(model);
+}
+
+function renderEncoderDockBar(modelId) {
+  const bar = document.getElementById('encoderDockBar');
+  if (!bar) return;
+  const model = modelId || (cfg && cfg.hardwareModel) || 'akp153';
+  if (model !== 'akp03') {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const knobs = [
+    { idx: 0, icon: '🔊', title: '左旋钮 · 主音量', pressTip: '按压静音切换' },
+    { idx: 1, icon: '🎚️', title: '中旋钮 · 前台混音', pressTip: '按压应用静音' },
+    { idx: 2, icon: '☀️', title: '右旋钮 · 亮度/切页', pressTip: '按压切换下一页' },
+  ];
+  bar.innerHTML = knobs.map((k) => `
+    <div class="encoder-knob-card" data-knob="${k.idx}">
+      <div class="encoder-knob-dial" data-knob-press="${k.idx}" title="${k.pressTip}（支持鼠标滚轮模拟旋转）">${k.icon}</div>
+      <div class="encoder-knob-title">${k.title}</div>
+      <div class="encoder-knob-actions">
+        <button type="button" class="encoder-step-btn" data-knob="${k.idx}" data-dir="ccw" title="逆时针左旋">↺ 左旋</button>
+        <button type="button" class="encoder-step-btn" data-knob="${k.idx}" data-dir="press" title="${k.pressTip}">● 按压</button>
+        <button type="button" class="encoder-step-btn" data-knob="${k.idx}" data-dir="cw" title="顺时针右旋">右旋 ↻</button>
+      </div>
+    </div>
+  `).join('');
+
+  const fireEnc = async (knob, dir) => {
+    const dial = bar.querySelector(`[data-knob-press="${knob}"]`);
+    if (dial) {
+      dial.style.transform = dir === 'cw' ? 'rotate(22deg) scale(1.05)' : (dir === 'ccw' ? 'rotate(-22deg) scale(1.05)' : 'scale(0.9)');
+      setTimeout(() => { dial.style.transform = ''; }, 160);
+    }
+    if (!DEMO && window.api && api.triggerEncoder) {
+      await api.triggerEncoder(knob, dir);
+    } else {
+      toast(`🎛️ 旋钮 ${knob + 1} 触发：${dir === 'cw' ? '顺时针 ↻' : (dir === 'ccw' ? '逆时针 ↺' : '按压 ●')}`);
+    }
+  };
+
+  bar.querySelectorAll('.encoder-step-btn').forEach((btn) => {
+    btn.onclick = () => fireEnc(Number(btn.dataset.knob), btn.dataset.dir);
+  });
+  bar.querySelectorAll('.encoder-knob-dial').forEach((dial) => {
+    const kIdx = Number(dial.dataset.knobPress);
+    dial.onclick = () => fireEnc(kIdx, 'press');
+    dial.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      fireEnc(kIdx, e.deltaY < 0 ? 'cw' : 'ccw');
+    }, { passive: false });
+  });
+}
+
 function getPagesSnapshotHash() {
   if (!cfg || !cfg.pages) return '';
   try {
-    return JSON.stringify({ pages: cfg.pages, currentPage: cfg.currentPage });
+    return JSON.stringify({
+      pages: compactPagesForHistory(cfg.pages),
+      currentPage: cfg.currentPage,
+    });
   } catch (_) {
     return '';
   }
@@ -259,19 +401,18 @@ function updateUndoRedoUI() {
 }
 
 const _historyIconPool = new Map();
+const _historyIconReverse = new Map();
 
 function compactPagesForHistory(pages) {
   const cloned = JSON.parse(JSON.stringify(pages || []));
   for (const p of cloned) {
     for (const s of Object.values(p.buttons || {})) {
       if (s && typeof s.icon === 'string' && s.icon.length > 256) {
-        let refKey = null;
-        for (const [k, v] of _historyIconPool.entries()) {
-          if (v === s.icon) { refKey = k; break; }
-        }
+        let refKey = _historyIconReverse.get(s.icon);
         if (!refKey) {
           refKey = `__hist_icon_${_historyIconPool.size + 1}__`;
           _historyIconPool.set(refKey, s.icon);
+          _historyIconReverse.set(s.icon, refKey);
         }
         s.icon = refKey;
       }
@@ -939,39 +1080,45 @@ async function updateVolumeState(state) {
   }
 }
 
-function getActiveBadge(spec) {
+function computeDynamicGlyph(spec) {
+  if (!spec) return '';
+  let gl = glyphFor(spec.type);
+  if (spec.type === 'volume' || spec.type === 'audio') {
+    if (spec.action === 'up') gl = '🔊';
+    else if (spec.action === 'down') gl = '🔉';
+    else if (spec.action === 'mute') gl = (lastAudioState && lastAudioState.isMute) ? '🔇' : '🔊';
+    else if (spec.action === 'switch_device') gl = '🎧';
+    else if (spec.action === 'set') gl = '🎚️';
+  }
+  return gl;
+}
+
+function getActiveBadge(spec, keyPos = null) {
   if (!spec) return null;
 
-  // 修复：若显式开启了双形态独立动作与动态双态角标，优先展示双态角标，避免被默认音量角标覆盖
-  if (spec.toggleAction && spec.badgeToggle) {
-    const s1 = spec.badgeState1 || { text: '待机', bg: '#546e7a', color: '#ffffff' };
-    const s2 = spec.badgeState2 || { text: '运行中', bg: '#107c41', color: '#ffffff' };
-    const stateIdx = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
-    if (stateIdx === 1 && spec.toggleSyncMode === 'window' && spec._windowSubState === 'minimized') {
-      return { text: '后台', bg: '#0284c7', color: '#ffffff', state: 1, isToggle: true };
-    }
-    const sObj = stateIdx === 1 ? s2 : s1;
-    const text = String(sObj.text || '').trim();
-    if (text) {
-      return {
-        text,
-        bg: sObj.bg || (stateIdx === 1 ? '#107c41' : '#546e7a'),
-        color: sObj.color || '#ffffff',
-        state: stateIdx,
-        isToggle: true,
-      };
+  // 从单向 RuntimeStateStore 恢复可能因 config 重载而缺省的运行时状态
+  let activeState = spec._activeState;
+  let windowSubState = spec._windowSubState;
+  if (keyPos && keyPos.row !== undefined && keyPos.col !== undefined) {
+    const rt = getRuntimeCellState(curPage() && curPage().id, keyPos.row, keyPos.col);
+    if (rt) {
+      if (activeState === undefined) activeState = rt.activeState;
+      if (windowSubState === undefined) windowSubState = rt.windowSubState;
     }
   }
+  const stateIdx = (activeState !== undefined) ? activeState : (spec.badgeInitialState || 0);
 
-  // 专属声学动作与系统物理音频状态闭环联动
+  // 1. 专属声学静音/音量动作与系统物理音频状态闭环联动
   if (spec.type === 'volume' || spec.type === 'audio') {
     if (spec.action === 'mute') {
-      const isMute = lastAudioState ? lastAudioState.isMute : false;
+      const isMute = lastAudioState ? !!lastAudioState.isMute : false;
       const s1 = spec.badgeState1 || { text: '🔊', bg: '#107c41', color: '#ffffff' };
       const s2 = spec.badgeState2 || { text: '🔇', bg: '#e53935', color: '#ffffff' };
       const sObj = isMute ? s2 : s1;
+      const txt = String(sObj.text !== undefined ? sObj.text : (isMute ? '🔇' : '🔊')).trim();
+      if (!txt) return null;
       return {
-        text: sObj.text || (isMute ? '🔇' : '🔊'),
+        text: txt,
         bg: sObj.bg || (isMute ? '#e53935' : '#107c41'),
         color: sObj.color || '#ffffff',
         state: isMute ? 1 : 0,
@@ -980,7 +1127,7 @@ function getActiveBadge(spec) {
     }
     if ((spec.action === 'up' || spec.action === 'down' || spec.action === 'set') && !spec.badge && !spec.badgeToggle) {
       const vol = lastAudioState ? lastAudioState.volume : 50;
-      const isMute = lastAudioState ? lastAudioState.isMute : false;
+      const isMute = lastAudioState ? !!lastAudioState.isMute : false;
       return {
         text: isMute ? 'MUTE' : `${vol}%`,
         bg: isMute ? '#d32f2f' : '#1565c0',
@@ -991,30 +1138,35 @@ function getActiveBadge(spec) {
     }
   }
 
-  if (spec.badgeToggle) {
-    const s1 = spec.badgeState1 || { text: '待机', bg: '#546e7a', color: '#ffffff' };
-    const s2 = spec.badgeState2 || { text: '运行中', bg: '#107c41', color: '#ffffff' };
-    const stateIdx = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
-    if (stateIdx === 1 && spec.toggleSyncMode === 'window' && spec._windowSubState === 'minimized') {
+  // 2. 双态动态角标（兼容显式开启 badgeToggle 或已配置 badgeState1/badgeState2/badge2 的按键）
+  const hasToggleBadge = Boolean(spec.badgeToggle || spec.badgeState1 || spec.badgeState2 || spec.badge2);
+  if (hasToggleBadge) {
+    const s1 = spec.badgeState1 || { text: spec.badge || '待机', bg: spec.badgeBg || '#546e7a', color: '#ffffff' };
+    const s2 = spec.badgeState2 || { text: spec.badge2 || '运行中', bg: spec.color2 || '#107c41', color: '#ffffff' };
+    if (stateIdx === 1 && spec.toggleSyncMode === 'window' && (windowSubState === 'minimized' || windowSubState === 'background')) {
       return {
         text: '后台',
-        bg: '#0284c7',
+        bg: '#d97706',
         color: '#ffffff',
         state: 1,
         isToggle: true,
       };
     }
     const sObj = stateIdx === 1 ? s2 : s1;
-    const text = String(sObj.text || '').trim();
+    const text = String(sObj && sObj.text !== undefined ? sObj.text : '').trim();
+    // 关键修复：当双态角标的当前状态文字设为空字符串 ""（如“🟢 运行中 / 无”预设下的待机态）时，
+    // 必须直接返回 null（不显示角标），严禁向下穿透回退到静态 spec.badge！
     if (!text) return null;
     return {
       text,
-      bg: sObj.bg || (stateIdx === 1 ? '#107c41' : '#546e7a'),
-      color: sObj.color || '#ffffff',
+      bg: (sObj && sObj.bg) || (stateIdx === 1 ? '#107c41' : '#546e7a'),
+      color: (sObj && sObj.color) || '#ffffff',
       state: stateIdx,
       isToggle: true,
     };
   }
+
+  // 3. 静态单态角标
   const text = String(spec.badge || '').trim();
   if (!text) return null;
   return {
@@ -1023,6 +1175,44 @@ function getActiveBadge(spec) {
     color: spec.badgeColor || '#ffffff',
     state: 0,
     isToggle: false,
+  };
+}
+
+function computeRenderModel(spec, keyPos = null) {
+  if (!spec) return { empty: true, visualHash: 'empty' };
+  const badge = getActiveBadge(spec, keyPos);
+  const glyph = computeDynamicGlyph(spec);
+  const stateIdx = (spec._activeState !== undefined) ? spec._activeState : (spec.badgeInitialState || 0);
+  const winSub = spec._windowSubState || 'stopped';
+  const iconSig = spec.icon ? `${spec.icon.length}:${spec.icon.slice(0, 20)}:${spec.icon.slice(-16)}` : '';
+  const badgeSig = badge ? `${badge.text}|${badge.bg}|${badge.color}` : '';
+  const layersSig = Array.isArray(spec.widgetLayers) ? JSON.stringify(spec.widgetLayers) : '';
+  return {
+    empty: false,
+    spec,
+    badge,
+    glyph,
+    stateIdx,
+    winSub,
+    visualHash: [
+      spec.type || '',
+      spec.label || '',
+      spec.color || '',
+      spec.color2 || '',
+      spec.customColor ? 1 : 0,
+      spec.textColor || '',
+      spec.fontSize || 17,
+      spec.iconScale || 62,
+      spec.labelPos || 'bottom',
+      iconSig,
+      glyph,
+      badgeSig,
+      stateIdx,
+      winSub,
+      spec.widgetKind || '',
+      spec.pluginId || '',
+      layersSig,
+    ].join('§'),
   };
 }
 
@@ -1099,14 +1289,7 @@ async function paintKey(spec, size, keyPos) {
       ctx.drawImage(img, (size - w) / 2, iconTop + (iconBox - h) / 2, w, h);
     }
   } else if (spec.type && spec.type !== 'text') {
-    let gl = glyphFor(spec.type);
-    if (spec.type === 'volume' || spec.type === 'audio') {
-      if (spec.action === 'up') gl = '🔊';
-      else if (spec.action === 'down') gl = '🔉';
-      else if (spec.action === 'mute') gl = (lastAudioState && lastAudioState.isMute) ? '🔇' : '🔊';
-      else if (spec.action === 'switch_device') gl = '🎧';
-      else if (spec.action === 'set') gl = '🎚️';
-    }
+    const gl = computeDynamicGlyph(spec);
     ctx.fillStyle = fg;
     ctx.font = `${Math.round(iconBox * 0.72)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
@@ -1115,7 +1298,7 @@ async function paintKey(spec, size, keyPos) {
   }
 
   // 自定义角标徽章（静态徽章或动态双态 Toggle 徽章）
-  const activeBadge = getActiveBadge(spec);
+  const activeBadge = getActiveBadge(spec, keyPos);
   if (activeBadge && activeBadge.text) {
     const badgeText = activeBadge.text;
     ctx.save();
@@ -1234,7 +1417,7 @@ let offscreenWorker = null;
 let offscreenSeq = 1;
 const offscreenPending = new Map();
 let isWindowVisible = true;
-let hwMirrorEnabled = false;
+let hwMirrorEnabled = true;
 let cachedPluginSchemas = [];
 
 function ensureOffscreenWorker() {
@@ -1638,7 +1821,118 @@ function paintMetricStrip(spec, size, row, mode, stats) {
   return c;
 }
 
-const WIDGET_KINDS = ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
+const WIDGET_KINDS = ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin', 'composite'];
+
+const DEFAULT_COMPOSITE_LAYERS = [
+  { id: 'ly_bg', source: 'sparkline_gpu', slot: 'background', color: '#38bdf8', label: 'GPU 趋势波形' },
+  { id: 'ly_top', source: 'cpu_load', slot: 'top', color: '#4ade80', label: 'CPU' },
+  { id: 'ly_mid', source: 'gpu_temp', slot: 'middle', color: '#ffffff', label: 'GPU' },
+  { id: 'ly_bot', source: 'net_speed', slot: 'bottom', color: '#38bdf8', label: 'NET' },
+];
+
+function resolveCompositeLayerValue(source) {
+  const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 22, memPct: 30, history: [22, 26, 24, 30, 28, 25] };
+  const net = (lastTelemetry && lastTelemetry.net) || { rxText: '180 KB/s', txText: '40 KB/s', history: [110, 150, 130, 190, 175] };
+  const cpu = (lastSysStats && lastSysStats.cpu !== undefined) ? lastSysStats.cpu : 24;
+  const mem = (lastSysStats && lastSysStats.mem !== undefined) ? lastSysStats.mem : 48;
+  const vol = (lastAudioState && lastAudioState.volume !== undefined) ? lastAudioState.volume : 60;
+  const isMute = !!(lastAudioState && lastAudioState.isMute);
+  const d = new Date();
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+  switch (source) {
+    case 'cpu_load':
+      return { text: `CPU ${cpu}%`, big: `${cpu}%`, pct: cpu, history: (lastSysStats && lastSysStats.cpuHistory) || [18, 22, 25, 21, 28, 24] };
+    case 'gpu_temp':
+      return { text: `GPU ${gpu.temp || 46}°C (${gpu.load || 22}%)`, big: `${gpu.temp || 46}°C`, pct: gpu.load || 22, history: gpu.history || [24, 28, 26, 32, 30] };
+    case 'net_speed':
+      return { text: `↓${net.rxText || '180 KB/s'}`, big: `↓${net.rxText || '180K'}`, pct: 45, history: net.history || [120, 160, 140, 210, 180] };
+    case 'mem_usage':
+      return { text: `MEM ${mem}%`, big: `${mem}%`, pct: mem, history: (lastSysStats && lastSysStats.memHistory) || [48, 49, 50, 50, 51] };
+    case 'audio_vol':
+      return { text: isMute ? '🔇 MUTE' : `🔊 ${vol}%`, big: isMute ? 'MUTE' : `${vol}%`, pct: isMute ? 0 : vol, bars: [
+        { label: 'OUT', value: isMute ? 0 : vol, color: '#06b6d4' },
+        { label: 'PEAK', value: isMute ? 0 : Math.min(100, Math.round(vol * 0.78)), color: '#10b981' },
+      ] };
+    case 'audio_bars':
+      return { text: 'AUDIO METER', big: `${vol}%`, pct: vol, bars: [
+        { label: 'MAIN', value: isMute ? 0 : vol, color: '#06b6d4' },
+        { label: 'MIC', value: isMute ? 0 : 48, color: '#10b981' },
+        { label: 'APP', value: isMute ? 0 : Math.max(12, Math.round(vol * 0.82)), color: '#8b5cf6' },
+      ] };
+    case 'clock_time':
+      return { text: `🕒 ${hhmm}`, big: hhmm, pct: Math.round((d.getSeconds() / 60) * 100) };
+    case 'sparkline_cpu':
+      return { history: (lastSysStats && lastSysStats.cpuHistory) || [18, 24, 21, 29, 25, 22] };
+    case 'sparkline_net':
+      return { history: net.history || [110, 150, 130, 190, 175] };
+    case 'sparkline_gpu':
+    default:
+      return { history: gpu.history || [24, 28, 26, 32, 30, 35] };
+  }
+}
+
+function paintCompositeWidgetCanvas(ctx, spec, size, fullW, fullH, scale) {
+  const layers = (Array.isArray(spec.widgetLayers) && spec.widgetLayers.length > 0)
+    ? spec.widgetLayers
+    : DEFAULT_COMPOSITE_LAYERS;
+
+  // 1. 先绘制背景波形层 (background)
+  for (const ly of layers) {
+    if (!ly || ly.slot !== 'background') continue;
+    const d = resolveCompositeLayerValue(ly.source);
+    if (Array.isArray(d.history) && d.history.length > 1) {
+      const col = ly.color || '#38bdf8';
+      drawSparklineChart(ctx, d.history, 4, Math.round(fullH * 0.42), fullW - 8, Math.round(fullH * 0.52), col, col + '33');
+    }
+  }
+
+  // 2. 绘制柱状图层或进度条层
+  for (const ly of layers) {
+    if (!ly) continue;
+    const d = resolveCompositeLayerValue(ly.source);
+    if (ly.slot === 'bars' && Array.isArray(d.bars)) {
+      const bx = fullW > size ? (size + Math.round(6 * scale)) : Math.round(7 * scale);
+      const bw = fullW > size ? (fullW - bx - Math.round(7 * scale)) : (fullW - Math.round(14 * scale));
+      drawBarsChart(ctx, d.bars, bx, Math.round(22 * scale), bw, fullH - Math.round(30 * scale), scale * 0.9);
+    } else if (ly.slot === 'progress') {
+      const px = Math.round(7 * scale), py = fullH - Math.round(8 * scale), pw = fullW - Math.round(14 * scale), ph = Math.max(3, Math.round(3.5 * scale));
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.fillRect(px, py, pw, ph);
+      ctx.fillStyle = ly.color || '#10b981';
+      ctx.fillRect(px, py, Math.round((pw * Math.max(4, Math.min(100, d.pct || 0))) / 100), ph);
+    }
+  }
+
+  // 3. 绘制顶部 / 中部 / 底部指标文字层
+  const textMaxW = (fullW > size && layers.some(l => l.slot === 'bars')) ? (size - Math.round(12 * scale)) : (fullW - Math.round(12 * scale));
+  const centerX = (fullW > size && layers.some(l => l.slot === 'bars')) ? (size / 2) : (fullW / 2);
+
+  for (const ly of layers) {
+    if (!ly) continue;
+    const d = resolveCompositeLayerValue(ly.source);
+    const prefix = ly.label ? `${ly.label} ` : '';
+    if (ly.slot === 'top') {
+      ctx.fillStyle = ly.color || '#4ade80';
+      ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      drawClampedLine(ctx, d.text || (prefix + d.big), centerX, Math.round(6 * scale), textMaxW, 'center');
+    } else if (ly.slot === 'middle') {
+      ctx.fillStyle = ly.color || '#ffffff';
+      ctx.font = `bold ${Math.round(17 * scale)}px "Segoe UI", Consolas, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      drawClampedLine(ctx, prefix ? `${prefix}${d.big}` : (d.big || d.text), centerX, Math.round(fullH * 0.44), textMaxW, 'center');
+    } else if (ly.slot === 'bottom') {
+      ctx.fillStyle = ly.color || '#94a3b8';
+      ctx.font = `bold ${Math.round(9 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      drawClampedLine(ctx, d.text || d.big, centerX, fullH - Math.round(9 * scale), textMaxW, 'center');
+    }
+  }
+}
 
 function resolvePluginData(spec) {
   const rawId = String((spec && spec.pluginId) || 'uptime_greeting').trim();
@@ -1882,6 +2176,11 @@ function paintWideWidgetMasterCanvas(spec, size, spanCols, keyPos) {
     return master;
   }
 
+  if (kind === 'composite' || (Array.isArray(spec.widgetLayers) && spec.widgetLayers.length > 0)) {
+    drawWideBg('#0f172a', '#070b12', 'rgba(56, 189, 248, 0.35)');
+    paintCompositeWidgetCanvas(ctx, spec, size, fullW, fullH, scale);
+    return master;
+  }
   if (kind === 'gpu' || kind === 'net') {
     const isGpu = kind === 'gpu';
     const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 48, load: 22, memPct: 30, history: [24, 28, 32, 30, 35, 28, 24] };
@@ -2024,7 +2323,12 @@ function paintWidgetCanvas(spec, size, keyPos) {
   const geomScale = size / 80;
   ctx.save();
 
-  if (kind === 'gpu') {
+  if (kind === 'composite' || (Array.isArray(spec.widgetLayers) && spec.widgetLayers.length > 0)) {
+    drawBg('#0f172a', '#070b12');
+    paintCompositeWidgetCanvas(ctx, spec, size, size, size, geomScale);
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.30)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  } else if (kind === 'gpu') {
     drawBg('#0f291e', '#07140e');
     const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 22, memPct: 30, history: [22, 26, 24, 30, 28, 25] };
     if (Array.isArray(gpu.history) && gpu.history.length > 1) {
@@ -2476,32 +2780,7 @@ function buildGrid() {
       cell.dataset.row = row;
       cell.dataset.col = col;
 
-      // 支持在桌面预览长按 380ms 直接触发按键的长按副动作 (Long Press Action) 或在上下文副屏双击触发快捷动作
-      let pressHoldTimer = null;
-      let pressHoldTriggered = false;
-      cell.addEventListener('mousedown', (e) => {
-        if (e.button !== 0 || col === 5) return;
-        pressHoldTriggered = false;
-        const sm = findSpanMasterCell(pageButtons(), row, col);
-        const effCol = sm ? sm.masterCol : col;
-        const sp = pageButtons()[`${row},${effCol}`];
-        if (sp && sp.longPressEnabled && sp.longAction) {
-          const lpMs = (cfg && Number(cfg.longPressMs)) || 360;
-          pressHoldTimer = setTimeout(async () => {
-            pressHoldTriggered = true;
-            cell.classList.add('flash');
-            setTimeout(() => cell.classList.remove('flash'), 220);
-            if (!DEMO && api.triggerPhysicalKey) {
-              await api.triggerPhysicalKey(row, effCol, true);
-            } else {
-              toast(`⚡ 已触发长按副动作：${sp.longAction.label || sp.longAction.target || sp.longAction.type}`);
-            }
-          }, lpMs);
-        }
-      });
-      const clearHold = () => { if (pressHoldTimer) { clearTimeout(pressHoldTimer); pressHoldTimer = null; } };
-      cell.addEventListener('mouseup', clearHold);
-      cell.addEventListener('mouseleave', clearHold);
+      // 已彻底移除 360ms 长按副动作定时器，杜绝鼠标按住拖拽或停留时的误触
 
       cell.addEventListener('dblclick', async () => {
         if (col === 5 && activeRendererContextBar && activeRendererContextBar.strips) {
@@ -2514,7 +2793,6 @@ function buildGrid() {
       });
 
       cell.addEventListener('click', async (e) => {
-        if (pressHoldTriggered) { pressHoldTriggered = false; return; }
         hideContextMenu();
         if (styleBrushSpec && col < 5 && !isBackCell(row, col)) {
           await applyStyleBrushToCell(row, col);
@@ -2601,6 +2879,7 @@ function buildGrid() {
       grid.appendChild(cell);
     }
   }
+  applyHardwareModelToUI(cfg && cfg.hardwareModel);
   refreshGrid();
 }
 
@@ -2626,7 +2905,11 @@ async function handleDrop(row, col, e) {
     if (!entry) return;
     pushHistory(`放置库按键「${entry.name}」`);
     await stopKeyMacroIfNeeded(row, col);
-    pageButtons()[row + ',' + col] = clone(entry.spec);
+    const clonedSpec = clone(entry.spec);
+    if (clonedSpec && Number(clonedSpec.spanCols) > 1) {
+      clonedSpec.spanCols = Math.max(1, Math.min(KEY_COLS - col, Number(clonedSpec.spanCols) || 1));
+    }
+    pageButtons()[row + ',' + col] = clonedSpec;
     await saveConfig();
     select(row, col);
     await pushKey(row, col);
@@ -2648,6 +2931,14 @@ async function swapCells(a, b) {
   const kb = b.row + ',' + b.col;
   const va = pageButtons()[ka];
   const vb = pageButtons()[kb];
+  if (vb && Number(vb.spanCols) > 1) vb.spanCols = Math.max(1, Math.min(KEY_COLS - a.col, Number(vb.spanCols) || 1));
+  if (va && Number(va.spanCols) > 1) va.spanCols = Math.max(1, Math.min(KEY_COLS - b.col, Number(va.spanCols) || 1));
+  // 交换按键时同步迁移 RuntimeStateStore 状态
+  const pid = curPage() && curPage().id;
+  const rtA = getRuntimeCellState(pid, a.row, a.col);
+  const rtB = getRuntimeCellState(pid, b.row, b.col);
+  if (rtB) setRuntimeCellState(pid, a.row, a.col, rtB);
+  if (rtA) setRuntimeCellState(pid, b.row, b.col, rtA);
   if (vb) pageButtons()[ka] = vb; else delete pageButtons()[ka];
   if (va) pageButtons()[kb] = va; else delete pageButtons()[kb];
   await saveConfig();
@@ -2732,8 +3023,191 @@ function refreshStripCells(stats) {
   });
 }
 
+function renderSingleCellDOM(cell, row, col, page, grad) {
+  if (!cell) return;
+  const isSel = !!selected && selected.row === row && selected.col === col;
+  const isMulti = col < 5 && multiSelected.size > 1 && multiSelected.has(`${row},${col}`);
+  cell.classList.toggle('selected', isSel);
+  cell.classList.toggle('multi-selected', isMulti);
+  cell.classList.remove('has-canvas');
+  cell.innerHTML = '';
+  cell.style.background = '';
+  cell.style.color = '';
+
+  // 副屏 (Col 5)
+  if (col === 5) {
+    renderStripCellContent(cell, row, page, grad);
+    return;
+  }
+
+  // 子页自动返回键
+  if (isBackCell(row, col)) {
+    cell.classList.remove('filled', 'pos-top', 'pos-center');
+    cell.classList.add('back');
+    cell.style.background = '#37474f';
+    cell.style.color = '#ffffff';
+    cell.appendChild(el('span', 'glyph', '←'));
+    cell.appendChild(el('span', 'cap', '返回'));
+    cell.appendChild(el('span', 'badge', '自动'));
+    return;
+  }
+  cell.classList.remove('back');
+
+  cell.classList.remove('span-master', 'span-slave', 'span-left', 'span-mid', 'span-right');
+  const spanMaster = findSpanMasterCell(pageButtons(), row, col);
+  if (spanMaster) {
+    cell.classList.add('filled', 'has-canvas', 'span-slave');
+    cell.classList.add(spanMaster.spanOffset === spanMaster.spanCols - 1 ? 'span-right' : 'span-mid');
+    const wc = paintWidgetCanvas(spanMaster.spec, 96, {
+      row,
+      col,
+      masterCol: spanMaster.masterCol,
+      spanCols: spanMaster.spanCols,
+      spanOffset: spanMaster.spanOffset,
+    });
+    wc.className = 'cell-canvas-preview';
+    cell.appendChild(wc);
+    cell.appendChild(el('span', 'tag', `r${row}c${col}`));
+    cell.appendChild(el('span', 'badge', `🔗 ${spanMaster.spanOffset + 1}/${spanMaster.spanCols}`));
+    return;
+  }
+
+  const spec = pageButtons()[row + ',' + col];
+  const isGrad = grad && grad.enabled && (!spec || !spec.customColor);
+
+  cell.classList.toggle('filled', !!spec);
+  cell.classList.toggle('grad-cell', !!isGrad);
+  const pos = (spec && spec.labelPos) || 'bottom';
+  cell.classList.toggle('pos-top', !!spec && pos === 'top');
+  cell.classList.toggle('pos-center', !!spec && pos === 'center');
+
+  if (isGrad) {
+    cell.style.backgroundImage = `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`;
+    cell.style.backgroundSize = '600% 300%';
+    cell.style.backgroundPosition = `${col * 20}% ${row * 50}%`;
+    cell.style.backgroundColor = '';
+  } else if (spec) {
+    cell.style.backgroundImage = spec.color2
+      ? `linear-gradient(180deg, ${spec.color || '#37474f'}, ${spec.color2})`
+      : '';
+    cell.style.backgroundSize = '';
+    cell.style.backgroundPosition = '';
+    cell.style.backgroundColor = spec.color || '#37474f';
+  } else {
+    cell.style.backgroundImage = '';
+    cell.style.backgroundSize = '';
+    cell.style.backgroundPosition = '';
+    cell.style.backgroundColor = '';
+  }
+
+  if (!spec) {
+    cell.appendChild(el('span', 'plus', '＋'));
+    return;
+  }
+
+  if (spec.type === 'widget') {
+    const spanCols = Math.max(1, Math.min(KEY_COLS - col, Number(spec.spanCols) || 1));
+    cell.classList.add('has-canvas');
+    if (spanCols > 1) cell.classList.add('span-master', 'span-left');
+    const wc = paintWidgetCanvas(spec, 96, { row, col, masterCol: col, spanCols, spanOffset: 0 });
+    wc.className = 'cell-canvas-preview';
+    cell.appendChild(wc);
+    cell.appendChild(el('span', 'tag', `r${row}c${col}`));
+    cell.appendChild(el('span', 'badge', spanCols > 1 ? `🔗 ${spanCols}联屏` : '组件'));
+    const x = document.createElement('button');
+    x.className = 'clear';
+    x.textContent = '×';
+    x.onclick = (e) => { e.stopPropagation(); removeKey(row, col); };
+    cell.appendChild(x);
+    return;
+  }
+
+  const renderModel = computeRenderModel(spec, { row, col });
+
+  if (spec.textColor) {
+    cell.style.color = spec.textColor;
+  } else if (isGrad) {
+    cell.style.color = sampleGradientContrast(grad, row, col);
+  } else {
+    cell.style.color = contrast(spec.color);
+  }
+
+  const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
+  const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
+
+  if (spec.icon) {
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    img.src = spec.icon;
+    const thumbPx = Math.max(20, Math.min(76, Math.round(78 * (iconScalePct / 100))));
+    img.style.width = `${thumbPx}px`;
+    img.style.height = `${thumbPx}px`;
+    cell.appendChild(img);
+  } else {
+    const glSpan = el('span', 'glyph', renderModel.glyph);
+    const glPx = Math.max(14, Math.min(44, Math.round(24 * (iconScalePct / 62))));
+    glSpan.style.fontSize = `${glPx}px`;
+    cell.appendChild(glSpan);
+  }
+
+  // 右上角状态角标（严格与硬件 paintKey 同源）
+  const activeBadge = renderModel.badge;
+  if (activeBadge && activeBadge.text) {
+    const bEl = el('span', 'badge-overlay', activeBadge.text);
+    if (activeBadge.bg) bEl.style.backgroundColor = activeBadge.bg;
+    if (activeBadge.color) bEl.style.color = activeBadge.color;
+    if (activeBadge.isToggle) bEl.classList.add('badge-toggle');
+    cell.appendChild(bEl);
+  }
+
+  const isLoopRunning = activeLoopKeyIds.has(`${row},${col}`) ||
+    (page && activeLoopKeyIds.has(`${page.id}:${row},${col}`));
+  cell.classList.toggle('loop-running', !!isLoopRunning);
+  if (isLoopRunning) {
+    const runTag = el('span', 'badge-overlay', '⟳ RUN');
+    runTag.style.backgroundColor = '#00c853';
+    runTag.style.color = '#ffffff';
+    runTag.style.left = '4px';
+    runTag.style.right = 'auto';
+    cell.appendChild(runTag);
+  }
+
+  const capEl = el('span', 'cap', spec.label || '');
+  const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
+  capEl.style.fontSize = `${capPx}px`;
+  if (!spec.label) capEl.style.display = 'none';
+  cell.appendChild(capEl);
+  cell.appendChild(el('span', 'tag', `r${row}c${col}`));
+  if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
+
+  if (hwMirrorEnabled) {
+    cell.classList.add('has-canvas');
+    paintKey(spec, 96, { row, col }).then((hwCnv) => {
+      if (!hwCnv || !cell.isConnected) return;
+      hwCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
+      hwCnv.style.position = 'absolute';
+      hwCnv.style.inset = '0';
+      hwCnv.style.width = '100%';
+      hwCnv.style.height = '100%';
+      hwCnv.style.borderRadius = 'inherit';
+      hwCnv.style.pointerEvents = 'none';
+      hwCnv.style.zIndex = '1';
+      const oldCnv = cell.querySelector('.cell-hw-mirror-canvas');
+      if (oldCnv) oldCnv.remove();
+      cell.insertBefore(hwCnv, cell.firstChild);
+    }).catch(() => {});
+  }
+
+  const x = document.createElement('button');
+  x.className = 'clear';
+  x.textContent = '×';
+  x.onclick = (e) => { e.stopPropagation(); removeKey(row, col); };
+  cell.appendChild(x);
+}
+
 function refreshGrid() {
   const page = curPage();
+  if (!page) return;
   const grad = page.gradient;
   const msHint = $('multiSelectHint');
   if (msHint) {
@@ -2742,206 +3216,38 @@ function refreshGrid() {
       msHint.textContent = `已多选 ${multiSelected.size} 格 · 右侧可批量修改样式`;
     }
   }
+  applyHardwareModelToUI(cfg && cfg.hardwareModel);
 
   document.querySelectorAll('#grid .cell').forEach((cell) => {
     const row = +cell.dataset.row, col = +cell.dataset.col;
-    const isSel = !!selected && selected.row === row && selected.col === col;
-    const isMulti = col < 5 && multiSelected.size > 1 && multiSelected.has(`${row},${col}`);
-    cell.classList.toggle('selected', isSel);
-    cell.classList.toggle('multi-selected', isMulti);
-    cell.classList.remove('has-canvas');
-    cell.innerHTML = '';
-    cell.style.background = '';
-    cell.style.color = '';
-
-    // 副屏 (Col 5)
-    if (col === 5) {
-      renderStripCellContent(cell, row, page, grad);
-      return;
-    }
-
-    // 子页自动返回键
-    if (isBackCell(row, col)) {
-      cell.classList.remove('filled', 'pos-top', 'pos-center');
-      cell.classList.add('back');
-      cell.style.background = '#37474f';
-      cell.style.color = '#ffffff';
-      cell.appendChild(el('span', 'glyph', '←'));
-      cell.appendChild(el('span', 'cap', '返回'));
-      cell.appendChild(el('span', 'badge', '自动'));
-      return;
-    }
-    cell.classList.remove('back');
-
-    cell.classList.remove('span-master', 'span-slave', 'span-left', 'span-mid', 'span-right');
-    const spanMaster = findSpanMasterCell(pageButtons(), row, col);
-    if (spanMaster) {
-      cell.classList.add('filled', 'has-canvas', 'span-slave');
-      cell.classList.add(spanMaster.spanOffset === spanMaster.spanCols - 1 ? 'span-right' : 'span-mid');
-      const wc = paintWidgetCanvas(spanMaster.spec, 96, {
-        row,
-        col,
-        masterCol: spanMaster.masterCol,
-        spanCols: spanMaster.spanCols,
-        spanOffset: spanMaster.spanOffset,
-      });
-      wc.className = 'cell-canvas-preview';
-      cell.appendChild(wc);
-      cell.appendChild(el('span', 'tag', `r${row}c${col}`));
-      cell.appendChild(el('span', 'badge', `🔗 ${spanMaster.spanOffset + 1}/${spanMaster.spanCols}`));
-      return;
-    }
-
-    const spec = pageButtons()[row + ',' + col];
-    const isGrad = grad && grad.enabled && (!spec || !spec.customColor);
-
-    cell.classList.toggle('filled', !!spec);
-    cell.classList.toggle('grad-cell', !!isGrad);
-    const pos = (spec && spec.labelPos) || 'bottom';
-    cell.classList.toggle('pos-top', !!spec && pos === 'top');
-    cell.classList.toggle('pos-center', !!spec && pos === 'center');
-
-    if (isGrad) {
-      cell.style.backgroundImage = `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`;
-      cell.style.backgroundSize = '600% 300%';
-      cell.style.backgroundPosition = `${col * 20}% ${row * 50}%`;
-      cell.style.backgroundColor = '';
-    } else if (spec) {
-      cell.style.backgroundImage = spec.color2
-        ? `linear-gradient(180deg, ${spec.color || '#37474f'}, ${spec.color2})`
-        : '';
-      cell.style.backgroundSize = '';
-      cell.style.backgroundPosition = '';
-      cell.style.backgroundColor = spec.color || '#37474f';
-    } else {
-      cell.style.backgroundImage = '';
-      cell.style.backgroundSize = '';
-      cell.style.backgroundPosition = '';
-      cell.style.backgroundColor = '';
-    }
-
-    if (!spec) {
-      cell.appendChild(el('span', 'plus', '＋'));
-      return;
-    }
-
-    if (spec.type === 'widget') {
-      const spanCols = Math.max(1, Math.min(KEY_COLS - col, Number(spec.spanCols) || 1));
-      cell.classList.add('has-canvas');
-      if (spanCols > 1) cell.classList.add('span-master', 'span-left');
-      const wc = paintWidgetCanvas(spec, 96, { row, col, masterCol: col, spanCols, spanOffset: 0 });
-      wc.className = 'cell-canvas-preview';
-      cell.appendChild(wc);
-      cell.appendChild(el('span', 'tag', `r${row}c${col}`));
-      cell.appendChild(el('span', 'badge', spanCols > 1 ? `🔗 ${spanCols}联屏` : '组件'));
-      const x = document.createElement('button');
-      x.className = 'clear';
-      x.textContent = '×';
-      x.onclick = (e) => { e.stopPropagation(); removeKey(row, col); };
-      cell.appendChild(x);
-      return;
-    }
-
-    if (spec.textColor) {
-      cell.style.color = spec.textColor;
-    } else if (isGrad) {
-      cell.style.color = sampleGradientContrast(grad, row, col);
-    } else {
-      cell.style.color = contrast(spec.color);
-    }
-
-    const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
-    const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
-
-    // 图标或默认类型字形 (支持实时 WYSIWYG 缩放预览)
-    if (spec.icon) {
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.src = spec.icon;
-      const thumbPx = Math.max(20, Math.min(76, Math.round(78 * (iconScalePct / 100))));
-      img.style.width = `${thumbPx}px`;
-      img.style.height = `${thumbPx}px`;
-      cell.appendChild(img);
-    } else {
-      const glSpan = el('span', 'glyph', glyphFor(spec.type));
-      const glPx = Math.max(14, Math.min(44, Math.round(24 * (iconScalePct / 62))));
-      glSpan.style.fontSize = `${glPx}px`;
-      cell.appendChild(glSpan);
-    }
-
-    // 角标微标 (Badge Overlay，静态或动态双态)
-    const activeBadge = getActiveBadge(spec);
-    if (activeBadge && activeBadge.text) {
-      const bEl = el('span', 'badge-overlay', activeBadge.text);
-      if (activeBadge.bg) bEl.style.backgroundColor = activeBadge.bg;
-      if (activeBadge.color) bEl.style.color = activeBadge.color;
-      if (activeBadge.isToggle) bEl.classList.add('badge-toggle');
-      cell.appendChild(bEl);
-    }
-
-    const isLoopRunning = activeLoopKeyIds.has(`${row},${col}`) ||
-      (page && activeLoopKeyIds.has(`${page.id}:${row},${col}`));
-    cell.classList.toggle('loop-running', !!isLoopRunning);
-    if (isLoopRunning) {
-      const runTag = el('span', 'badge-overlay', '⟳ RUN');
-      runTag.style.backgroundColor = '#00c853';
-      runTag.style.color = '#ffffff';
-      runTag.style.left = '4px';
-      runTag.style.right = 'auto';
-      cell.appendChild(runTag);
-    }
-
-    if (spec.longPressEnabled && spec.longAction) {
-      const lpBadge = el('span', 'long-badge', `⏱ ${spec.longBadge || TYPE_SHORT[spec.longAction.type] || '长按'}`);
-      cell.appendChild(lpBadge);
-    }
-
-    const capEl = el('span', 'cap', spec.label || '');
-    const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
-    capEl.style.fontSize = `${capPx}px`;
-    if (!spec.label) capEl.style.display = 'none';
-    cell.appendChild(capEl);
-    cell.appendChild(el('span', 'tag', `r${row}c${col}`));
-    if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
-
-    if (hwMirrorEnabled) {
-      cell.classList.add('has-canvas');
-      paintKey(spec, 96, { row, col }).then((hwCnv) => {
-        if (!hwCnv || !cell.isConnected) return;
-        hwCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
-        hwCnv.style.position = 'absolute';
-        hwCnv.style.inset = '0';
-        hwCnv.style.width = '100%';
-        hwCnv.style.height = '100%';
-        hwCnv.style.borderRadius = 'inherit';
-        hwCnv.style.pointerEvents = 'none';
-        hwCnv.style.zIndex = '1';
-        const oldCnv = cell.querySelector('.cell-hw-mirror-canvas');
-        if (oldCnv) oldCnv.remove();
-        cell.insertBefore(hwCnv, cell.firstChild);
-      }).catch(() => {});
-    }
-
-    const x = document.createElement('button');
-    x.className = 'clear';
-    x.textContent = '×';
-    x.onclick = (e) => { e.stopPropagation(); removeKey(row, col); };
-    cell.appendChild(x);
+    renderSingleCellDOM(cell, row, col, page, grad);
   });
 }
 
 function refreshSingleCell(row, col) {
+  if (!cfg) return;
   if (col === 5) {
     refreshStripCells(lastSysStats);
     return;
   }
-  // 局部精准刷新目标格子（若为跨格组件则刷新该行），避免滑块拖拽时销毁全部 18 个 DOM 节点
+  const page = curPage();
+  if (!page) return;
   const sp = pageButtons()[`${row},${col}`];
-  if (sp && Number(sp.spanCols) > 1) {
-    refreshGrid();
+  const sm = findSpanMasterCell(pageButtons(), row, col);
+  if ((sp && Number(sp.spanCols) > 1) || sm) {
+    // 仅刷新该行的 5 个按键格，仍避免重绘其它行和副屏
+    for (let c = 0; c < KEY_COLS; c++) {
+      const rowCell = document.querySelector(`#grid .cell[data-row="${row}"][data-col="${c}"]`);
+      if (rowCell) renderSingleCellDOM(rowCell, row, c, page, page.gradient);
+    }
     return;
   }
-  refreshGrid();
+  const targetCell = document.querySelector(`#grid .cell[data-row="${row}"][data-col="${col}"]`);
+  if (targetCell) {
+    renderSingleCellDOM(targetCell, row, col, page, page.gradient);
+  } else {
+    refreshGrid();
+  }
 }
 
 function el(tag, cls, text) {
@@ -3241,25 +3547,19 @@ function saveConfig() {
 }
 
 function syncSelectedToggleBadge() {
-  if (selected && selected.col !== 5) {
-    const s = pageButtons()[selected.row + ',' + selected.col];
-    if (s && s.badgeToggle) {
-      const ab = getActiveBadge(s);
-      if (ab) {
-        s.badge = ab.text;
-        s.badgeBg = ab.bg;
-        s.badgeColor = ab.color;
-      }
-    }
-  }
+  // v0.10.5 修复：当开启双态角标 (badgeToggle) 时，绝不将当前激活态角标回写污染静态 s.badge 字段，
+  // 从而彻底解决“运行中 / 无”预设在编辑后待机态仍然残留“运行中”角标的 Bug！
 }
 
 let _debouncedSaveTimer = null;
 let _debouncedRepaintTimer = null;
 
 function scheduleDebouncedCommit(repaint = true) {
-  syncSelectedToggleBadge();
-  refreshGrid();
+  if (selected && multiSelected.size <= 1) {
+    refreshSingleCell(selected.row, selected.col);
+  } else {
+    refreshGrid();
+  }
   clearTimeout(_debouncedSaveTimer);
   _debouncedSaveTimer = setTimeout(() => {
     saveConfig();
@@ -3294,35 +3594,36 @@ let currentInspTab = 'action';
 function updateInspTabs() {
   const tabAction = $('tabAction');
   const tabStyle = $('tabStyle');
+  const tabBadge = $('tabBadge');
   if (tabAction && tabStyle) {
-    if (currentInspTab === 'action') {
-      tabAction.classList.add('active');
-      tabStyle.classList.remove('active');
-    } else {
-      tabAction.classList.remove('active');
-      tabStyle.classList.add('active');
-    }
+    tabAction.classList.toggle('active', currentInspTab === 'action');
+    tabStyle.classList.toggle('active', currentInspTab === 'style');
+    if (tabBadge) tabBadge.classList.toggle('active', currentInspTab === 'badge');
   }
   const secAction = document.querySelector('#inspector details[data-sec="action"]');
   const secStyle = document.querySelector('#inspector details[data-sec="look"]');
-  if (secAction && secStyle) {
-    if (currentInspTab === 'action') {
-      secAction.style.display = 'block';
-      secAction.open = true;
-      secStyle.style.display = 'none';
-    } else {
-      secAction.style.display = 'none';
-      secStyle.style.display = 'block';
-      secStyle.open = true;
-    }
+  const secBadge = document.querySelector('#inspector details[data-sec="badge"]');
+  if (secAction) {
+    secAction.style.display = currentInspTab === 'action' ? 'block' : 'none';
+    if (currentInspTab === 'action') secAction.open = true;
+  }
+  if (secStyle) {
+    secStyle.style.display = currentInspTab === 'style' ? 'block' : 'none';
+    if (currentInspTab === 'style') secStyle.open = true;
+  }
+  if (secBadge) {
+    secBadge.style.display = currentInspTab === 'badge' ? 'block' : 'none';
+    if (currentInspTab === 'badge') secBadge.open = true;
   }
 }
 
 function initInspTabs() {
   const tabAction = $('tabAction');
   const tabStyle = $('tabStyle');
+  const tabBadge = $('tabBadge');
   if (tabAction) tabAction.onclick = () => { currentInspTab = 'action'; updateInspTabs(); };
   if (tabStyle) tabStyle.onclick = () => { currentInspTab = 'style'; updateInspTabs(); };
+  if (tabBadge) tabBadge.onclick = () => { currentInspTab = 'badge'; updateInspTabs(); };
 }
 
 // ------------------------------------------------------------- 宏编辑器辅助逻辑
@@ -4858,6 +5159,7 @@ const WIDGET_KIND_INFOS = [
   { id: 'media_now', icon: '🎵', name: 'SMTC 音乐与桌面歌词', desc: '系统媒体会话、黑胶封面与同步歌词', color: '#2e1065', act: 'media_play_pause' },
   { id: 'obs', icon: '🔴', name: 'OBS 推流/录制监控', desc: '实时监控 OBS Studio 在线与直播态', color: '#1e293b', act: 'refresh' },
   { id: 'plugin', icon: '🧩', name: '可视化画布插件', desc: '支持折线图/推子柱图/SVG 的插件市场', color: '#0f172a', act: 'plugin_click' },
+  { id: 'composite', icon: '🎨', name: '自由图层画布 (Studio)', desc: '多图层叠加 CPU/GPU/网速/电平/波形与独立刷新率', color: '#0f172a', act: 'refresh' },
 ];
 
 function openPluginMarketModal(onSelectPlugin) {
@@ -5009,6 +5311,37 @@ function wirePluginSchemaBox(rootEl, pluginId, targetSpec, idPrefix = 'i-plgcfg-
   });
 }
 
+const WIDGET_FREQ_OPTIONS = [
+  { ms: 180, label: '⚡ 180ms 极速电平' },
+  { ms: 500, label: '🚀 500ms 高帧监控' },
+  { ms: 1000, label: '⏱️ 1.0s 秒级实时' },
+  { ms: 2500, label: '⚖️ 2.5s 标准均衡' },
+  { ms: 10000, label: '🌱 10s 节能低刷' },
+  { ms: 60000, label: '☁️ 60s 慢速轮询' },
+];
+
+const STUDIO_LAYER_SOURCES = [
+  { id: 'cpu_load', label: '🧠 CPU 负载 (%)' },
+  { id: 'gpu_temp', label: '🎮 GPU 温度/核心' },
+  { id: 'net_speed', label: '🌐 实时下行网速' },
+  { id: 'mem_usage', label: '💾 内存占用 (%)' },
+  { id: 'audio_vol', label: '🔊 主音量/静音' },
+  { id: 'audio_bars', label: '🎚️ 多路声卡峰值电平条' },
+  { id: 'clock_time', label: '🕒 实时时钟 (HH:mm)' },
+  { id: 'sparkline_gpu', label: '📈 GPU 历史趋势波形' },
+  { id: 'sparkline_cpu', label: '📈 CPU 历史趋势波形' },
+  { id: 'sparkline_net', label: '📈 网速吞吐趋势波形' },
+];
+
+const STUDIO_LAYER_SLOTS = [
+  { id: 'top', label: '⬆️ 顶部标题栏' },
+  { id: 'middle', label: '🎯 中央主数值' },
+  { id: 'bottom', label: '⬇️ 底部副指标' },
+  { id: 'background', label: '🌊 背景折线图' },
+  { id: 'bars', label: '📊 多路电平柱图' },
+  { id: 'progress', label: '📏 底部进度条' },
+];
+
 function renderWidgetEditorHtml(spec) {
   const kind = spec.widgetKind || 'gpu';
   const act = spec.action || (kind === 'pomodoro' ? 'pomodoro_toggle' : (kind === 'media_now' ? 'media_play_pause' : (kind === 'plugin' ? 'plugin_click' : 'refresh')));
@@ -5019,6 +5352,11 @@ function renderWidgetEditorHtml(spec) {
     ? lastTelemetry.plugins
     : BUILTIN_MARKET_PLUGINS;
   const curPluginId = String(spec.pluginId || 'uptime_greeting').replace(/-/g, '_');
+  const curFreq = Number(spec.refreshIntervalMs) || (kind === 'plugin' && curPluginId === 'audio_fader_meter' ? 180 : 2500);
+  const hasCustomLayers = (kind === 'composite') || (Array.isArray(spec.widgetLayers) && spec.widgetLayers.length > 0);
+  const layers = (Array.isArray(spec.widgetLayers) && spec.widgetLayers.length > 0)
+    ? spec.widgetLayers
+    : (kind === 'composite' ? JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS)) : []);
 
   return `
     <div class="widget-editor-card">
@@ -5034,14 +5372,53 @@ function renderWidgetEditorHtml(spec) {
         </div>
       </div>
 
-      <div class="row" style="margin-top: 6px; margin-bottom: 0;">
+      <div class="row" style="margin-top: 8px; margin-bottom: 0;">
+        <label>⏱️ 独立刷新频率调度 (Per-Widget Refresh Rate)</label>
+        <div class="ws-freq-pills" id="i-widget-freq-group">
+          ${WIDGET_FREQ_OPTIONS.map(f => `
+            <button type="button" class="ws-freq-pill ${curFreq === f.ms ? 'active' : ''}" data-freq="${f.ms}">${f.label}</button>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 8px; margin-bottom: 0;">
         <label>📏 跨格联合画布宽度 (Multi-Key Span 宽屏模式)</label>
         <div class="color-capsule-group" id="i-widget-span-group">
           <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 1 ? 'active' : ''}" data-span="1">1×1 标准单格</button>
           <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 2 ? 'active' : ''}" data-span="2" ${maxSpan < 2 ? 'disabled title="右侧剩余格子不足 2 格"' : ''}>2×1 双联宽屏</button>
           <button type="button" class="color-capsule-pill widget-span-pill ${curSpan === 3 ? 'active' : ''}" data-span="3" ${maxSpan < 3 ? 'disabled title="右侧剩余格子不足 3 格"' : ''}>3×1 三联超宽</button>
         </div>
-        ${curSpan > 1 ? `<div style="font-size:11px; color:var(--accent); margin-top:4px;">🔗 已开启 ${curSpan}×1 跨格宽屏联屏（自动展开实时趋势折线图 / 双行桌面歌词）</div>` : ''}
+        ${curSpan > 1 ? `<div style="font-size:11px; color:var(--accent); margin-top:4px;">🔗 已开启 ${curSpan}×1 跨格宽屏联屏（自动展开实时趋势折线图 / 多路电平条）</div>` : ''}
+      </div>
+
+      <!-- Widget Studio 可视化多图层编排器 -->
+      <div class="widget-studio-box">
+        <div class="ws-head">
+          <span class="ws-title">🎨 可视化小组件图层编排工坊 (Widget Studio)</span>
+          <div style="display:flex; gap:4px;">
+            <button type="button" class="ghost tiny" id="i-ws-add-layer">＋ 添加图层</button>
+            ${hasCustomLayers ? `<button type="button" class="ghost tiny danger" id="i-ws-reset-layers">重置</button>` : ''}
+          </div>
+        </div>
+        ${hasCustomLayers ? `
+          <div class="ws-layer-list" id="i-ws-layer-list">
+            ${layers.map((ly, idx) => `
+              <div class="ws-layer-row" data-layer-idx="${idx}">
+                <select class="ws-layer-source" data-idx="${idx}" style="flex:1.2;">
+                  ${STUDIO_LAYER_SOURCES.map(src => `<option value="${src.id}" ${ly.source === src.id ? 'selected' : ''}>${src.label}</option>`).join('')}
+                </select>
+                <select class="ws-layer-slot" data-idx="${idx}" style="flex:1;">
+                  ${STUDIO_LAYER_SLOTS.map(sl => `<option value="${sl.id}" ${ly.slot === sl.id ? 'selected' : ''}>${sl.label}</option>`).join('')}
+                </select>
+                <input type="color" class="ws-layer-color" data-idx="${idx}" value="${ly.color || '#38bdf8'}" style="width:24px; height:22px; padding:0; border:none; border-radius:4px; cursor:pointer;" title="图层主色调" />
+                <button type="button" class="ws-layer-btn ws-layer-up" data-idx="${idx}" title="上移图层">↑</button>
+                <button type="button" class="ws-layer-btn ws-layer-del" data-idx="${idx}" title="删除图层">✕</button>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <div style="font-size:11px; color:var(--muted);">💡 点击「＋ 添加图层」或选择「自由图层画布」即可在同一按键上自由组合 CPU、GPU、网速、音频峰值与趋势折线。</div>
+        `}
       </div>
 
       <div class="row" style="margin-top: 6px; margin-bottom: 0;">
@@ -5095,8 +5472,123 @@ function wireWidgetEditor(box, spec) {
       spec.widgetKind = kind;
       spec.action = info.act;
       if (kind === 'plugin' && !spec.pluginId) spec.pluginId = 'uptime_greeting';
+      if (kind === 'composite' && (!Array.isArray(spec.widgetLayers) || !spec.widgetLayers.length)) {
+        spec.widgetLayers = JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS));
+      } else if (kind !== 'composite') {
+        delete spec.widgetLayers;
+      }
       spec.label = info.name.split(' ')[0];
       spec.color = info.color;
+      await commit(true);
+      renderInspector();
+    };
+  });
+
+  box.querySelectorAll('.ws-freq-pill').forEach((btn) => {
+    btn.onclick = async () => {
+      const ms = Math.max(150, Number(btn.dataset.freq) || 2500);
+      spec.refreshIntervalMs = ms;
+      await commit(false);
+      renderInspector();
+      toast(`⏱️ 已将该组件独立刷新周期设为 ${ms < 1000 ? ms + 'ms' : (ms / 1000) + 's'}`);
+    };
+  });
+
+  const ensureLayers = () => {
+    if (!Array.isArray(spec.widgetLayers) || !spec.widgetLayers.length) {
+      spec.widgetLayers = JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS));
+    }
+    spec.widgetKind = 'composite';
+  };
+
+  const btnAddLayer = box.querySelector('#i-ws-add-layer');
+  if (btnAddLayer) {
+    btnAddLayer.onclick = async () => {
+      pushHistory('添加小组件编排图层');
+      if (!Array.isArray(spec.widgetLayers) || !spec.widgetLayers.length) {
+        spec.widgetLayers = JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS));
+      } else {
+        spec.widgetLayers.push({
+          id: 'ly_' + Date.now().toString(36),
+          source: 'audio_vol',
+          slot: 'bottom',
+          color: '#38bdf8',
+          label: 'VOL',
+        });
+      }
+      spec.widgetKind = 'composite';
+      await commit(true);
+      renderInspector();
+    };
+  }
+
+  const btnResetLayers = box.querySelector('#i-ws-reset-layers');
+  if (btnResetLayers) {
+    btnResetLayers.onclick = async () => {
+      pushHistory('重置小组件图层');
+      delete spec.widgetLayers;
+      if (spec.widgetKind === 'composite') {
+        spec.widgetLayers = JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS));
+      }
+      await commit(true);
+      renderInspector();
+    };
+  }
+
+  box.querySelectorAll('.ws-layer-source').forEach((sel) => {
+    sel.onchange = async () => {
+      ensureLayers();
+      const idx = Number(sel.dataset.idx);
+      if (spec.widgetLayers[idx]) {
+        spec.widgetLayers[idx].source = sel.value;
+        await commit(true);
+        renderInspector();
+      }
+    };
+  });
+
+  box.querySelectorAll('.ws-layer-slot').forEach((sel) => {
+    sel.onchange = async () => {
+      ensureLayers();
+      const idx = Number(sel.dataset.idx);
+      if (spec.widgetLayers[idx]) {
+        spec.widgetLayers[idx].slot = sel.value;
+        await commit(true);
+        renderInspector();
+      }
+    };
+  });
+
+  box.querySelectorAll('.ws-layer-color').forEach((inp) => {
+    inp.onchange = async () => {
+      ensureLayers();
+      const idx = Number(inp.dataset.idx);
+      if (spec.widgetLayers[idx]) {
+        spec.widgetLayers[idx].color = inp.value;
+        await commit(true);
+      }
+    };
+  });
+
+  box.querySelectorAll('.ws-layer-up').forEach((btn) => {
+    btn.onclick = async () => {
+      ensureLayers();
+      const idx = Number(btn.dataset.idx);
+      if (idx > 0 && spec.widgetLayers[idx]) {
+        const tmp = spec.widgetLayers[idx - 1];
+        spec.widgetLayers[idx - 1] = spec.widgetLayers[idx];
+        spec.widgetLayers[idx] = tmp;
+        await commit(true);
+        renderInspector();
+      }
+    };
+  });
+
+  box.querySelectorAll('.ws-layer-del').forEach((btn) => {
+    btn.onclick = async () => {
+      ensureLayers();
+      const idx = Number(btn.dataset.idx);
+      spec.widgetLayers.splice(idx, 1);
       await commit(true);
       renderInspector();
     };
@@ -5867,68 +6359,11 @@ function renderInspector() {
           </div>
         `}
 
-        <!-- v0.10.0 新增：物理按键短按/长按 (360ms) 双触发配置卡片 -->
-        <div class="long-press-card">
-          <div class="long-press-head">
-            <div class="long-press-title">
-              <span>⏱️ 长按副动作 (Long Press)</span>
-              <span class="long-press-pill">${(cfg && cfg.longPressMs) || 360}ms</span>
-            </div>
-            <label class="switch" title="开启后：短按抬起触发上方主动作，按住超过阈值触发下方长按副动作">
-              <input type="checkbox" id="i-long-press-enable" ${spec.longPressEnabled ? 'checked' : ''} />
-              <span class="switch-slider"></span>
-            </label>
-          </div>
-          ${spec.longPressEnabled ? `
-            <div class="long-press-body" style="margin-top:8px;">
-              <div class="btnrow" style="margin-bottom:6px; flex-wrap:wrap;">
-                <button type="button" class="ghost tiny" id="i-lp-preset-kill" title="短按启动/切换窗口，长按强制结束该程序">⚡ 设为主程序强退</button>
-                <button type="button" class="ghost tiny" id="i-lp-preset-audio" title="短按调节音量/静音，长按一键切换耳机/音箱">🎧 设为切换声卡</button>
-                <button type="button" class="ghost tiny" id="i-lp-preset-home" title="长按一键返回主页面">🏠 设为返回主页</button>
-                <button type="button" class="primary tiny" id="i-lp-test-btn" style="margin-left:auto;">▶ 测试长按</button>
               </div>
-              <div class="row">
-                <label style="font-size:11px;">长按触发动作类型</label>
-                <select id="i-long-action-type">
-                  ${Object.keys(TYPE_NAMES).map((x) => {
-                    const lpT = (spec.longAction && spec.longAction.type) || 'command';
-                    return `<option value="${x}" ${lpT === x ? 'selected' : ''}>${TYPE_NAMES[x]}</option>`;
-                  }).join('')}
-                </select>
-              </div>
-              ${(spec.longAction && (spec.longAction.type === 'volume' || spec.longAction.type === 'audio' || spec.longAction.type === 'app_volume')) ? `
-                <div id="i-long-volume-container">
-                  ${renderVolumeEditorHtml(spec.longAction, 'i-long-vol')}
-                </div>
-              ` : (spec.longAction && spec.longAction.type === 'media') ? `
-                <div id="i-long-media-container">
-                  ${renderMediaEditorHtml(spec.longAction, 'i-long-media')}
-                </div>
-              ` : (spec.longAction && spec.longAction.type === 'plugin_action') ? `
-                <div id="i-long-plgact-container">
-                  ${renderPluginActionEditorHtml(spec.longAction, 'i-long-plgact')}
-                </div>
-              ` : (spec.longAction && spec.longAction.type === 'hotkey') ? `
-                <div class="row" style="margin-top:6px;">
-                  <label style="font-size:11px;">长按快捷键组合</label>
-                  ${renderHotkeyBuilderHtml('i-long-action-hk', (spec.longAction && (spec.longAction.hotkey || spec.longAction.target)) || '')}
-                </div>
-              ` : `
-                <div class="row" style="margin-top:6px;">
-                  <label style="font-size:11px;">长按执行目标 / 命令 / 参数</label>
-                  <input id="i-long-action-target" value="${escapeAttr((spec.longAction && spec.longAction.target) || '')}" placeholder="例如：taskkill /F /IM app.exe 或快捷键" />
-                </div>
-              `}
-            </div>
-          ` : `
-            <p class="muted" style="margin:4px 0 0; font-size:11px;">支持短按执行动作 A、长按 ${(cfg && cfg.longPressMs) || 360}ms 执行动作 B（如短按静音/长按切声卡，短按置顶软件/长按强退软件）。</p>
-          `}
-        </div>
-      </div>
     </details>
 
     <details class="sec" data-sec="look" ${secOpen.look ? 'open' : ''}>
-      <summary>外观、图标与角标</summary>
+      <summary>外观与图标</summary>
       <div class="body">
         <div class="row" style="margin-bottom: 12px;">
           <label>显示名称（支持自动换行或回车折行）</label>
@@ -5938,7 +6373,7 @@ function renderInspector() {
           <div class="icon-preview-wrap">
             ${spec.icon
               ? `<img src="${spec.icon}" class="icon-preview-img" />`
-              : `<span class="icon-preview-glyph">${glyphFor(spec.type) || '无'}</span>`}
+              : `<span class="icon-preview-glyph">${computeDynamicGlyph(spec) || '无'}</span>`}
           </div>
           <div class="icon-btn-group">
             <button class="ghost" id="i-openiconpicker">🎨 矢量图标库…</button>
@@ -5948,75 +6383,6 @@ function renderInspector() {
             ${spec.icon ? `<button class="ghost tiny danger" id="i-clr">清除图标</button>` : ''}
           </div>
         </div>
-
-        <div class="row" style="margin-top: 10px;">
-          <label>角标 / 状态微标（右上角微标，支持静态或双态切换）</label>
-          <div class="color-capsule-group" style="margin-bottom: 8px;">
-            <button type="button" id="i-badgemode-none" class="color-capsule-pill ${(!spec.badgeToggle && !spec.badge) ? 'active' : ''}">🚫 无角标</button>
-            <button type="button" id="i-badgemode-static" class="color-capsule-pill ${(!spec.badgeToggle && spec.badge) ? 'active' : ''}">📌 静态角标</button>
-            <button type="button" id="i-badgemode-toggle" class="color-capsule-pill ${spec.badgeToggle ? 'active' : ''}">⚡ 动态双态</button>
-          </div>
-
-          <!-- 静态角标区 -->
-          <div id="i-badgesec-static" class="badge-ctrl-row" style="${spec.badgeToggle || !spec.badge ? 'display: none;' : ''}">
-            <div class="badge-presets" id="i-badgepresets">
-              <button class="badge-pill ${!spec.badge ? 'active' : ''}" data-val="">无</button>
-              <button class="badge-pill ${spec.badge === '✓' ? 'active' : ''}" data-val="✓">✓</button>
-              <button class="badge-pill ${spec.badge === '✕' ? 'active' : ''}" data-val="✕">✕</button>
-              <button class="badge-pill ${spec.badge === '➔' ? 'active' : ''}" data-val="➔">➔</button>
-              <button class="badge-pill ${spec.badge === '1' ? 'active' : ''}" data-val="1">1</button>
-              <button class="badge-pill ${spec.badge === '2' ? 'active' : ''}" data-val="2">2</button>
-              <button class="badge-pill ${spec.badge === 'A' ? 'active' : ''}" data-val="A">A</button>
-              <button class="badge-pill ${spec.badge === '●' ? 'active' : ''}" data-val="●">●</button>
-            </div>
-            <div class="badge-custom-row">
-              <input id="i-badgetext" class="badge-input" maxlength="4" placeholder="自定义" value="${escapeAttr(spec.badge || '')}" />
-              <input id="i-badgebg" type="color" class="badge-color" title="微标背景色" value="${spec.badgeBg || '#e53935'}" />
-            </div>
-          </div>
-
-          <!-- 动态双态角标区 -->
-          <div id="i-badgesec-toggle" class="badge-toggle-container" style="${!spec.badgeToggle ? 'display: none;' : ''}">
-            <div class="badge-toggle-presets" id="i-toggle-presets">
-              ${BADGE_TOGGLE_PRESETS.map((p, idx) => `
-                <button type="button" class="badge-toggle-preset-pill" data-idx="${idx}">${p.name}</button>
-              `).join('')}
-            </div>
-            <div class="badge-toggle-grid">
-              <div class="badge-toggle-card ${curBadgeState === 0 ? 'active-state' : ''}">
-                <div class="badge-toggle-card-head">
-                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState1 && spec.badgeState1.bg) || '#107c41'};"></span>
-                  <span class="badge-toggle-title">状态 1 (默认态)</span>
-                  ${curBadgeState === 0 ? '<span class="badge-current-tag">当前激活</span>' : ''}
-                </div>
-                <div class="badge-toggle-card-inputs">
-                  <input id="i-toggle-s1-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState1 && spec.badgeState1.text !== undefined) ? spec.badgeState1.text : '待机')}" />
-                  <input id="i-toggle-s1-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState1 && spec.badgeState1.bg) || '#546e7a'}" />
-                </div>
-              </div>
-              <div class="badge-toggle-card ${curBadgeState === 1 ? 'active-state' : ''}">
-                <div class="badge-toggle-card-head">
-                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState2 && spec.badgeState2.bg) || '#e53935'};"></span>
-                  <span class="badge-toggle-title">状态 2 (触发态)</span>
-                  ${curBadgeState === 1 ? '<span class="badge-current-tag">当前激活</span>' : ''}
-                </div>
-                <div class="badge-toggle-card-inputs">
-                  <input id="i-toggle-s2-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState2 && spec.badgeState2.text !== undefined) ? spec.badgeState2.text : '运行中')}" />
-                  <input id="i-toggle-s2-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState2 && spec.badgeState2.bg) || '#107c41'}" />
-                </div>
-              </div>
-            </div>
-            <div class="badge-toggle-actions">
-              <button type="button" class="badge-swap-btn" id="i-swap-badges" title="一键互换形态 1 与形态 2 的角标文字及色彩">
-                ⇅ 互换两态角标
-              </button>
-              <button type="button" class="ghost tiny badge-try-btn" id="i-toggle-try-btn">
-                🔄 试切状态预览（当前：${(curBadge && curBadge.text) || (curBadgeState === 0 ? ((spec.badgeState1 && spec.badgeState1.text) || 'ON') : ((spec.badgeState2 && spec.badgeState2.text) || 'OFF'))}）
-              </button>
-            </div>
-          </div>
-        </div>
-
         ${curPage().gradient && curPage().gradient.enabled ? `
           <div class="row" style="margin: 12px 0 6px;">
             <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">底色模式</label>
@@ -6064,6 +6430,89 @@ function renderInspector() {
             ${[['bottom', '底部'], ['center', '居中'], ['top', '顶部']].map(([v, n]) =>
               `<option value="${v}" ${(spec.labelPos || 'bottom') === v ? 'selected' : ''}>${n}</option>`).join('')}
           </select>
+        </div>
+      </div>
+    </details>
+
+    <details class="sec" data-sec="badge" open>
+      <summary>状态与角标</summary>
+      <div class="body">
+        ${spec.type === 'app' ? `
+          <div class="smart-badge-banner">
+            <div class="smart-badge-banner-info">
+              <span class="smart-badge-banner-title">🟢 智能进程/窗口状态角标</span>
+              <span class="smart-badge-banner-desc">自动感知程序运行与前后台状态，硬件与驱动 100% 实时同源同步</span>
+            </div>
+            <button type="button" class="primary tiny" id="i-smart-app-badge-btn">${spec.badgeToggle ? '✓ 已开启同步' : '⚡ 一键开启'}</button>
+          </div>
+        ` : ''}
+
+        <div class="row" style="margin-top: 4px;">
+          <label>角标提示模式（右上角胶囊微标）</label>
+          <div class="color-capsule-group" style="margin-bottom: 8px;">
+            <button type="button" id="i-badgemode-none" class="color-capsule-pill ${(!spec.badgeToggle && !spec.badge) ? 'active' : ''}">🚫 无角标</button>
+            <button type="button" id="i-badgemode-static" class="color-capsule-pill ${(!spec.badgeToggle && spec.badge) ? 'active' : ''}">📌 静态角标</button>
+            <button type="button" id="i-badgemode-toggle" class="color-capsule-pill ${spec.badgeToggle ? 'active' : ''}">⚡ 动态双态</button>
+          </div>
+
+          <!-- 静态角标区 -->
+          <div id="i-badgesec-static" class="badge-ctrl-row" style="${spec.badgeToggle || !spec.badge ? 'display: none;' : ''}">
+            <div class="badge-presets" id="i-badgepresets">
+              <button class="badge-pill ${!spec.badge ? 'active' : ''}" data-val="">无</button>
+              <button class="badge-pill ${spec.badge === '✓' ? 'active' : ''}" data-val="✓">✓</button>
+              <button class="badge-pill ${spec.badge === '✕' ? 'active' : ''}" data-val="✕">✕</button>
+              <button class="badge-pill ${spec.badge === '➔' ? 'active' : ''}" data-val="➔">➔</button>
+              <button class="badge-pill ${spec.badge === '1' ? 'active' : ''}" data-val="1">1</button>
+              <button class="badge-pill ${spec.badge === '2' ? 'active' : ''}" data-val="2">2</button>
+              <button class="badge-pill ${spec.badge === 'A' ? 'active' : ''}" data-val="A">A</button>
+              <button class="badge-pill ${spec.badge === '●' ? 'active' : ''}" data-val="●">●</button>
+            </div>
+            <div class="badge-custom-row">
+              <input id="i-badgetext" class="badge-input" maxlength="4" placeholder="自定义" value="${escapeAttr(spec.badge || '')}" />
+              <input id="i-badgebg" type="color" class="badge-color" title="微标背景色" value="${spec.badgeBg || '#e53935'}" />
+            </div>
+          </div>
+
+          <!-- 动态双态角标区 -->
+          <div id="i-badgesec-toggle" class="badge-toggle-container" style="${!spec.badgeToggle ? 'display: none;' : ''}">
+            <div class="badge-toggle-presets" id="i-toggle-presets">
+              ${BADGE_TOGGLE_PRESETS.map((p, idx) => `
+                <button type="button" class="badge-toggle-preset-pill" data-idx="${idx}">${p.name}</button>
+              `).join('')}
+            </div>
+            <div class="badge-toggle-grid">
+              <div class="badge-toggle-card ${curBadgeState === 0 ? 'active-state' : ''}">
+                <div class="badge-toggle-card-head">
+                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState1 && spec.badgeState1.bg) || '#546e7a'};"></span>
+                  <span class="badge-toggle-title">状态 1 (默认/待机)</span>
+                  ${curBadgeState === 0 ? '<span class="badge-current-tag">当前激活</span>' : ''}
+                </div>
+                <div class="badge-toggle-card-inputs">
+                  <input id="i-toggle-s1-text" class="badge-input" maxlength="6" placeholder="留空则无角标" value="${escapeAttr((spec.badgeState1 && spec.badgeState1.text !== undefined) ? spec.badgeState1.text : '待机')}" />
+                  <input id="i-toggle-s1-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState1 && spec.badgeState1.bg) || '#546e7a'}" />
+                </div>
+              </div>
+              <div class="badge-toggle-card ${curBadgeState === 1 ? 'active-state' : ''}">
+                <div class="badge-toggle-card-head">
+                  <span class="badge-toggle-dot" style="background: ${(spec.badgeState2 && spec.badgeState2.bg) || '#107c41'};"></span>
+                  <span class="badge-toggle-title">状态 2 (运行/激活)</span>
+                  ${curBadgeState === 1 ? '<span class="badge-current-tag">当前激活</span>' : ''}
+                </div>
+                <div class="badge-toggle-card-inputs">
+                  <input id="i-toggle-s2-text" class="badge-input" maxlength="6" placeholder="文字" value="${escapeAttr((spec.badgeState2 && spec.badgeState2.text !== undefined) ? spec.badgeState2.text : '运行中')}" />
+                  <input id="i-toggle-s2-bg" type="color" class="badge-color" title="背景色" value="${(spec.badgeState2 && spec.badgeState2.bg) || '#107c41'}" />
+                </div>
+              </div>
+            </div>
+            <div class="badge-toggle-actions">
+              <button type="button" class="badge-swap-btn" id="i-swap-badges" title="一键互换形态 1 与形态 2 的角标文字及色彩">
+                ⇅ 互换两态角标
+              </button>
+              <button type="button" class="ghost tiny badge-try-btn" id="i-toggle-try-btn">
+                🔄 试切状态预览（当前：${(curBadge && curBadge.text) || '无角标'}）
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </details>
@@ -6262,15 +6711,6 @@ function renderInspector() {
       if (act2MacroBox) wireMacroEditor(act2MacroBox, spec.action2);
     }
   }
-  if (spec.longPressEnabled && spec.longAction) {
-    if (spec.longAction.type === 'volume' || spec.longAction.type === 'audio' || spec.longAction.type === 'app_volume') {
-      wireVolumeEditor(box, spec.longAction, 'i-long-vol', true);
-    } else if (spec.longAction.type === 'media') {
-      wireMediaEditor(box, spec.longAction, 'i-long-media', true);
-    } else if (spec.longAction.type === 'plugin_action') {
-      wirePluginActionEditor(box, spec.longAction, 'i-long-plgact');
-    }
-  }
 
   // 双形态分段视图切换
   box.querySelectorAll('[data-dual-view]').forEach((tabBtn) => {
@@ -6321,99 +6761,24 @@ function renderInspector() {
     };
   }
 
-  // 长按副动作 (Long Press) 绑定
-  const chkLongPress = $('i-long-press-enable');
-  if (chkLongPress) {
-    chkLongPress.onchange = async () => {
-      spec.longPressEnabled = chkLongPress.checked;
-      if (spec.longPressEnabled && !spec.longAction) {
-        if (spec.type === 'volume' || spec.type === 'audio' || spec.type === 'app_volume') {
-          spec.longAction = { type: 'volume', action: 'switch_device', target: '', label: '切声卡' };
-        } else if (spec.type === 'app' && spec.target) {
-          const proc = spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
-          spec.longAction = { type: 'command', target: proc ? `taskkill /F /IM ${proc}.exe` : 'Alt+F4', label: '强退' };
-        } else {
-          spec.longAction = { type: 'page', mode: 'home', label: '回主页' };
-        }
+  // 一键开启智能进程/窗口状态角标
+  const btnSmartAppBadge = $('i-smart-app-badge-btn');
+  if (btnSmartAppBadge) {
+    btnSmartAppBadge.onclick = async () => {
+      pushHistory('一键配置智能进程状态角标');
+      spec.toggleAction = true;
+      spec.badgeToggle = true;
+      spec.toggleSyncMode = spec.toggleSyncMode || 'window';
+      const proc = (spec.watchProcess || (spec.target ? spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '')) || '';
+      if (proc) spec.watchProcess = proc;
+      if (!spec.action2) {
+        spec.action2 = { type: 'window_toggle', target: proc, watchProcess: proc, args: '' };
       }
+      spec.badgeState1 = spec.badgeState1 || { text: '', bg: '#546e7a', color: '#ffffff' };
+      spec.badgeState2 = spec.badgeState2 || { text: '运行中', bg: '#107c41', color: '#ffffff' };
       await commit(true);
       renderInspector();
-    };
-  }
-  const selLongType = $('i-long-action-type');
-  if (selLongType) {
-    selLongType.onchange = async () => {
-      if (!spec.longAction) spec.longAction = {};
-      const nt = selLongType.value;
-      spec.longAction.type = nt;
-      if (nt === 'volume') { spec.longAction.action = 'switch_device'; spec.longAction.step = 5; }
-      else if (nt === 'app_volume') { spec.longAction.action = 'app_mute'; spec.longAction.appTarget = '@foreground'; }
-      else if (nt === 'media') { spec.longAction.cmd = 'next'; spec.longAction.target = 'next'; }
-      else if (nt === 'plugin_action') { spec.longAction.pluginId = 'obs_studio'; spec.longAction.action = 'toggle_record'; }
-      else if (nt === 'page') { spec.longAction.mode = 'home'; spec.longAction.target = 'home'; }
-      await commit(true);
-      renderInspector();
-    };
-  }
-  const iptLongTarget = $('i-long-action-target');
-  if (iptLongTarget) {
-    iptLongTarget.onchange = async () => {
-      if (!spec.longAction) spec.longAction = { type: 'command' };
-      spec.longAction.target = iptLongTarget.value.trim();
-      await commit(true);
-    };
-  }
-  const iptLongHk = $('i-long-action-hk');
-  if (iptLongHk) {
-    bindHotkeyBuilder(box, 'i-long-action-hk', async (val) => {
-      if (!spec.longAction) spec.longAction = {};
-      spec.longAction.type = 'hotkey';
-      spec.longAction.hotkey = val;
-      spec.longAction.target = val;
-      await commit(true);
-    });
-  }
-  const btnLpKill = $('i-lp-preset-kill');
-  if (btnLpKill) {
-    btnLpKill.onclick = async () => {
-      const proc = (spec.watchProcess || (spec.target ? spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '')) || 'app';
-      spec.longAction = { type: 'command', target: `taskkill /F /IM ${proc}.exe`, label: '强退' };
-      spec.longBadge = 'KILL';
-      await commit(true);
-      renderInspector();
-      toast(`⚡ 已设长按副动作为强制结束 ${proc}.exe`);
-    };
-  }
-  const btnLpAudio = $('i-lp-preset-audio');
-  if (btnLpAudio) {
-    btnLpAudio.onclick = async () => {
-      spec.longAction = { type: 'volume', action: 'switch_device', target: '', label: '切声卡' };
-      spec.longBadge = 'AUDIO';
-      await commit(true);
-      renderInspector();
-      toast('🎧 已设长按副动作为一键切换输出声卡');
-    };
-  }
-  const btnLpHome = $('i-lp-preset-home');
-  if (btnLpHome) {
-    btnLpHome.onclick = async () => {
-      spec.longAction = { type: 'page', mode: 'home', target: 'home', label: '回主页' };
-      spec.longBadge = 'HOME';
-      await commit(true);
-      renderInspector();
-      toast('🏠 已设长按副动作为返回主页面');
-    };
-  }
-  const btnLpTest = $('i-lp-test-btn');
-  if (btnLpTest) {
-    btnLpTest.onclick = async () => {
-      if (!spec.longAction) return;
-      if (!DEMO && api.triggerPhysicalKey && selected) {
-        await api.triggerPhysicalKey(selected.row, selected.col, true);
-      } else if (!DEMO && api.actionRun) {
-        await api.actionRun(spec.longAction);
-      }
-      toast('⚡ 已测试执行长按副动作');
+      toast('🟢 已开启智能进程运行状态角标同步');
     };
   }
 
@@ -6556,6 +6921,7 @@ function renderInspector() {
     tryBtn.onclick = async () => {
       const cur = spec._activeState !== undefined ? spec._activeState : (spec.badgeInitialState || 0);
       spec._activeState = (cur === 1 ? 0 : 1);
+      if (selected) setRuntimeCellState(curPage() && curPage().id, selected.row, selected.col, { activeState: spec._activeState });
       refreshGrid();
       await pushKey(selected.row, selected.col);
       renderInspector();
@@ -8001,28 +8367,18 @@ function updateLkmSwatch(previewState) {
     sw.appendChild(glyph);
   }
 
-  // 角标覆盖展示
-  if (currentLibModalSpec.badgeToggle) {
-    const b = isState2 ? (currentLibModalSpec.badgeState2 || { text: 'OFF', bg: '#e53935' })
-                        : (currentLibModalSpec.badgeState1 || { text: 'ON', bg: '#107c41' });
-    if (b && b.text) {
-      const badgeEl = document.createElement('span');
-      badgeEl.className = 'badge-overlay badge-toggle';
-      badgeEl.style.position = 'absolute';
-      badgeEl.style.top = '3px';
-      badgeEl.style.right = '3px';
-      badgeEl.style.background = b.bg || '#107c41';
-      badgeEl.textContent = b.text;
-      sw.appendChild(badgeEl);
-    }
-  } else if (currentLibModalSpec.badge) {
+  // 角标覆盖展示（复用统一的 getActiveBadge 纯函数）
+  const previewSpec = Object.assign({}, currentLibModalSpec, { _activeState: isState2 ? 1 : 0 });
+  const activeB = getActiveBadge(previewSpec);
+  if (activeB && activeB.text) {
     const badgeEl = document.createElement('span');
-    badgeEl.className = 'badge-overlay';
+    badgeEl.className = 'badge-overlay' + (activeB.isToggle ? ' badge-toggle' : '');
     badgeEl.style.position = 'absolute';
     badgeEl.style.top = '3px';
     badgeEl.style.right = '3px';
-    badgeEl.style.background = currentLibModalSpec.badgeBg || '#e53935';
-    badgeEl.textContent = currentLibModalSpec.badge;
+    badgeEl.style.background = activeB.bg || '#107c41';
+    badgeEl.style.color = activeB.color || '#ffffff';
+    badgeEl.textContent = activeB.text;
     sw.appendChild(badgeEl);
   }
 
@@ -8935,12 +9291,14 @@ async function persistAll() {
 async function goToPage(id) {
   if (!id || id === cfg.currentPage || !pageById(id)) return;
   cfg.currentPage = id;
+  syncRuntimeStoreToConfig(cfg);
   selected = null;
   multiSelected.clear();
   if (!DEMO && typeof api !== 'undefined' && api.pageManualSwitch) {
     api.pageManualSwitch(id).catch(() => {});
   }
   await persistAll();
+  triggerGridTransition();
 }
 
 function renderPageTabs() {
@@ -10472,23 +10830,29 @@ function bindShell() {
     });
   }
 
-  const lpInput = $('prefLongPressMs');
-  const lpVal = $('prefLongPressVal');
-  if (lpInput) {
-    lpInput.value = cfg.longPressMs || 360;
-    if (lpVal) lpVal.textContent = cfg.longPressMs || 360;
-    lpInput.addEventListener('input', (e) => {
-      const v = +e.target.value;
-      if (lpVal) lpVal.textContent = v;
-      cfg.longPressMs = v;
-      scheduleDebouncedCommit(false);
-    });
-    lpInput.addEventListener('change', async () => {
+  const hwModelSel = $('hardwareModelSelect');
+  if (hwModelSel) {
+    hwModelSel.value = cfg.hardwareModel || 'akp153';
+    hwModelSel.addEventListener('change', async (e) => {
+      const modelId = e.target.value || 'akp153';
+      cfg.hardwareModel = modelId;
+      applyHardwareModelToUI(modelId);
       if (!DEMO) {
         await saveConfig();
-        if (api.deviceSetLongPressMs) await api.deviceSetLongPressMs(cfg.longPressMs);
+        if (api.hardwareSetModel) await api.hardwareSetModel(modelId);
       }
-      toast(`⏱️ 物理按键长按触发阈值已设为 ${cfg.longPressMs}ms`);
+      toast(`📟 硬件配置模型已切换为：${hwModelSel.options[hwModelSel.selectedIndex].text}`);
+    });
+  }
+
+  const transSel = $('transitionStyleSelect');
+  if (transSel) {
+    transSel.value = cfg.transitionStyle || 'slide-left';
+    transSel.addEventListener('change', async (e) => {
+      cfg.transitionStyle = e.target.value || 'slide-left';
+      triggerGridTransition(cfg.transitionStyle);
+      if (!DEMO) await saveConfig();
+      toast(`✨ 页面切换过渡动效已设为：${transSel.options[transSel.selectedIndex].text}`);
     });
   }
 
@@ -11558,9 +11922,13 @@ function bindDevice() {
       clearTimeout(cell._flash);
       cell._flash = setTimeout(() => cell.classList.remove('flash'), 240);
     }
-    // 硬件动效帧缓冲引擎：按下瞬间推送 2 帧微缩回弹动效 (90% -> 100%)
-    if (!DEMO && cfg && cfg.keyPressAnim !== false && k && k.col < 5 && k.phase === 'down') {
-      triggerHardwarePressBounce(k.row, k.col).catch(() => {});
+    // 关键修复：当按键标记了 skipBounce（双态按键/动态角标/静音切换/切页键）时，
+    // 跳过异步 2 帧旧状态回弹动画，防止回弹动画第 2 帧在 67ms 后把新切换的硬件角标覆盖回旧状态！
+    if (!DEMO && cfg && cfg.keyPressAnim !== false && k && !k.skipBounce && k.col < 5 && k.phase === 'down') {
+      const sp = pageButtons()[`${k.row},${k.col}`];
+      if (!sp || (!sp.toggleAction && !sp.badgeToggle && !(sp.type === 'volume' && sp.action === 'mute'))) {
+        triggerHardwarePressBounce(k.row, k.col).catch(() => {});
+      }
     }
   });
   api.on('key:unconfigured', (k) => flashUnconfigured(k.row, k.col));
@@ -11570,6 +11938,11 @@ function bindDevice() {
   const onKeyStateMsg = async ({ pageId, row, col, activeState, windowSubState }) => {
     if (!cfg || !cfg.pages) return;
     const p = (pageId && cfg.pages.find((x) => x.id === pageId)) || curPage();
+    const targetPid = (p && p.id) || pageId || (curPage() && curPage().id);
+    setRuntimeCellState(targetPid, row, col, {
+      activeState,
+      windowSubState: windowSubState !== undefined ? windowSubState : 'stopped',
+    });
     if (p && p.buttons) {
       const s = p.buttons[`${row},${col}`];
       if (s) {
@@ -11579,8 +11952,11 @@ function bindDevice() {
     }
     const current = curPage();
     if (!pageId || (current && current.id === pageId) || (p && current && p.id === current.id)) {
-      refreshGrid();
-      await pushKey(row, col);
+      if (!DEMO && api.deviceStopAnim) {
+        await api.deviceStopAnim({ row, col }).catch(() => {});
+      }
+      refreshSingleCell(row, col);
+      await pushKey(row, col, true);
       if (selected && selected.row === row && selected.col === col) {
         renderInspector();
       }
@@ -11588,9 +11964,13 @@ function bindDevice() {
   };
   api.on('key:toggleState', onKeyStateMsg);
   api.on('device:key-state', onKeyStateMsg);
+  api.on('hardware:model-changed', (payload) => {
+    if (payload && payload.modelId && cfg) {
+      cfg.hardwareModel = payload.modelId;
+      applyHardwareModelToUI(payload.modelId);
+    }
+  });
 
-  // A key on the device switched pages (or a sub page's back key was pressed).
-  // Config already holds the new page - reload and redraw everything.
   api.on('window:visibility', (st) => {
     isWindowVisible = !!(st && st.visible);
     if (isWindowVisible) refreshGrid();
@@ -11598,26 +11978,36 @@ function bindDevice() {
 
   api.on('profile:changed', async () => {
     cfg = await api.configLoad();
+    syncRuntimeStoreToConfig(cfg);
     selected = null;
     renderProfileSwitcherBar();
     renderPageTabs();
     buildGrid();
+    triggerGridTransition('zoom');
     renderInspector();
     await repaintAll(true);
   });
 
-  api.on('page:changed', async () => {
+  api.on('page:changed', async (payload) => {
     cfg = await api.configLoad();
+    if (payload && payload.runtimeStates && payload.pageId) {
+      for (const [posKey, st] of Object.entries(payload.runtimeStates)) {
+        const [r, c] = posKey.split(',').map(Number);
+        setRuntimeCellState(payload.pageId, r, c, st);
+      }
+    }
+    syncRuntimeStoreToConfig(cfg);
     selected = null;
     renderPageTabs();
     buildGrid();
+    triggerGridTransition();
     renderInspector();
-    await repaintAll();
+    await repaintAll(true);
   });
 
-  // config.json 被外部改过（Agent 或手工编辑）——主进程已重载，这里重新渲染。
   api.on('config:external', async () => {
     cfg = await api.configLoad();
+    syncRuntimeStoreToConfig(cfg);
     selected = null;
     applyTheme();
     $('theme').value = (cfg.theme === 'dark') ? 'dark' : 'light';
@@ -11626,7 +12016,7 @@ function bindDevice() {
     renderInspector();
     renderLibrary();
     renderLibPanel();
-    await repaintAll();
+    await repaintAll(true);
     toast('配置已从文件重新载入');
   });
 }
@@ -11799,91 +12189,136 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // 定期检测并按需刷新系统状态监控副屏与动态组件按键（单次合并按需采样 + 批量硬件推送）
+  // v0.10.5 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
+  let _telemetryTickBusy = false;
+  let _lastFullStatsFetchAt = 0;
   setInterval(async () => {
-    if (DEMO || !cfg || isDeviceAsleep) return;
+    if (DEMO || !cfg || isDeviceAsleep || _telemetryTickBusy) return;
+    const now = Date.now();
+    const page = curPage();
+    if (!page) return;
     const strips = pageStrips();
     const buttons = pageButtons();
     const neededTypes = new Set();
     const neededPluginIds = new Set();
-    const widgetCoords = [];
+    const dueWidgets = [];
 
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < KEY_COLS; c++) {
         const sp = buttons[`${r},${c}`];
         if (sp && sp.type === 'widget') {
           const wk = sp.widgetKind || 'gpu';
-          neededTypes.add(wk);
-          if (wk === 'plugin') neededPluginIds.add(sp.pluginId || 'uptime_greeting');
-          widgetCoords.push({ row: r, col: c });
+          const intervalMs = Math.max(180, Number(sp.refreshIntervalMs) || (wk === 'plugin' && sp.pluginId === 'audio_fader_meter' ? 200 : 2500));
+          const cellKey = `${page.id}:${r},${c}`;
+          const lastTick = widgetLastTickMap.get(cellKey) || 0;
+          if (now - lastTick >= intervalMs) {
+            widgetLastTickMap.set(cellKey, now);
+            neededTypes.add(wk === 'composite' ? 'gpu' : wk);
+            if (wk === 'composite') {
+              neededTypes.add('net');
+            }
+            if (wk === 'plugin') neededPluginIds.add(sp.pluginId || 'uptime_greeting');
+            dueWidgets.push({ row: r, col: c, spec: sp });
+          }
         }
       }
     }
 
-    const activeStripRows = [0, 1, 2].filter((row) => {
-      const s = strips[String(row)];
-      if (!s) return false;
-      if (WIDGET_KINDS.includes(s.type) || s.type === 'widget') {
-        const wk = s.widgetKind || s.type;
-        neededTypes.add(wk);
-        if (wk === 'plugin') neededPluginIds.add(s.pluginId || 'uptime_greeting');
-        return true;
-      }
-      return ['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type);
-    });
-
-    if (!activeStripRows.length && !widgetCoords.length) return;
-
-    const pluginConfigs = {};
-    for (const { row, col } of widgetCoords) {
-      const sp = buttons[`${row},${col}`];
-      if (sp && sp.widgetKind === 'plugin' && sp.pluginId && sp.pluginConfig) {
-        pluginConfigs[sp.pluginId] = sp.pluginConfig;
-      }
-    }
-    for (const row of activeStripRows) {
-      const st = strips[String(row)];
-      if (st && st.type === 'plugin' && st.pluginId && st.pluginConfig) {
-        pluginConfigs[st.pluginId] = st.pluginConfig;
+    const dueStripRows = [];
+    if (now - _lastFullStatsFetchAt >= 2400) {
+      _lastFullStatsFetchAt = now;
+      for (const row of [0, 1, 2]) {
+        const s = strips[String(row)];
+        if (!s) continue;
+        if (WIDGET_KINDS.includes(s.type) || s.type === 'widget') {
+          const wk = s.widgetKind || s.type;
+          neededTypes.add(wk);
+          if (wk === 'plugin') neededPluginIds.add(s.pluginId || 'uptime_greeting');
+          dueStripRows.push(row);
+        } else if (['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type)) {
+          dueStripRows.push(row);
+        }
       }
     }
 
-    let sharedStats = null;
-    if (api.systemStats) {
-      try {
-        sharedStats = await api.systemStats({
+    if (!dueWidgets.length && !dueStripRows.length) return;
+    _telemetryTickBusy = true;
+    try {
+      const pluginConfigs = {};
+      for (const { spec: sp } of dueWidgets) {
+        if (sp && sp.widgetKind === 'plugin' && sp.pluginId && sp.pluginConfig) {
+          pluginConfigs[sp.pluginId] = sp.pluginConfig;
+        }
+      }
+      for (const row of dueStripRows) {
+        const st = strips[String(row)];
+        if (st && st.type === 'plugin' && st.pluginId && st.pluginConfig) {
+          pluginConfigs[st.pluginId] = st.pluginConfig;
+        }
+      }
+
+      let sharedStats = lastSysStats;
+      if (api.systemStats) {
+        const st = await api.systemStats({
           types: Array.from(neededTypes),
           pluginIds: Array.from(neededPluginIds),
           pluginConfigs,
         });
-        if (sharedStats) {
-          lastSysStats = Object.assign({}, lastSysStats, sharedStats);
-          lastTelemetry = Object.assign({}, lastTelemetry, sharedStats);
-          if (sharedStats.media_now && !sharedStats.media) {
-            lastTelemetry.media = sharedStats.media_now;
-          }
-          if (sharedStats.volume !== undefined) {
-            lastAudioState.volume = sharedStats.volume;
-            lastAudioState.isMute = !!sharedStats.isMute;
+        if (st) {
+          sharedStats = st;
+          lastSysStats = Object.assign({}, lastSysStats, st);
+          lastTelemetry = Object.assign({}, lastTelemetry, st);
+          if (st.media_now && !st.media) lastTelemetry.media = st.media_now;
+          if (st.volume !== undefined) {
+            lastAudioState.volume = st.volume;
+            lastAudioState.isMute = !!st.isMute;
           }
         }
-      } catch (_) {}
-    }
+      }
 
-    for (const { row, col } of widgetCoords) {
-      await pushKey(row, col, false);
-    }
-    for (const row of activeStripRows) {
-      await pushStrip(row, false, sharedStats);
-    }
-    if (isWindowVisible) {
-      if (widgetCoords.length > 0) {
-        refreshGrid();
-      } else {
+      const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+      const batchJobs = [];
+
+      for (const { row, col, spec: sp } of dueWidgets) {
+        const spanCols = Math.max(1, Math.min(KEY_COLS - col, Number(sp.spanCols) || 1));
+        for (let k = 0; k < spanCols; k++) {
+          const targetCol = col + k;
+          if (isBackCell(row, targetCol)) continue;
+          batchJobs.push(
+            paintKey(sp, 96, { row, col: targetCol }).then(async (c) => ({
+              row,
+              col: targetCol,
+              data: await encodeCanvasToJpegB64(c, rotMode),
+              force: false,
+            }))
+          );
+        }
+        if (isWindowVisible) refreshSingleCell(row, col);
+      }
+
+      for (const row of dueStripRows) {
+        batchJobs.push(
+          buildStripCanvas(row, sharedStats).then(async (c) => ({
+            row,
+            col: 5,
+            data: await encodeCanvasToJpegB64(c, rotMode),
+            force: false,
+          }))
+        );
+      }
+      if (isWindowVisible && dueStripRows.length > 0) {
         refreshStripCells(sharedStats);
       }
+
+      if (batchJobs.length > 0 && api.deviceBatchDraw) {
+        const items = await Promise.all(batchJobs);
+        await api.deviceBatchDraw(items);
+      }
+    } catch (_) {
+    } finally {
+      _telemetryTickBusy = false;
     }
-  }, 2500);
+  }, 250);
 
   if (DEMO) {
     toast('预览模式 · 真机请运行「启动 AKP153 控制台.bat」');

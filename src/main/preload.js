@@ -15,16 +15,20 @@ contextBridge.exposeInMainWorld('api', {
   configReset: () => ipcRenderer.invoke('config:reset'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
+  runtimeGetSnapshot: (pageId) => ipcRenderer.invoke('runtime:getSnapshot', pageId),
+  hardwareGetProfiles: () => ipcRenderer.invoke('hardware:getProfiles'),
+  hardwareSetModel: (modelId) => ipcRenderer.invoke('hardware:setModel', modelId),
+
   deviceDraw: (a) => ipcRenderer.invoke('device:draw', a),
   deviceBatchDraw: (items) => ipcRenderer.invoke('device:batchDraw', items),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
   deviceSetDebounce: (ms) => ipcRenderer.invoke('device:setDebounce', ms),
-  deviceSetLongPressMs: (ms) => ipcRenderer.invoke('device:setLongPressMs', ms),
   deviceStartAnim: (payload) => ipcRenderer.invoke('device:startAnim', payload),
   deviceStopAnim: (payload) => ipcRenderer.invoke('device:stopAnim', payload),
   deviceClearAnims: () => ipcRenderer.invoke('device:clearAnims'),
   contextBarGet: () => ipcRenderer.invoke('contextbar:get'),
-  triggerPhysicalKey: (row, col, isLongPress = false) => ipcRenderer.invoke('key:triggerPhysical', { row, col, isLongPress }),
+  triggerPhysicalKey: (row, col) => ipcRenderer.invoke('key:triggerPhysical', { row, col }),
+  triggerEncoder: (knob, dir) => ipcRenderer.invoke('key:triggerEncoder', { knob, dir }),
   deviceSleep: () => ipcRenderer.invoke('device:sleep'),
   deviceWake: () => ipcRenderer.invoke('device:wake'),
   deviceReconnect: () => ipcRenderer.invoke('device:reconnect'),
@@ -110,7 +114,8 @@ contextBridge.exposeInMainWorld('api', {
       'window:max-changed', 'macro:loopState', 'key:result', 'key:toggleState',
       'device:key-state', 'audio:state', 'app:runningStates', 'device:sleep-state',
       'login:changed', 'telemetry:update', 'telemetry:data', 'pomodoro:tick',
-      'macro:recordState', 'profile:changed', 'window:visibility', 'contextbar:changed'
+      'macro:recordState', 'profile:changed', 'window:visibility', 'contextbar:changed',
+      'runtime:snapshot', 'hardware:model-changed', 'encoder:event'
     ];
     if (!allowed.includes(channel)) return () => {};
     const handler = (e, payload) => cb(payload);

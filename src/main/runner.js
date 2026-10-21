@@ -3,7 +3,7 @@
  * Runs whatever a button points at. (v0.9)
  * Action types: app | file | folder | url | command | ps1 | hotkey | volume | media | multi | qr_decode | widget | window_toggle
  */
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 let shell = null;
 try { ({ shell } = require('electron')); } catch (_) {}
 const path = require('path');
@@ -194,6 +194,27 @@ function isRunning(name) {
   }
 }
 
+function queryTasklistCsvAsync() {
+  return new Promise((resolve) => {
+    try {
+      execFile('tasklist', ['/NH', '/FO', 'CSV'], { encoding: 'latin1', windowsHide: true, timeout: 3500 }, (err, stdout) => {
+        if (err || !stdout) return resolve(null);
+        const aliveSet = new Set();
+        const lines = String(stdout).split(/\r?\n/);
+        for (const ln of lines) {
+          const m = ln.match(/^"([^"]+)"/);
+          if (m && m[1]) {
+            aliveSet.add(m[1].replace(/\.exe$/i, '').toLowerCase());
+          }
+        }
+        resolve(aliveSet);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
 async function isRunningAsync(name) {
   if (!name) return false;
   const clean = name.replace(/\.exe$/i, '').toLowerCase();
@@ -209,7 +230,13 @@ async function isRunningAsync(name) {
       return alive;
     }
   } catch (_) {}
-  return isRunning(clean);
+  const csvSet = await queryTasklistCsvAsync();
+  if (csvSet) {
+    const alive = csvSet.has(clean);
+    runningStateCache.set(clean, { running: alive, ts: Date.now() });
+    return alive;
+  }
+  return false;
 }
 
 async function checkProcessesRunning(names) {
@@ -230,9 +257,15 @@ async function checkProcessesRunning(names) {
     }
   } catch (_) {}
 
+  const csvSet = await queryTasklistCsvAsync();
   const fallbackSet = new Set();
-  for (const n of list) {
-    if (isRunning(n)) fallbackSet.add(n);
+  const now = Date.now();
+  if (csvSet) {
+    for (const n of list) {
+      const alive = csvSet.has(n);
+      runningStateCache.set(n, { running: alive, ts: now });
+      if (alive) fallbackSet.add(n);
+    }
   }
   return fallbackSet;
 }

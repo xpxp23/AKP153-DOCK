@@ -4495,50 +4495,291 @@ body[data-theme="dark"] .drawer.open .library {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
 }
 
-/* 长按副动作卡片 (Long Press Action Card) */
-.long-press-card {
+/* =====================================================================
+ * v0.10.5 UI/UX 全面美学升级：
+ * 1. 一体式联屏玻璃副屏拟物外框 (Unified Side-Strip Glass Bezel)
+ * 2. 多设备型号自适应布局与无极物理旋钮交互座舱 (Hardware Profile Adapter & Rotary Encoders)
+ * 3. 页面与场景上下文切换丝滑过渡动效 (Context Transitions)
+ * 4. 可视化小组件多图层编排工坊 (Widget Studio Layer Composer)
+ * 5. 智能运行状态角标一键卡片与内联色卡 (Smart Process Badge Studio)
+ * ===================================================================== */
+
+/* 1. 右侧 3 段式状态副屏一体式黑晶玻璃容器 */
+.grid:not([data-hw-model="akp03"]):not([data-hw-model="streamdock_15"]) .cell.display {
+  border-style: solid;
+  border-color: rgba(148, 163, 184, 0.28);
+  margin-left: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 6px 16px rgba(15, 23, 42, 0.18);
+}
+body[data-theme="dark"] .grid:not([data-hw-model="akp03"]):not([data-hw-model="streamdock_15"]) .cell.display {
+  border-color: rgba(56, 189, 248, 0.22);
+  background: #0d131d;
+}
+.grid:not([data-hw-model="akp03"]):not([data-hw-model="streamdock_15"]) .cell.display[data-row="0"] {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+.grid:not([data-hw-model="akp03"]):not([data-hw-model="streamdock_15"]) .cell.display[data-row="1"] {
+  border-radius: 3px;
+}
+.grid:not([data-hw-model="akp03"]):not([data-hw-model="streamdock_15"]) .cell.display[data-row="2"] {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+/* 2. 多设备型号自适应网格与物理旋钮座舱 (Hardware Profile Adapter) */
+.grid[data-hw-model="streamdock_15"] {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  aspect-ratio: 5 / 3.05;
+}
+.grid[data-hw-model="streamdock_15"] .cell.display {
+  display: none !important;
+}
+
+.grid[data-hw-model="akp03"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 3 / 2.05;
+  max-width: 480px;
+  margin: 0 auto;
+}
+.grid[data-hw-model="akp03"] .cell.display,
+.grid[data-hw-model="akp03"] .cell.hw-hidden {
+  display: none !important;
+}
+
+.encoder-dock-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 480px;
+  margin: 4px auto 12px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.06) 0%, rgba(15, 23, 42, 0.12) 100%);
+  border: 1px solid var(--line);
+}
+body[data-theme="dark"] .encoder-dock-bar {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.65) 0%, rgba(9, 13, 22, 0.85) 100%);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.encoder-Dock-bar[hidden] {
+  display: none !important;
+}
+.encoder-knob-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+body[data-theme="dark"] .encoder-knob-card {
+  background: #161b22;
+  border-color: #30363d;
+}
+.encoder-knob-dial {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 30%, #475569, #1e293b 70%, #0f172a 100%);
+  border: 2px solid rgba(56, 189, 248, 0.45);
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.38),
+    inset 0 1px 2px rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f8fafc;
+  font-size: 15px;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1), border-color 0.18s ease;
+}
+.encoder-knob-dial:hover {
+  transform: scale(1.06);
+  border-color: var(--accent);
+}
+.encoder-knob-dial:active {
+  transform: scale(0.94);
+}
+.encoder-knob-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: center;
+}
+.encoder-knob-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.encoder-step-btn {
+  padding: 2px 7px;
+  font-size: 10.5px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.encoder-step-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+body[data-theme="dark"] .encoder-step-btn {
+  background: #21262d;
+  border-color: #30363d;
+  color: #c9d1d9;
+}
+
+/* 3. 页面与场景切换过渡动效 (Context & Page Transitions) */
+@keyframes akpGridSlideLeft {
+  0% { opacity: 0.35; transform: translateX(14px) scale(0.99); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes akpGridZoom {
+  0% { opacity: 0.3; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes akpGridFade {
+  0% { opacity: 0.25; }
+  100% { opacity: 1; }
+}
+.grid.transition-slide-left {
+  animation: akpGridSlideLeft 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.grid.transition-zoom {
+  animation: akpGridZoom 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.grid.transition-fade {
+  animation: akpGridFade 0.2s ease-out;
+}
+
+/* 4. 右上角状态角标精致胶囊化与平滑过渡 */
+.cell .badge-overlay {
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  backdrop-filter: blur(4px);
+}
+
+/* 5. 可视化小组件图层编排工坊 (Widget Studio Layer Composer) */
+.widget-studio-box {
   margin-top: 10px;
-  padding: 10px 11px;
+  padding: 10px;
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.05) 0%, transparent 100%);
+  background: linear-gradient(180deg, rgba(2, 132, 199, 0.05) 0%, transparent 100%);
 }
-.long-press-head {
+.ws-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ws-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ws-layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ws-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+}
+body[data-theme="dark"] .ws-layer-row {
+  background: #161b22;
+  border-color: #30363d;
+}
+.ws-layer-row select,
+.ws-layer-row input[type="text"] {
+  font-size: 11.5px !important;
+  padding: 3px 6px !important;
+}
+.ws-layer-btn {
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ws-layer-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ws-freq-pills {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 4px;
+}
+.ws-freq-pill {
+  padding: 4px 6px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.14s ease;
+}
+.ws-freq-pill.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+}
+body[data-theme="dark"] .ws-freq-pill {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+/* 6. 智能进程角标一键场景卡 (Smart Process Badge Card) */
+.smart-badge-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(2, 132, 199, 0.08));
+  border: 1px solid rgba(16, 185, 129, 0.32);
+  margin-bottom: 10px;
 }
-.long-press-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
+.smart-badge-banner-info {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
 }
-.long-press-pill {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 99px;
-  background: rgba(245, 158, 11, 0.16);
-  color: #d97706;
-  font-weight: 600;
-}
-body[data-theme="dark"] .long-press-pill {
-  color: #fbbf24;
-}
-.cell .long-badge {
-  position: absolute;
-  bottom: 3px;
-  left: 4px;
-  font-size: 8.5px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: rgba(245, 158, 11, 0.88);
-  color: #fff;
+.smart-badge-banner-title {
+  font-size: 12px;
   font-weight: 700;
-  pointer-events: none;
-  z-index: 3;
+  color: var(--ink);
+}
+.smart-badge-banner-desc {
+  font-size: 10.5px;
+  color: var(--muted);
 }

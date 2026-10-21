@@ -774,7 +774,7 @@ const MARKETPLACE_CATALOG = [
     name: 'OBS Studio WebSocket v5 导播台',
     category: '音频与直播',
     author: 'AKP153 Official',
-    version: '0.10.0',
+    version: '0.10.5',
     description: '基于 OBS WebSocket v5 实时显示录制/推流状态、当前场景高亮、麦克风分贝表与一键切景',
     features: ['bars', 'badge', 'bidirectional'],
     color: '#1e1b4b',
@@ -785,7 +785,7 @@ const MARKETPLACE_CATALOG = [
     name: '应用级独立混音器 (Per-App Mixer)',
     category: '音频与直播',
     author: 'AKP153 Official',
-    version: '0.10.0',
+    version: '0.10.5',
     description: '基于 CoreAudio IAudioSessionManager2 独立控制指定软件或当前前台游戏的音量与静音',
     features: ['bars', 'progress', 'badge', 'bidirectional'],
     color: '#0f172a',
@@ -861,6 +861,13 @@ function loadExternalPlugins(force = false) {
   if (!force && pluginsLoadedAt > 0 && (now - pluginsLoadedAt) < 10000) {
     return Array.from(loadedPlugins.values());
   }
+  if (force && loadedPlugins.size > 0) {
+    for (const oldEntry of loadedPlugins.values()) {
+      if (oldEntry && typeof oldEntry.dispose === "function") {
+        try { oldEntry.dispose(); } catch (_) {}
+      }
+    }
+  }
   pluginsLoadedAt = now;
   loadedPlugins.clear();
   pluginAliases.clear();
@@ -895,9 +902,11 @@ function loadExternalPlugins(force = false) {
             version: String(mod.version || '0.9.5'),
             description: String(mod.description || ''),
             color: mod.color || '#1e293b',
+            defaultIntervalMs: Math.max(150, Math.min(600000, Number(mod.defaultIntervalMs) || 2500)),
             configSchema,
             render: mod.render,
             onPress: typeof mod.onPress === 'function' ? mod.onPress : null,
+            dispose: typeof mod.dispose === 'function' ? mod.dispose : null,
           };
           loadedPlugins.set(entry.id, entry);
           const hyphenId = entry.id.replace(/_/g, '-');
@@ -995,6 +1004,7 @@ function listAvailablePlugins(force = true) {
     version: p.version,
     description: p.description,
     color: p.color,
+    defaultIntervalMs: p.defaultIntervalMs || 2500,
     configSchema: p.configSchema || [],
   }));
 }

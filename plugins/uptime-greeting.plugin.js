@@ -18,6 +18,7 @@ module.exports = {
   category: '系统监控',
   author: 'AKP153 Official',
   version: '0.9.5',
+  defaultIntervalMs: 2500,
   configSchema: [
     { key: 'customGreet', label: '自定义问候语', type: 'text', default: '', placeholder: '留空则按时段自动问候' },
     { key: 'memWarnPct', label: '内存告警阈值 (%)', type: 'number', default: 85, placeholder: '85' }

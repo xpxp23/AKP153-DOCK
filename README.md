@@ -5,6 +5,14 @@
 核心交互只有一条：**把文件拖到格子里，按下设备上的键就执行。**
 
 
+## 🚀 v0.10.5 架构级演进与深度优化
+
+- **🔄 状态与配置分离的单向数据流架构 (`SpecStore` + `RuntimeStateStore`)**：新增 `src/main/runtime-store.js`，将持久化静态配置与进程存活、窗口前后台、系统音量/静音、插件遥测等运行时状态彻底解耦；前后端共享纯函数 `computeRenderModel(spec, runtimeState, globalState)`，彻底根治硬件按压回弹动画覆盖新角标、`saveConfig` 抹除运行时状态、以及 `syncSelectedToggleBadge` 污染空角标的同源同步问题。
+- **⚡ 彻底剥离单报文设备不支持的「长按副动作」及全部延迟副作用**：针对 AKP153 `push` 单报文协议（`data[10]` 恒为 `0`），全链路移除 330ms 单击延迟等待定时器、驱动网格 360ms 鼠标按住误触发、`.long-badge` 角标堆叠及长按配置卡片，实现物理按键 **0ms 零延迟直通响应**。
+- **🧵 离屏 Dirty-Rect 差量合成管线与托盘零节流刷新**：禁用 Chromium 后台窗口渲染与定时器节流，结合 `OffscreenCanvas` Worker 与帧哈希差量缓存（`dirtyRectHashStore`），以及真正的单格局部 DOM 刷新 `refreshSingleCell(row, col)`，消除滑块拖拽掉帧与全屏串行 IPC 阻塞。
+- **🎨 可视化小组件图层编排工坊 (`Widget Studio`) 与多频独立刷新调度**：支持在单格（`1×1`）或跨格宽屏（`2×1` / `3×1`）画布上自由叠加 CPU、GPU、实时网速、声卡多路电平柱图、历史趋势折线图与时钟图层，并支持为每个小组件独立配置 `180ms` 极速电平至 `60s` 慢速轮询的刷新周期。
+- **🎛️ 多设备型号自适应抽象 (`Hardware Profile Adapter`) 与场景过渡动效**：新增 `src/main/hardware-profiles.js`，原生适配 **AJAZZ AKP153 (5×3+3副屏)**、**AJAZZ AKP03 (3×2+3颗物理无极旋钮编码器)** 与 **StreamDock 15 标准版**，配备一体式黑晶玻璃副屏拟物外框、三栏分段式检查器与平滑切页过渡动效。
+
 ## 🚀 v0.10.0 架构级演进与深度优化
 
 - **独立供电拓展坞关机/睡眠彻底灭屏保护**：修复 `DirectHardwareBlackout` 中设备路径大小写去重失效导致同一端点二次写入唤醒屏幕的底层 Bug；新增设备休眠状态追踪避免向已休眠面板下发 `CLEAR_ALL`；支持 `sleep("blackout")` 抢占中断 `batchDraw` 队列并覆盖 Windows 快速启动（S4 混合关机 / `PBT_APMSUSPEND`）。
@@ -56,7 +64,7 @@ npm run build:portable
 ```
 将自动输出：
 - `dist/AKP153-Dock/`：绿色解压即用目录，内含独立的 `AKP153 控制台.exe`，免安装 Node.js 与环境；
-- `dist/AKP153-Dock-v0.10.0-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
+- `dist/AKP153-Dock-v0.10.5-portable.zip`：便携压缩包，已自动剔除个人私有配置，内置通用生产力一屏模板与完整的 Agent Skill。
 
 ## USB 热插拔自愈
 

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 官方深度集成插件：系统音频应用级混音器 (Per-App Volume Mixer v0.10.0)
+ * 官方深度集成插件：系统音频应用级混音器 (Per-App Volume Mixer v0.10.5)
  *
  * 基于 CoreAudio IAudioSessionManager2 / ISimpleAudioVolume / IAudioMeterInformation，
  * 支持单独控制某个进程（如 Discord、网易云音乐、QQ音乐、当前前台游戏 @foreground）的独立音量与静音，
@@ -15,7 +15,8 @@ module.exports = {
   name: '应用级独立混音器 (Per-App Mixer)',
   category: '音频与直播',
   author: 'AKP153 Official',
-  version: '0.10.0',
+  version: '0.10.5',
+  defaultIntervalMs: 200,
   description: '基于 CoreAudio IAudioSessionManager2 独立控制指定应用或当前前台游戏/音乐软件的音量与静音',
   color: '#0f172a',
   configSchema: [
