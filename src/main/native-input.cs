@@ -174,6 +174,9 @@ namespace AkpInput
         static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
         [DllImport("user32.dll")]
+        static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
         static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
@@ -289,20 +292,61 @@ namespace AkpInput
             }
         }
 
-        static IntPtr FindBestProcessWindow(HashSet<uint> targetPids, IntPtr fgHwnd)
+        private static readonly Dictionary<uint, IntPtr> _lastKnownMainHwnd = new Dictionary<uint, IntPtr>();
+
+        static bool IsBogusHelperTitle(string title)
         {
+            if (string.IsNullOrEmpty(title)) return false;
+            string t = title.Trim();
+            return t.Equals("Default IME", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("MSCTFIME UI", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("GDI+ Window", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("CiceroUIWndFrame", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("HiddenWindow", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("SystemTray_Main", StringComparison.OrdinalIgnoreCase)
+                || t.StartsWith(".NET-BroadcastEventWindow", StringComparison.OrdinalIgnoreCase);
+        }
+
+        static IntPtr FindBestProcessWindow(HashSet<uint> targetPids, IntPtr fgHwnd, bool allowHiddenTrayMain = false)
+        {
+            if (allowHiddenTrayMain)
+            {
+                foreach (uint pid in targetPids)
+                {
+                    IntPtr remembered;
+                    if (_lastKnownMainHwnd.TryGetValue(pid, out remembered) && remembered != IntPtr.Zero && IsWindow(remembered))
+                    {
+                        return remembered;
+                    }
+                }
+            }
+
             IntPtr bestHwnd = IntPtr.Zero;
+            uint bestPid = 0;
             int bestScore = -1;
+            const int WS_EX_NOACTIVATE = 0x08000000;
+
             EnumWindows(delegate(IntPtr hwnd, IntPtr lParam)
             {
                 uint pid = 0;
                 GetWindowThreadProcessId(hwnd, out pid);
                 if (!targetPids.Contains(pid)) return true;
-                if (!IsWindowVisible(hwnd)) return true;
+
+                bool visible = IsWindowVisible(hwnd);
+                if (!allowHiddenTrayMain && !visible) return true;
                 if (!IsWindowEnabled(hwnd)) return true;
                 if (IsWindowCloaked(hwnd)) return true;
+
                 int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
                 if ((exStyle & WS_EX_TOOLWINDOW) != 0 && (exStyle & WS_EX_APPWINDOW) == 0) return true;
+                if ((exStyle & WS_EX_NOACTIVATE) != 0) return true;
+
+                string title = GetWindowTitleSafe(hwnd);
+                if (IsBogusHelperTitle(title)) return true;
+                if (allowHiddenTrayMain && !visible && string.IsNullOrEmpty(title)) return true;
+
+                IntPtr owner = GetWindow(hwnd, GW_OWNER);
+                if (allowHiddenTrayMain && !visible && owner != IntPtr.Zero && (exStyle & WS_EX_APPWINDOW) == 0) return true;
 
                 bool iconic = IsIconic(hwnd);
                 if (!iconic)
@@ -312,27 +356,43 @@ namespace AkpInput
                     {
                         int w = rc.Right - rc.Left;
                         int h = rc.Bottom - rc.Top;
-                        // 过滤 1x1、悬浮球、隐藏阴影层等微小辅助窗口
-                        if (w < 80 || h < 50) return true;
+                        int minW = allowHiddenTrayMain && !visible ? 220 : 110;
+                        int minH = allowHiddenTrayMain && !visible ? 140 : 65;
+                        if (w < minW || h < minH) return true;
                     }
                 }
 
                 int score = 100;
                 if (hwnd == fgHwnd) score += 10000;
-                string title = GetWindowTitleSafe(hwnd);
                 if (!string.IsNullOrEmpty(title)) score += 500;
-                if (GetWindow(hwnd, GW_OWNER) == IntPtr.Zero) score += 250;
-                if ((exStyle & WS_EX_APPWINDOW) != 0) score += 150;
-                // 仅给非最小化窗口极小的同分偏置(+5)，绝不压过被最小化的主窗口
+                if (owner == IntPtr.Zero) score += 320;
+                else if ((exStyle & WS_EX_APPWINDOW) == 0) score -= 220;
+                if ((exStyle & WS_EX_APPWINDOW) != 0) score += 180;
                 if (!iconic) score += 5;
 
                 if (score > bestScore)
                 {
                     bestScore = score;
                     bestHwnd = hwnd;
+                    bestPid = pid;
                 }
                 return true;
             }, IntPtr.Zero);
+
+            if (bestHwnd != IntPtr.Zero && !allowHiddenTrayMain)
+            {
+                // 若命中的是无任务栏图标的从属子窗口，向上追溯其可见的 Root Owner 主窗口
+                IntPtr owner = GetWindow(bestHwnd, GW_OWNER);
+                int exStyle = GetWindowLong(bestHwnd, GWL_EXSTYLE);
+                if (owner != IntPtr.Zero && (exStyle & WS_EX_APPWINDOW) == 0 && IsWindow(owner) && IsWindowVisible(owner))
+                {
+                    bestHwnd = owner;
+                }
+                if (bestPid != 0)
+                {
+                    _lastKnownMainHwnd[bestPid] = bestHwnd;
+                }
+            }
             return bestHwnd;
         }
 
@@ -1474,16 +1534,37 @@ namespace AkpInput
             uint fgPid = 0;
             if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
 
-            IntPtr hwnd = FindBestProcessWindow(pids, fg);
+            IntPtr hwnd = FindBestProcessWindow(pids, fg, false);
             if (hwnd == IntPtr.Zero) hwnd = fallbackHwnd;
+            bool restoredFromHiddenTray = false;
+            if (hwnd == IntPtr.Zero)
+            {
+                // 二阶段恢复：查找因最小化到托盘而被隐藏 (SW_HIDE) 的主窗口句柄
+                hwnd = FindBestProcessWindow(pids, fg, true);
+                if (hwnd != IntPtr.Zero)
+                {
+                    restoredFromHiddenTray = true;
+                }
+            }
             if (hwnd == IntPtr.Zero) return "TRAY_HIDDEN";
 
             IntPtr fgOwner = fg != IntPtr.Zero ? GetWindow(fg, GW_OWNER) : IntPtr.Zero;
-            bool isAlreadyFg = (fg == hwnd) || (fgOwner == hwnd);
+            bool isAlreadyFg = !restoredFromHiddenTray && ((fg == hwnd) || (fgOwner == hwnd));
 
             if (allowMinimize && isAlreadyFg && !IsIconic(hwnd))
             {
-                ShowWindow(hwnd, 6); // SW_MINIMIZE
+                uint minPid = 0;
+                GetWindowThreadProcessId(hwnd, out minPid);
+                if (minPid != 0) _lastKnownMainHwnd[minPid] = hwnd;
+
+                // 若当前焦点在无任务栏按钮的从属子窗口上，最小化其主窗口，防止子窗口缩成桌面角落孤儿块
+                IntPtr ownerHwnd = GetWindow(hwnd, GW_OWNER);
+                int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+                IntPtr targetMinHwnd = (ownerHwnd != IntPtr.Zero && (ex & WS_EX_APPWINDOW) == 0 && IsWindowVisible(ownerHwnd))
+                    ? ownerHwnd
+                    : hwnd;
+                if (minPid != 0) _lastKnownMainHwnd[minPid] = targetMinHwnd;
+                ShowWindow(targetMinHwnd, 6); // SW_MINIMIZE
                 return "MINIMIZED";
             }
 
@@ -1513,6 +1594,10 @@ namespace AkpInput
                     attachedTarget = AttachThreadInput(curThread, targetThread, true);
                 }
 
+                if (!IsWindowVisible(hwnd))
+                {
+                    ShowWindow(hwnd, 5); // SW_SHOW (先解除托盘 SW_HIDE 隐藏态)
+                }
                 if (IsIconic(hwnd))
                 {
                     ShowWindow(hwnd, 9); // SW_RESTORE

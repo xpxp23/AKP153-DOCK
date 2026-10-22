@@ -232,7 +232,7 @@ let lastTelemetry = {
   plugins: BUILTIN_MARKET_PLUGINS.map(p => Object.assign({}, p))
 };
 
-// v0.10.5: Unidirectional Renderer RuntimeStateStore & Dirty-Rect Hash Cache
+// v0.10.6: Unidirectional Renderer RuntimeStateStore & Dirty-Rect Hash Cache
 const rendererRuntimeStore = new Map(); // "${pageId}:${row},${col}" -> { activeState, windowSubState }
 const dirtyRectHashStore = new Map();   // "${pageId}:${row},${col}" -> visualHash
 const widgetLastTickMap = new Map();    // "${pageId}:${row},${col}" -> timestamp
@@ -1417,7 +1417,8 @@ let offscreenWorker = null;
 let offscreenSeq = 1;
 const offscreenPending = new Map();
 let isWindowVisible = true;
-let hwMirrorEnabled = true;
+let hwMirrorEnabled = false;
+const _hwMirrorCanvasCache = new Map();
 let cachedPluginSchemas = [];
 
 function ensureOffscreenWorker() {
@@ -3123,6 +3124,9 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
   }
 
   const renderModel = computeRenderModel(spec, { row, col });
+  const isLoopRunning = activeLoopKeyIds.has(`${row},${col}`) ||
+    (page && activeLoopKeyIds.has(`${page.id}:${row},${col}`));
+  cell.classList.toggle('loop-running', !!isLoopRunning);
 
   if (spec.textColor) {
     cell.style.color = spec.textColor;
@@ -3132,71 +3136,76 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
     cell.style.color = contrast(spec.color);
   }
 
-  const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
-  const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
-
-  if (spec.icon) {
-    const img = document.createElement('img');
-    img.className = 'thumb';
-    img.src = spec.icon;
-    const thumbPx = Math.max(20, Math.min(76, Math.round(78 * (iconScalePct / 100))));
-    img.style.width = `${thumbPx}px`;
-    img.style.height = `${thumbPx}px`;
-    cell.appendChild(img);
+  // v0.10.6 彻底修复「硬件真彩」模式下出现一大一小双角标与文字重影：
+  // 启用 hwMirrorEnabled 时，仅挂载 1:1 硬件级 Canvas 画面，不再挂载冗余的 DOM .thumb/.glyph/.badge-overlay/.cap
+  if (hwMirrorEnabled) {
+    cell.classList.add('has-canvas', 'hw-mirror-cell');
+    const cacheKey = `${(page && page.id) || 'p1'}:${row},${col}`;
+    const cachedSrc = _hwMirrorCanvasCache.get(cacheKey);
+    if (cachedSrc) {
+      const syncCnv = document.createElement('canvas');
+      syncCnv.width = syncCnv.height = 96;
+      syncCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
+      syncCnv.getContext('2d').drawImage(cachedSrc, 0, 0);
+      cell.appendChild(syncCnv);
+    }
+    paintKey(spec, 96, { row, col }).then((hwCnv) => {
+      if (!hwCnv) return;
+      _hwMirrorCanvasCache.set(cacheKey, hwCnv);
+      if (!cell.isConnected) return;
+      hwCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
+      const oldCnv = cell.querySelector('.cell-hw-mirror-canvas');
+      if (oldCnv) oldCnv.replaceWith(hwCnv);
+      else cell.insertBefore(hwCnv, cell.firstChild);
+    }).catch(() => {});
   } else {
-    const glSpan = el('span', 'glyph', renderModel.glyph);
-    const glPx = Math.max(14, Math.min(44, Math.round(24 * (iconScalePct / 62))));
-    glSpan.style.fontSize = `${glPx}px`;
-    cell.appendChild(glSpan);
+    cell.classList.remove('hw-mirror-cell');
+    const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
+    const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
+
+    if (spec.icon) {
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.src = spec.icon;
+      const thumbPx = Math.max(20, Math.min(76, Math.round(78 * (iconScalePct / 100))));
+      img.style.width = `${thumbPx}px`;
+      img.style.height = `${thumbPx}px`;
+      cell.appendChild(img);
+    } else {
+      const glSpan = el('span', 'glyph', renderModel.glyph);
+      const glPx = Math.max(14, Math.min(44, Math.round(24 * (iconScalePct / 62))));
+      glSpan.style.fontSize = `${glPx}px`;
+      cell.appendChild(glSpan);
+    }
+
+    // 右上角状态角标（仅在非硬件真彩 DOM 预览模式下挂载）
+    const activeBadge = renderModel.badge;
+    if (activeBadge && activeBadge.text) {
+      const bEl = el('span', 'badge-overlay', activeBadge.text);
+      if (activeBadge.bg) bEl.style.backgroundColor = activeBadge.bg;
+      if (activeBadge.color) bEl.style.color = activeBadge.color;
+      if (activeBadge.isToggle) bEl.classList.add('badge-toggle');
+      cell.appendChild(bEl);
+    }
+
+    if (isLoopRunning) {
+      const runTag = el('span', 'badge-overlay', '⟳ RUN');
+      runTag.style.backgroundColor = '#00c853';
+      runTag.style.color = '#ffffff';
+      runTag.style.left = '4px';
+      runTag.style.right = 'auto';
+      cell.appendChild(runTag);
+    }
+
+    const capEl = el('span', 'cap', spec.label || '');
+    const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
+    capEl.style.fontSize = `${capPx}px`;
+    if (!spec.label) capEl.style.display = 'none';
+    cell.appendChild(capEl);
   }
 
-  // 右上角状态角标（严格与硬件 paintKey 同源）
-  const activeBadge = renderModel.badge;
-  if (activeBadge && activeBadge.text) {
-    const bEl = el('span', 'badge-overlay', activeBadge.text);
-    if (activeBadge.bg) bEl.style.backgroundColor = activeBadge.bg;
-    if (activeBadge.color) bEl.style.color = activeBadge.color;
-    if (activeBadge.isToggle) bEl.classList.add('badge-toggle');
-    cell.appendChild(bEl);
-  }
-
-  const isLoopRunning = activeLoopKeyIds.has(`${row},${col}`) ||
-    (page && activeLoopKeyIds.has(`${page.id}:${row},${col}`));
-  cell.classList.toggle('loop-running', !!isLoopRunning);
-  if (isLoopRunning) {
-    const runTag = el('span', 'badge-overlay', '⟳ RUN');
-    runTag.style.backgroundColor = '#00c853';
-    runTag.style.color = '#ffffff';
-    runTag.style.left = '4px';
-    runTag.style.right = 'auto';
-    cell.appendChild(runTag);
-  }
-
-  const capEl = el('span', 'cap', spec.label || '');
-  const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
-  capEl.style.fontSize = `${capPx}px`;
-  if (!spec.label) capEl.style.display = 'none';
-  cell.appendChild(capEl);
   cell.appendChild(el('span', 'tag', `r${row}c${col}`));
   if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
-
-  if (hwMirrorEnabled) {
-    cell.classList.add('has-canvas');
-    paintKey(spec, 96, { row, col }).then((hwCnv) => {
-      if (!hwCnv || !cell.isConnected) return;
-      hwCnv.className = 'cell-canvas-preview cell-hw-mirror-canvas';
-      hwCnv.style.position = 'absolute';
-      hwCnv.style.inset = '0';
-      hwCnv.style.width = '100%';
-      hwCnv.style.height = '100%';
-      hwCnv.style.borderRadius = 'inherit';
-      hwCnv.style.pointerEvents = 'none';
-      hwCnv.style.zIndex = '1';
-      const oldCnv = cell.querySelector('.cell-hw-mirror-canvas');
-      if (oldCnv) oldCnv.remove();
-      cell.insertBefore(hwCnv, cell.firstChild);
-    }).catch(() => {});
-  }
 
   const x = document.createElement('button');
   x.className = 'clear';
@@ -3547,7 +3556,7 @@ function saveConfig() {
 }
 
 function syncSelectedToggleBadge() {
-  // v0.10.5 修复：当开启双态角标 (badgeToggle) 时，绝不将当前激活态角标回写污染静态 s.badge 字段，
+  // v0.10.6 修复：当开启双态角标 (badgeToggle) 时，绝不将当前激活态角标回写污染静态 s.badge 字段，
   // 从而彻底解决“运行中 / 无”预设在编辑后待机态仍然残留“运行中”角标的 Bug！
 }
 
@@ -6377,6 +6386,7 @@ function renderInspector() {
           </div>
           <div class="icon-btn-group">
             <button class="ghost" id="i-openiconpicker">🎨 矢量图标库…</button>
+            <button class="ghost" id="i-texticon" style="color:var(--accent);border-color:var(--accent);font-weight:600;" title="打开内置文字图标工坊（支持 8 套精调视觉模板、双行文字、发光霓虹、机械键帽与透明流光底）">🔤 文字图标…</button>
             <button class="ghost" id="i-iconfile">📁 本地文件…</button>
             ${spec.icon ? `<button class="ghost" id="i-cropicon">✂️ 裁剪微调</button>` : ''}
             <button class="ghost" id="i-saveicon">⭐ 存入图标库</button>
@@ -6543,10 +6553,15 @@ function renderInspector() {
       if (!pId) return;
       const tpl = ACTION_TEMPLATES.find(x => x.id === pId);
       if (tpl && tpl.spec) {
+        pushHistory(`套用快捷模板：${tpl.name}`);
+        sanitizeSpecOnModeOrTypeChange(spec, { nextType: tpl.spec.type, clearDual: !tpl.spec.toggleAction });
         Object.assign(spec, tpl.spec);
         if (tpl.spec.iconName && typeof BUILTIN_ICONS !== 'undefined') {
           const ic = BUILTIN_ICONS.find(i => i.name === tpl.spec.iconName);
-          if (ic) spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+          if (ic) {
+            spec.icon = svgToDataUrl(ic.svg, '#ffffff');
+            delete spec.textIconConfig;
+          }
         }
         await commit(true);
         renderInspector();
@@ -6612,6 +6627,24 @@ function renderInspector() {
 
   const btnOpenPicker = $('i-openiconpicker');
   if (btnOpenPicker) btnOpenPicker.onclick = () => openIconPicker();
+
+  const btnTextIcon = $('i-texticon');
+  if (btnTextIcon) {
+    btnTextIcon.onclick = () => {
+      openTextIconStudio(spec, async (res) => {
+        pushHistory('生成自定义文字图标');
+        spec.icon = res.dataUrl;
+        spec.textIconConfig = res.config;
+        if (res.config && res.config.hideKeyLabel) {
+          spec.label = '';
+          spec.iconScale = Math.max(Number(spec.iconScale) || 62, 84);
+        }
+        await commit(true);
+        renderInspector();
+        toast(`🔤 已应用「${res.templateName || '文字图标'}」样式`);
+      });
+    };
+  }
 
   const btnCrop = $('i-cropicon');
   if (btnCrop) {
@@ -6957,8 +6990,9 @@ function renderInspector() {
   const btnActDual = $('i-toggle-act-dual');
   if (btnActSingle && btnActDual) {
     btnActSingle.onclick = async () => {
-      spec.toggleAction = false;
-      await commit(false);
+      pushHistory('切换为单一动作模式');
+      sanitizeSpecOnModeOrTypeChange(spec, { toSingleAction: true });
+      await commit(true);
       renderInspector();
     };
     btnActDual.onclick = async () => {
@@ -7065,19 +7099,23 @@ function renderInspector() {
   bindFaviconBtn('i-fetch-favicon', () => ($('i-target') && $('i-target').value.trim()) || spec.target || '');
   bindFaviconBtn('i-act2-fetch-favicon', () => ($('i-toggle-action2-target') && $('i-toggle-action2-target').value.trim()) || (spec.action2 && spec.action2.target) || '');
 
-  // 双态同步策略与自定义监测进程绑定
+  // 双态同步策略与自定义监测进程绑定（含切离任务栏窗口模式时的自动动作与角标还原）
   const selSyncMode = $('i-toggle-sync-mode');
   if (selSyncMode) {
     selSyncMode.onchange = async () => {
-      spec.toggleSyncMode = selSyncMode.value;
+      const nextMode = selSyncMode.value;
+      pushHistory(`切换双态同步策略：${nextMode}`);
+      spec.toggleSyncMode = nextMode;
       delete spec._downgradedToManual;
-      if (selSyncMode.value === 'window') {
+      if (nextMode === 'window') {
         const proc = (spec.watchProcess || (spec.target ? spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '')) || '';
+        if (proc) spec.watchProcess = proc;
         spec.action2 = { type: 'window_toggle', target: proc, watchProcess: proc, args: '' };
-        if (spec.badgeToggle) {
-          spec.badgeState1 = { text: '', bg: '#546e7a' };
-          spec.badgeState2 = { text: '前台', bg: '#107c41' };
-        }
+        spec.badgeToggle = true;
+        spec.badgeState1 = { text: '', bg: '#546e7a', color: '#ffffff' };
+        spec.badgeState2 = { text: '前台', bg: '#107c41', color: '#ffffff' };
+      } else {
+        sanitizeSpecOnModeOrTypeChange(spec, { nextSyncMode: nextMode });
       }
       await commit(true);
       renderInspector();
@@ -7328,6 +7366,7 @@ function renderInspector() {
       Object.keys(fresh).forEach((k) => delete fresh[k]);
       Object.assign(fresh, makePageSpec(r.mode, r.pageId));
     } else {
+      sanitizeSpecOnModeOrTypeChange(spec, { nextType: v });
       spec.type = v;
       delete spec.mode;
       delete spec.pageId;
@@ -7505,7 +7544,7 @@ function renderInspector() {
     }
   };
   const btnClr = $('i-clr');
-  if (btnClr) btnClr.onclick = async () => { spec.icon = ''; await commit(true); renderInspector(); };
+  if (btnClr) btnClr.onclick = async () => { spec.icon = ''; delete spec.textIconConfig; await commit(true); renderInspector(); };
   $('i-save').onclick = () => libraryAdd(spec);
   $('i-del').onclick = () => removeKey(selected.row, selected.col);
   if (spec.type === 'multi' || spec.type === 'macro') {
@@ -9673,6 +9712,721 @@ function getCustomSubCategories() {
   return Array.from(set);
 }
 
+
+// ------------------------------------------------------------------- v0.10.6 模式/动作切换状态清洗器与内置「🔤 文字图标工坊」
+
+function sanitizeSpecOnModeOrTypeChange(spec, opts = {}) {
+  if (!spec || typeof spec !== "object") return;
+  const { nextSyncMode, nextType, toSingleAction, clearDual } = opts;
+  const pageId = curPage() && curPage().id;
+
+  // 1. 从「任务栏窗口模式 (window)」切向其它双态同步模式（如 auto / process / manual）
+  if (nextSyncMode && nextSyncMode !== "window") {
+    delete spec.smartToggle;
+    spec._windowSubState = "stopped";
+    if (selected && pageId) {
+      setRuntimeCellState(pageId, selected.row, selected.col, { windowSubState: "stopped" });
+    }
+    if (spec.action2 && spec.action2.type === "window_toggle") {
+      const rawTarget = String(spec.target || spec.watchProcess || spec.action2.target || "").trim();
+      const proc = rawTarget.replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "");
+      const dropMode = (cfg && cfg.appDropMode) || "dual";
+      if (proc && spec.type === "app") {
+        spec.action2 = {
+          type: "command",
+          target: dropMode === "graceful" ? `wm_close:${proc}` : `taskkill /F /IM ${proc}.exe`,
+          args: "",
+        };
+      } else {
+        spec.action2 = { type: "hotkey", target: "Alt+F4", hotkey: "Alt+F4", args: "" };
+      }
+    }
+    if (spec.badgeToggle) {
+      if (spec.badgeState2 && (spec.badgeState2.text === "前台" || spec.badgeState2.text === "后台")) {
+        spec.badgeState2 = { text: "运行中", bg: "#107c41", color: "#ffffff" };
+      }
+      if (spec.badgeState1 && (spec.badgeState1.text === "后台" || spec.badgeState1.text === "前台")) {
+        spec.badgeState1 = { text: "", bg: "#546e7a", color: "#ffffff" };
+      }
+    }
+  }
+
+  // 2. 从「双态独立动作」切回「单一动作」
+  if (toSingleAction || clearDual) {
+    spec.toggleAction = false;
+    delete spec.smartToggle;
+    spec._activeState = 0;
+    spec._windowSubState = "stopped";
+    if (selected && pageId) {
+      setRuntimeCellState(pageId, selected.row, selected.col, { activeState: 0, windowSubState: "stopped" });
+    }
+    if (spec.toggleSyncMode === "window") {
+      delete spec.toggleSyncMode;
+      if (spec.action2 && spec.action2.type === "window_toggle") {
+        delete spec.action2;
+      }
+      if (spec.badgeState2 && (spec.badgeState2.text === "前台" || spec.badgeState2.text === "后台")) {
+        spec.badgeToggle = false;
+        spec.badgeState1 = { text: "", bg: "#546e7a", color: "#ffffff" };
+        spec.badgeState2 = { text: "运行中", bg: "#107c41", color: "#ffffff" };
+      }
+    }
+  }
+
+  // 3. 切换主动作类型或快捷预设时清理跨格与残留窗口状态
+  if (nextType) {
+    if (nextType !== "widget") {
+      delete spec.spanCols;
+      delete spec.widgetKind;
+      delete spec.widgetLayers;
+      delete spec.refreshIntervalMs;
+    }
+    if (nextType !== "app" && nextType !== "window_toggle") {
+      delete spec.smartToggle;
+      delete spec.watchProcess;
+      if (spec.toggleSyncMode === "window" || spec.toggleSyncMode === "process") {
+        delete spec.toggleSyncMode;
+      }
+      if (spec.action2 && spec.action2.type === "window_toggle") {
+        delete spec.action2;
+        spec.toggleAction = false;
+      }
+      if (spec.badgeState2 && (spec.badgeState2.text === "前台" || spec.badgeState2.text === "后台")) {
+        spec.badgeToggle = false;
+        spec.badgeState2.text = "运行中";
+      }
+      spec._activeState = 0;
+      spec._windowSubState = "stopped";
+      if (selected && pageId) {
+        setRuntimeCellState(pageId, selected.row, selected.col, { activeState: 0, windowSubState: "stopped" });
+      }
+    }
+  }
+}
+
+const TEXT_ICON_TEMPLATES = [
+  { id: "glass", name: "极简毛玻璃", badge: "Frosted", desc: "高透微光斜切折射 + 悬浮大字", defaultText1: "DEV", defaultText2: "BUILD", accent: "#38bdf8", bgColor: "#0f172a" },
+  { id: "neon", name: "赛博霓虹", badge: "Cyber", desc: "暗夜机甲切角外框 + 双重霓虹辉光", defaultText1: "OBS", defaultText2: "LIVE", accent: "#c084fc", bgColor: "#090714" },
+  { id: "keycap", name: "3D 机械键帽", badge: "Keycap", desc: "球帽内凹指槽与四边立体倒角", defaultText1: "⌘C", defaultText2: "COPY", accent: "#fbbf24", bgColor: "#1e293b" },
+  { id: "pill", name: "双行胶囊", badge: "Capsule", desc: "顶部高亮胶囊铭牌 + 底部醒目主字", defaultText1: "PRO", defaultText2: "编译", accent: "#34d399", bgColor: "#091914" },
+  { id: "stamp", name: "印章徽标", badge: "Stamp", desc: "微倾双环印章边框 + 醒目徽章字", defaultText1: "核准", defaultText2: "PASS", accent: "#f87171", bgColor: "#1c0d0d" },
+  { id: "gradient_text", name: "流光渐变字", badge: "Gradient", desc: "多色流光渐变填充字 + 极光底栏", defaultText1: "AI", defaultText2: "AGENT", accent: "#ec4899", bgColor: "#0f1021" },
+  { id: "terminal", name: "终端代码", badge: "Shell", desc: "三色窗口顶栏 + 极客命令提示符", defaultText1: "git", defaultText2: "push", accent: "#2dd4bf", bgColor: "#0a0f16" },
+  { id: "ring", name: "环形徽标", badge: "Orbital", desc: "精密刻度能量圆环 + 中心视觉锚点", defaultText1: "MAX", defaultText2: "100%", accent: "#60a5fa", bgColor: "#0b1324" },
+];
+
+const TEXT_ICON_PALETTES = [
+  { name: "电光蓝", accent: "#38bdf8", bg: "#0f172a", fg: "#ffffff" },
+  { name: "赛博紫", accent: "#c084fc", bg: "#140b24", fg: "#ffffff" },
+  { name: "翡翠绿", accent: "#34d399", bg: "#082019", fg: "#ffffff" },
+  { name: "琥珀金", accent: "#fbbf24", bg: "#211706", fg: "#ffffff" },
+  { name: "烈焰红", accent: "#f87171", bg: "#240b0b", fg: "#ffffff" },
+  { name: "霓虹粉", accent: "#f472b6", bg: "#230b19", fg: "#ffffff" },
+  { name: "极客青", accent: "#2dd4bf", bg: "#071f1e", fg: "#ffffff" },
+  { name: "曜石银", accent: "#e2e8f0", bg: "#18181b", fg: "#ffffff" },
+];
+
+const TEXT_ICON_FONTS = [
+  { id: "sans", name: "现代黑体 (YaHei / Segoe)", family: "'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif" },
+  { id: "mono", name: "极客等宽 (Consolas / Mono)", family: "Consolas, 'JetBrains Mono', 'Courier New', monospace" },
+  { id: "heavy", name: "几何重黑 (Arial Black)", family: "'Segoe UI Black', 'Arial Black', 'Microsoft YaHei', sans-serif" },
+  { id: "serif", name: "典雅衬线 (Georgia / Serif)", family: "Georgia, 'Times New Roman', 'Songti SC', serif" },
+];
+
+function fitSingleLineFontSize(ctx, text, maxW, startFs, minFs, weight, fontFamily) {
+  let fs = startFs;
+  while (fs > minFs) {
+    ctx.font = `${weight} ${fs}px ${fontFamily}`;
+    if (ctx.measureText(text).width <= maxW) break;
+    fs -= 2;
+  }
+  return fs;
+}
+
+function renderTextIconCanvas(rawCfg, size = 192) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  const s = size / 192;
+
+  const tpl = TEXT_ICON_TEMPLATES.find(t => t.id === (rawCfg && rawCfg.style)) || TEXT_ICON_TEMPLATES[0];
+  const style = tpl.id;
+  const text1 = String((rawCfg && rawCfg.text1 !== undefined) ? rawCfg.text1 : (tpl.defaultText1 || "ICON")).trim() || "KEY";
+  const text2 = String((rawCfg && rawCfg.text2 !== undefined) ? rawCfg.text2 : "").trim();
+  const accent = (rawCfg && rawCfg.accent) || tpl.accent || "#38bdf8";
+  const bgColor = (rawCfg && rawCfg.bgColor) || tpl.bgColor || "#0f172a";
+  const textColor = (rawCfg && rawCfg.textColor) || "#ffffff";
+  const bgTransparent = !!(rawCfg && rawCfg.bgTransparent);
+  const fontObj = TEXT_ICON_FONTS.find(f => f.id === (rawCfg && rawCfg.fontId)) || TEXT_ICON_FONTS[0];
+  const fontFamily = fontObj.family;
+  const fontScale = Math.max(60, Math.min(145, Number(rawCfg && rawCfg.fontScale) || 100)) / 100;
+  const radius = Math.round(Math.max(8, Math.min(80, Number(rawCfg && rawCfg.radius !== undefined ? rawCfg.radius : 36))) * s);
+  const pad = Math.round(10 * s);
+  const boxW = size - pad * 2;
+  const boxH = size - pad * 2;
+
+  ctx.clearRect(0, 0, size, size);
+
+  const drawRoundedBox = (x, y, w, h, r) => {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+  };
+
+  // Base background (unless transparent mode is enabled so board gradient shines through)
+  if (!bgTransparent) {
+    ctx.save();
+    drawRoundedBox(pad, pad, boxW, boxH, radius);
+    ctx.clip();
+    const bgGrad = ctx.createLinearGradient(pad, pad, pad + boxW, pad + boxH);
+    bgGrad.addColorStop(0, bgColor);
+    bgGrad.addColorStop(1, "#050811");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(pad, pad, boxW, boxH);
+
+    // Subtle radial ambient glow from accent color
+    const radGlow = ctx.createRadialGradient(size * 0.5, size * 0.32, 4 * s, size * 0.5, size * 0.5, size * 0.52);
+    radGlow.addColorStop(0, accent + "44");
+    radGlow.addColorStop(1, "transparent");
+    ctx.fillStyle = radGlow;
+    ctx.fillRect(pad, pad, boxW, boxH);
+    ctx.restore();
+  }
+
+  // Template-specific decorative chrome
+  if (style === "glass") {
+    ctx.save();
+    drawRoundedBox(pad, pad, boxW, boxH, radius);
+    ctx.clip();
+    const sheen = ctx.createLinearGradient(pad, pad, pad + boxW * 0.85, pad + boxH * 0.65);
+    sheen.addColorStop(0, "rgba(255,255,255,0.22)");
+    sheen.addColorStop(0.46, "rgba(255,255,255,0.05)");
+    sheen.addColorStop(0.47, "rgba(255,255,255,0.0)");
+    sheen.addColorStop(1, "rgba(255,255,255,0.0)");
+    ctx.fillStyle = sheen;
+    ctx.fillRect(pad, pad, boxW, boxH);
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, Math.max(4, radius - 2));
+    ctx.strokeStyle = accent + "88";
+    ctx.lineWidth = 2.5 * s;
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "neon") {
+    ctx.save();
+    drawRoundedBox(pad + 4 * s, pad + 4 * s, boxW - 8 * s, boxH - 8 * s, Math.max(6, radius - 4));
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 14 * s;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3.2 * s;
+    ctx.stroke();
+    ctx.restore();
+
+    // Corner cyber brackets
+    ctx.save();
+    ctx.strokeStyle = "#ffffffcc";
+    ctx.lineWidth = 2.2 * s;
+    const cLen = 14 * s;
+    const m = pad + 11 * s;
+    // Top-left & bottom-right accents
+    ctx.beginPath();
+    ctx.moveTo(m, m + cLen); ctx.lineTo(m, m); ctx.lineTo(m + cLen, m);
+    ctx.moveTo(size - m - cLen, size - m); ctx.lineTo(size - m, size - m); ctx.lineTo(size - m, size - m - cLen);
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "keycap") {
+    // 3D Mechanical Keycap Bevel
+    ctx.save();
+    const outerR = radius;
+    if (bgTransparent) {
+      drawRoundedBox(pad, pad, boxW, boxH, outerR);
+      ctx.fillStyle = bgColor;
+      ctx.fill();
+    }
+    // Bottom & side shadow bevel
+    drawRoundedBox(pad, pad, boxW, boxH, outerR);
+    ctx.lineWidth = 3 * s;
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.stroke();
+
+    const dishPad = Math.round(23 * s);
+    const dishW = size - dishPad * 2;
+    const dishH = size - dishPad * 2 - Math.round(4 * s);
+    const dishY = dishPad - Math.round(3 * s);
+    const dishR = Math.max(8, Math.round(outerR * 0.72));
+
+    // Chamfer lines connecting outer corners to inner dish
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 1.6 * s;
+    ctx.beginPath();
+    ctx.moveTo(pad + 8 * s, pad + 8 * s); ctx.lineTo(dishPad + 4 * s, dishY + 4 * s);
+    ctx.moveTo(size - pad - 8 * s, pad + 8 * s); ctx.lineTo(size - dishPad - 4 * s, dishY + 4 * s);
+    ctx.stroke();
+
+    // Inner concave dish
+    drawRoundedBox(dishPad, dishY, dishW, dishH, dishR);
+    const dishGrad = ctx.createLinearGradient(dishPad, dishY, dishPad, dishY + dishH);
+    dishGrad.addColorStop(0, "#1e293b");
+    dishGrad.addColorStop(1, bgColor);
+    ctx.fillStyle = dishGrad;
+    ctx.fill();
+    ctx.strokeStyle = accent + "99";
+    ctx.lineWidth = 2.2 * s;
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "pill") {
+    ctx.save();
+    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, radius);
+    ctx.strokeStyle = accent + "66";
+    ctx.lineWidth = 2.2 * s;
+    ctx.stroke();
+
+    // Top glowing pill bar
+    const pillW = Math.round(boxW * 0.76);
+    const pillH = Math.round(44 * s);
+    const pillX = Math.round((size - pillW) / 2);
+    const pillY = Math.round(pad + 18 * s);
+    drawRoundedBox(pillX, pillY, pillW, pillH, pillH / 2);
+    ctx.fillStyle = accent;
+    ctx.shadowColor = accent + "88";
+    ctx.shadowBlur = 10 * s;
+    ctx.fill();
+    ctx.restore();
+
+    // Render text inside pill & bottom area directly
+    ctx.save();
+    const topStr = text2 ? text1 : "ACTION";
+    const botStr = text2 ? text2 : text1;
+    const pillFs = fitSingleLineFontSize(ctx, topStr, boxW * 0.66, Math.round(24 * s * fontScale), Math.round(12 * s), "900", fontFamily);
+    ctx.font = `900 ${pillFs}px ${fontFamily}`;
+    ctx.fillStyle = "#06101e";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(topStr, size / 2, pad + 40 * s);
+
+    const botFs = fitSingleLineFontSize(ctx, botStr, boxW * 0.82, Math.round(48 * s * fontScale), Math.round(18 * s), "900", fontFamily);
+    ctx.font = `900 ${botFs}px ${fontFamily}`;
+    ctx.fillStyle = textColor;
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 6 * s;
+    ctx.fillText(botStr, size / 2, size * 0.67);
+    ctx.restore();
+    return c;
+  } else if (style === "stamp") {
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate((-6 * Math.PI) / 180);
+    const sw = boxW - 18 * s;
+    const sh = boxH - 18 * s;
+    drawRoundedBox(-sw / 2, -sh / 2, sw, sh, Math.min(radius, 28 * s));
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 5 * s;
+    ctx.stroke();
+
+    drawRoundedBox(-sw / 2 + 7 * s, -sh / 2 + 7 * s, sw - 14 * s, sh - 14 * s, Math.max(6, Math.min(radius, 28 * s) - 5 * s));
+    ctx.setLineDash([6 * s, 4 * s]);
+    ctx.lineWidth = 2 * s;
+    ctx.strokeStyle = accent + "cc";
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const maxW = sw - 26 * s;
+    if (text2) {
+      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(44 * s * fontScale), Math.round(16 * s), "900", fontFamily);
+      ctx.font = `900 ${fs1}px ${fontFamily}`;
+      ctx.fillStyle = textColor;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text1, 0, -14 * s);
+
+      const fs2 = fitSingleLineFontSize(ctx, text2, maxW, Math.round(22 * s * fontScale), Math.round(11 * s), "800", fontFamily);
+      ctx.font = `800 ${fs2}px ${fontFamily}`;
+      ctx.fillStyle = accent;
+      ctx.fillText(text2, 0, 24 * s);
+    } else {
+      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(52 * s * fontScale), Math.round(18 * s), "900", fontFamily);
+      ctx.font = `900 ${fs1}px ${fontFamily}`;
+      ctx.fillStyle = accent;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text1, 0, 2 * s);
+    }
+    ctx.restore();
+    return c;
+  } else if (style === "terminal") {
+    ctx.save();
+    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.min(radius, 28 * s));
+    ctx.strokeStyle = accent + "77";
+    ctx.lineWidth = 2.2 * s;
+    ctx.stroke();
+
+    // Terminal header bar & traffic dots
+    const dotY = pad + 18 * s;
+    const dots = [["#ff5f56", pad + 20 * s], ["#ffbd2e", pad + 34 * s], ["#27c93f", pad + 48 * s]];
+    for (const [col, dx] of dots) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(dx, dotY, 4.5 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.1)";
+    ctx.lineWidth = 1.5 * s;
+    ctx.beginPath();
+    ctx.moveTo(pad + 6 * s, pad + 31 * s);
+    ctx.lineTo(size - pad - 6 * s, pad + 31 * s);
+    ctx.stroke();
+
+    const termFont = "Consolas, 'JetBrains Mono', 'Microsoft YaHei', monospace";
+    const maxW = boxW - 24 * s;
+    const line1Str = `>${text1}`;
+    const fs1 = fitSingleLineFontSize(ctx, line1Str, maxW, Math.round((text2 ? 40 : 46) * s * fontScale), Math.round(15 * s), "bold", termFont);
+    ctx.font = `bold ${fs1}px ${termFont}`;
+    ctx.fillStyle = accent;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(line1Str, size / 2, text2 ? size * 0.51 : size * 0.58);
+
+    if (text2) {
+      const fs2 = fitSingleLineFontSize(ctx, text2 + "_", maxW, Math.round(25 * s * fontScale), Math.round(12 * s), "bold", termFont);
+      ctx.font = `bold ${fs2}px ${termFont}`;
+      ctx.fillStyle = textColor;
+      ctx.fillText(text2 + "_", size / 2, size * 0.75);
+    }
+    ctx.restore();
+    return c;
+  } else if (style === "ring") {
+    ctx.save();
+    const cx = size / 2;
+    const cy = size / 2;
+    const ringR = Math.round(size * 0.39);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 6 * s;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, -Math.PI * 0.75, Math.PI * 0.85);
+    ctx.strokeStyle = accent;
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 10 * s;
+    ctx.lineWidth = 6.5 * s;
+    ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "gradient_text") {
+    ctx.save();
+    // Bottom glowing accent bar
+    const barW = Math.round(boxW * 0.52);
+    const barH = Math.round(6 * s);
+    drawRoundedBox((size - barW) / 2, size - pad - 18 * s, barW, barH, barH / 2);
+    const barGrad = ctx.createLinearGradient((size - barW) / 2, 0, (size + barW) / 2, 0);
+    barGrad.addColorStop(0, accent);
+    barGrad.addColorStop(1, "#38bdf8");
+    ctx.fillStyle = barGrad;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Standard 1-line or 2-line centered typography for glass / neon / keycap / gradient_text / ring
+  ctx.save();
+  const maxTextW = style === "ring" ? boxW * 0.64 : (style === "keycap" ? boxW * 0.68 : boxW * 0.82);
+  const centerY = style === "keycap" ? size * 0.48 : size * 0.5;
+
+  const makeTextFill = (yTop, yBot) => {
+    if (style === "gradient_text") {
+      const tg = ctx.createLinearGradient(size * 0.2, yTop, size * 0.8, yBot);
+      tg.addColorStop(0, "#ffffff");
+      tg.addColorStop(0.45, accent);
+      tg.addColorStop(1, "#38bdf8");
+      return tg;
+    }
+    return textColor;
+  };
+
+  if (style === "neon") {
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 16 * s;
+  } else {
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 6 * s;
+    ctx.shadowOffsetY = 2 * s;
+  }
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  if (text2) {
+    const base1 = Math.round((text1.length <= 2 ? 56 : (text1.length === 3 ? 46 : 38)) * s * fontScale);
+    const fs1 = fitSingleLineFontSize(ctx, text1, maxTextW, base1, Math.round(16 * s), "900", fontFamily);
+    ctx.font = `900 ${fs1}px ${fontFamily}`;
+    ctx.fillStyle = makeTextFill(centerY - fs1, centerY);
+    ctx.fillText(text1, size / 2, centerY - Math.round(17 * s));
+
+    const base2 = Math.round(23 * s * fontScale);
+    const fs2 = fitSingleLineFontSize(ctx, text2, maxTextW, base2, Math.round(11 * s), "800", fontFamily);
+    ctx.font = `800 ${fs2}px ${fontFamily}`;
+    ctx.shadowBlur = style === "neon" ? 8 * s : 3 * s;
+    ctx.fillStyle = accent;
+    ctx.fillText(text2, size / 2, centerY + Math.round(25 * s));
+  } else {
+    const base1 = Math.round((text1.length === 1 ? 76 : (text1.length === 2 ? 64 : (text1.length === 3 ? 50 : 40))) * s * fontScale);
+    const fs1 = fitSingleLineFontSize(ctx, text1, maxTextW, base1, Math.round(16 * s), "900", fontFamily);
+    ctx.font = `900 ${fs1}px ${fontFamily}`;
+    ctx.fillStyle = makeTextFill(centerY - fs1 / 2, centerY + fs1 / 2);
+    ctx.fillText(text1, size / 2, centerY + 1 * s);
+  }
+
+  ctx.restore();
+  return c;
+}
+
+function openTextIconStudio(initialSpec, onApply) {
+  const existingCfg = (initialSpec && initialSpec.textIconConfig && typeof initialSpec.textIconConfig === "object")
+    ? Object.assign({}, initialSpec.textIconConfig)
+    : null;
+  const rawLabel = String((initialSpec && initialSpec.label) || "").trim();
+  const labelLines = rawLabel ? rawLabel.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+
+  const state = Object.assign({
+    style: "glass",
+    text1: labelLines[0] ? labelLines[0].slice(0, 6) : "DEV",
+    text2: labelLines[1] ? labelLines[1].slice(0, 8) : "PRO",
+    accent: "#38bdf8",
+    bgColor: (initialSpec && initialSpec.color) || "#0f172a",
+    textColor: "#ffffff",
+    fontId: "sans",
+    fontScale: 100,
+    radius: 36,
+    bgTransparent: false,
+    hideKeyLabel: true,
+  }, existingCfg || {});
+
+  const wrap = document.createElement("div");
+  wrap.className = "modal";
+  wrap.id = "textIconStudioModal";
+  wrap.innerHTML = `
+    <div class="modalbox text-icon-modal-box">
+      <div class="tis-head">
+        <div>
+          <h3 style="margin:0; font-size:15px;">🔤 文字图标工坊 (Text Icon Studio)</h3>
+          <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">内置 8 套高颜值图标视觉模板 · 支持双行文字、发光霓虹、3D 键帽与透明整板流光底</div>
+        </div>
+        <button type="button" class="ghost tiny" id="tisCloseBtn">✕ 关闭</button>
+      </div>
+
+      <div class="tis-body">
+        <div class="tis-preview-col">
+          <div style="font-size:11px; font-weight:700; color:var(--muted);">1:1 实时高清渲染预览</div>
+          <div class="tis-preview-stage" id="tisPreviewStage">
+            <canvas id="tisPreviewCanvas" width="192" height="192"></canvas>
+          </div>
+          <div style="font-size:10.5px; color:var(--muted); text-align:center; line-height:1.4;">
+            192×192 超采样矢量级抗锯齿<br>支持随时再次点击「🔤 文字图标」无损回填修改
+          </div>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink); cursor:pointer; margin-top:4px;">
+            <input type="checkbox" id="tisBgTransparent" ${state.bgTransparent ? "checked" : ""} />
+            <span>🌈 透明底色（透出整板流光渐变）</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink); cursor:pointer;">
+            <input type="checkbox" id="tisHideKeyLabel" ${state.hideKeyLabel ? "checked" : ""} />
+            <span>✨ 自动隐藏按键下方重复标题</span>
+          </label>
+          <button type="button" class="ghost tiny" id="tisSaveToLibBtn" style="width:100%; margin-top:4px;">⭐ 同时存入自定义图标库</button>
+        </div>
+
+        <div class="tis-ctrl-col">
+          <div>
+            <div style="font-size:11.5px; font-weight:700; color:var(--ink); margin-bottom:6px;">🎨 1. 选择视觉模板 (8 套精调样式)</div>
+            <div class="tis-template-grid" id="tisTemplateGrid">
+              ${TEXT_ICON_TEMPLATES.map(t => `
+                <button type="button" class="tis-tpl-card ${state.style === t.id ? "active" : ""}" data-tpl="${t.id}" title="${escapeAttr(t.desc)}">
+                  <span class="tis-tpl-badge">${escapeHtml(t.badge)}</span>
+                  <span class="tis-tpl-name">${escapeHtml(t.name)}</span>
+                </button>
+              `).join("")}
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+            <div>
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">主标题文字 (第 1 行，建议 1~5 字)</label>
+              <input id="tisText1" type="text" maxlength="8" value="${escapeAttr(state.text1)}" placeholder="如 DEV / 静音 / ⌘C" style="font-weight:700;" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">副标题 / 胶囊标 (第 2 行，可留空)</label>
+              <input id="tisText2" type="text" maxlength="10" value="${escapeAttr(state.text2)}" placeholder="留空则为单行居中大字" />
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: 1.2fr 1fr; gap:8px; align-items:center;">
+            <div>
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">字体风格</label>
+              <select id="tisFontId">
+                ${TEXT_ICON_FONTS.map(f => `<option value="${f.id}" ${state.fontId === f.id ? "selected" : ""}>${escapeHtml(f.name)}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">主题色板一键切换</label>
+              <div class="tis-color-row" id="tisPaletteRow">
+                ${TEXT_ICON_PALETTES.map(p => `
+                  <span class="tis-color-dot" data-accent="${p.accent}" data-bg="${p.bg}" data-fg="${p.fg}" title="${p.name}" style="background: linear-gradient(135deg, ${p.accent}, ${p.bg});"></span>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; background:var(--panel-2); padding:8px 10px; border-radius:8px; border:1px solid var(--line);">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-size:11px; color:var(--muted);">霓虹/主色</span>
+              <input id="tisAccentColor" type="color" value="${state.accent}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-size:11px; color:var(--muted);">背景底色</span>
+              <input id="tisBgColor" type="color" value="${state.bgColor}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-size:11px; color:var(--muted);">主文字色</span>
+              <input id="tisTextColor" type="color" value="${state.textColor}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:3px;">
+                <span>字号缩放比例</span>
+                <b id="tisFontScaleVal">${state.fontScale}%</b>
+              </div>
+              <input id="tisFontScale" type="range" min="65" max="135" value="${state.fontScale}" />
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:3px;">
+                <span>外框圆角弧度</span>
+                <b id="tisRadiusVal">${state.radius}px</b>
+              </div>
+              <input id="tisRadius" type="range" min="10" max="76" value="${state.radius}" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tis-foot">
+        <button type="button" class="ghost" id="tisCancelBtn">取消</button>
+        <button type="button" class="primary" id="tisApplyBtn" style="min-width:130px;">✓ 立即生成并应用</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(wrap);
+
+  const previewCnv = wrap.querySelector("#tisPreviewCanvas");
+  const updatePreview = () => {
+    const rendered = renderTextIconCanvas(state, 192);
+    const pctx = previewCnv.getContext("2d");
+    pctx.clearRect(0, 0, 192, 192);
+    pctx.drawImage(rendered, 0, 0);
+  };
+
+  updatePreview();
+
+  const close = () => wrap.remove();
+  wrap.querySelector("#tisCloseBtn").onclick = close;
+  wrap.querySelector("#tisCancelBtn").onclick = close;
+  wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+
+  wrap.querySelectorAll(".tis-tpl-card").forEach(btn => {
+    btn.onclick = () => {
+      const tplId = btn.dataset.tpl;
+      const tpl = TEXT_ICON_TEMPLATES.find(t => t.id === tplId);
+      state.style = tplId;
+      if (tpl) {
+        state.accent = tpl.accent;
+        state.bgColor = tpl.bgColor;
+        wrap.querySelector("#tisAccentColor").value = state.accent;
+        wrap.querySelector("#tisBgColor").value = state.bgColor;
+      }
+      wrap.querySelectorAll(".tis-tpl-card").forEach(b => b.classList.toggle("active", b === btn));
+      updatePreview();
+    };
+  });
+
+  wrap.querySelector("#tisText1").oninput = (e) => {
+    state.text1 = e.target.value;
+    updatePreview();
+  };
+  wrap.querySelector("#tisText2").oninput = (e) => {
+    state.text2 = e.target.value;
+    updatePreview();
+  };
+  wrap.querySelector("#tisFontId").onchange = (e) => {
+    state.fontId = e.target.value;
+    updatePreview();
+  };
+  wrap.querySelectorAll(".tis-color-dot").forEach(dot => {
+    dot.onclick = () => {
+      state.accent = dot.dataset.accent;
+      state.bgColor = dot.dataset.bg;
+      state.textColor = dot.dataset.fg || "#ffffff";
+      wrap.querySelector("#tisAccentColor").value = state.accent;
+      wrap.querySelector("#tisBgColor").value = state.bgColor;
+      wrap.querySelector("#tisTextColor").value = state.textColor;
+      updatePreview();
+    };
+  });
+  wrap.querySelector("#tisAccentColor").oninput = (e) => { state.accent = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisBgColor").oninput = (e) => { state.bgColor = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisTextColor").oninput = (e) => { state.textColor = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisBgTransparent").onchange = (e) => { state.bgTransparent = e.target.checked; updatePreview(); };
+  wrap.querySelector("#tisHideKeyLabel").onchange = (e) => { state.hideKeyLabel = e.target.checked; };
+
+  const fsInput = wrap.querySelector("#tisFontScale");
+  fsInput.oninput = () => {
+    state.fontScale = Number(fsInput.value);
+    wrap.querySelector("#tisFontScaleVal").textContent = state.fontScale + "%";
+    updatePreview();
+  };
+  const radInput = wrap.querySelector("#tisRadius");
+  radInput.oninput = () => {
+    state.radius = Number(radInput.value);
+    wrap.querySelector("#tisRadiusVal").textContent = state.radius + "px";
+    updatePreview();
+  };
+
+  wrap.querySelector("#tisSaveToLibBtn").onclick = async () => {
+    const outCnv = renderTextIconCanvas(state, 192);
+    const dataUrl = outCnv.toDataURL("image/png");
+    const name = [state.text1, state.text2].filter(Boolean).join(" · ") || "文字图标";
+    cfg.customIcons = cfg.customIcons || [];
+    cfg.customIcons.unshift({
+      id: "ci_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      name,
+      icon: dataUrl,
+      category: "常用",
+      tags: ["文字图标"],
+      textIconConfig: Object.assign({}, state),
+      addedAt: Date.now(),
+    });
+    await saveConfig();
+    toast(`⭐ 已将文字图标「${name}」存入自定义图标库`);
+  };
+
+  wrap.querySelector("#tisApplyBtn").onclick = () => {
+    const outCnv = renderTextIconCanvas(state, 192);
+    const dataUrl = outCnv.toDataURL("image/png");
+    const tpl = TEXT_ICON_TEMPLATES.find(t => t.id === state.style);
+    close();
+    if (onApply) {
+      onApply({
+        dataUrl,
+        config: Object.assign({}, state),
+        templateName: tpl ? tpl.name : "文字图标",
+      });
+    }
+  };
+}
+
 function openIconPicker() {
   iconPickerTarget = null;
   if (!selected || selected.col === 5 || isBackCell(selected.row, selected.col)) {
@@ -10231,6 +10985,44 @@ function initIconPicker() {
       } else {
         toast('未提取到有效图标');
       }
+    };
+  }
+
+  const btnIpTextIcon = $('ipOpenTextIcon');
+  if (btnIpTextIcon) {
+    btnIpTextIcon.onclick = () => {
+      const targetSpec = (iconPickerTarget === 'libModal' && currentLibModalSpec)
+        ? currentLibModalSpec
+        : ((selected && selected.col < 5) ? pageButtons()[`${selected.row},${selected.col}`] : null);
+      openTextIconStudio(targetSpec || {}, async (res) => {
+        if (iconPickerTarget === 'libModal' && currentLibModalSpec) {
+          currentLibModalSpec.icon = res.dataUrl;
+          currentLibModalSpec.textIconConfig = res.config;
+          if (res.config && res.config.hideKeyLabel) currentLibModalSpec.label = '';
+          updateLkmStyleUI();
+          updateLkmSwatch();
+          closeIconPicker();
+          iconPickerTarget = null;
+          toast(`🔤 已为按键应用「${res.templateName}」文字图标`);
+          return;
+        }
+        if (selected && selected.col < 5 && !isBackCell(selected.row, selected.col)) {
+          const sp = pageButtons()[`${selected.row},${selected.col}`];
+          if (sp) {
+            pushHistory('生成自定义文字图标');
+            sp.icon = res.dataUrl;
+            sp.textIconConfig = res.config;
+            if (res.config && res.config.hideKeyLabel) {
+              sp.label = '';
+              sp.iconScale = Math.max(Number(sp.iconScale) || 62, 84);
+            }
+            await commit(true);
+            renderInspector();
+            closeIconPicker();
+            toast(`🔤 已应用「${res.templateName}」文字图标`);
+          }
+        }
+      });
     };
   }
 
@@ -11253,6 +12045,22 @@ function bindShell() {
 
     // Tab 2: 外观与样式事件
     $('lkmOpenIconPicker').onclick = openIconPickerForLib;
+    if ($('lkmOpenTextIcon')) {
+      $('lkmOpenTextIcon').onclick = () => {
+        if (!currentLibModalSpec) return;
+        openTextIconStudio(currentLibModalSpec, (res) => {
+          currentLibModalSpec.icon = res.dataUrl;
+          currentLibModalSpec.textIconConfig = res.config;
+          if (res.config && res.config.hideKeyLabel) {
+            currentLibModalSpec.label = '';
+            currentLibModalSpec.iconScale = Math.max(Number(currentLibModalSpec.iconScale) || 62, 84);
+          }
+          updateLkmStyleUI();
+          updateLkmSwatch();
+          toast(`🔤 已应用「${res.templateName}」文字图标`);
+        });
+      };
+    }
     $('lkmPickLocalIcon').onclick = pickLocalIconForLib;
     $('lkmClearIcon').onclick = () => {
       if (!currentLibModalSpec) return;
@@ -12189,7 +12997,7 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // v0.10.5 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
+  // v0.10.6 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
   let _telemetryTickBusy = false;
   let _lastFullStatsFetchAt = 0;
   setInterval(async () => {

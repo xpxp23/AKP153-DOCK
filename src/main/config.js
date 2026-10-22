@@ -305,7 +305,31 @@ function normalizeKeySpec(s, posKey = null) {
     s.refreshIntervalMs = Math.max(150, Math.min(600000, Number(s.refreshIntervalMs) || 2500));
   }
   if (Array.isArray(s.widgetLayers)) {
-    s.widgetLayers = s.widgetLayers.filter((l) => l && typeof l === 'object' && l.kind);
+    s.widgetLayers = s.widgetLayers.filter((l) => l && typeof l === 'object' && (l.kind || l.source));
+  }
+  if (s.textIconConfig && typeof s.textIconConfig === 'object') {
+    s.textIconConfig = Object.assign({}, s.textIconConfig);
+  }
+
+  // 自动修复历史遗留的「任务栏窗口模式切回其它模式后动作与角标未还原」污染状态
+  if (s.toggleAction && s.toggleSyncMode && s.toggleSyncMode !== 'window') {
+    if (s.action2 && s.action2.type === 'window_toggle') {
+      const rawTarget = String(s.target || s.watchProcess || s.action2.target || '').trim();
+      const proc = rawTarget.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+      s.action2 = {
+        type: 'command',
+        target: proc ? `taskkill /F /IM ${proc}.exe` : '',
+        args: '',
+      };
+    }
+    if (s.badgeState2 && (s.badgeState2.text === '前台' || s.badgeState2.text === '后台')) {
+      s.badgeState2.text = '运行中';
+      s.badgeState2.bg = '#107c41';
+    }
+    if (s.badgeState1 && (s.badgeState1.text === '后台' || s.badgeState1.text === '前台')) {
+      s.badgeState1.text = '';
+      s.badgeState1.bg = '#546e7a';
+    }
   }
   return s;
 }

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Unidirectional Data Flow Engine: SpecStore & RuntimeStateStore (v0.10.5)
+ * Unidirectional Data Flow Engine: SpecStore & RuntimeStateStore (v0.10.6)
  *
  * 核心设计目标：
  * 1. 彻底分离「静态持久化配置 (SpecStore)」与「运行时动态状态树 (RuntimeStateStore)」。

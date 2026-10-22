@@ -209,7 +209,7 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
   const storeKeys = Object.keys(parsedDisk.iconStore || {});
   check("磁盘落盘自动生成 iconStore 哈希去重池", storeKeys.length === 1);
   check("磁盘按钮 icon 字段转为轻量 @icon: 引用", String(parsedDisk.pages[0].buttons["0,0"].icon).startsWith("@icon:"));
-  check("v0.10.5 自动剥离存量长按副动作字段 (longPressEnabled / longAction)",
+  check("v0.10.6 自动剥离存量长按副动作字段 (longPressEnabled / longAction)",
     parsedDisk.pages[0].buttons["0,0"].longPressEnabled === undefined &&
     parsedDisk.pages[0].buttons["0,0"].longAction === undefined);
   const reloaded = freshModule().load();
@@ -243,6 +243,30 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
   const knobPkt = Buffer.from([65, 67, 75, 0, 0, 8, 8, 8, 8, 0x51, 0]);
   const parsedEnc = parseHardwareInputPacket(knobPkt, "akp03");
   check("HardwareProfileAdapter: 正确解析 AKP03 旋钮顺时针旋转报文", parsedEnc && parsedEnc.eventType === "encoder" && parsedEnc.knob === 0 && parsedEnc.dir === "cw");
+
+  // 测试任务栏窗口模式切回 auto/process 后的污染状态自动清洗与 textIconConfig 无损持久化
+  c.pages[0].buttons["0,1"] = {
+    type: "app",
+    label: "WeChat",
+    target: "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe",
+    toggleAction: true,
+    toggleSyncMode: "auto",
+    watchProcess: "WeChat",
+    action2: { type: "window_toggle", target: "WeChat", watchProcess: "WeChat" },
+    badgeToggle: true,
+    badgeState1: { text: "后台", bg: "#d97706" },
+    badgeState2: { text: "前台", bg: "#107c41" },
+    textIconConfig: { style: "neon", text1: "微信", text2: "CHAT", accent: "#34d399", bgTransparent: true },
+  };
+  mod.save(c);
+  const healedWinMode = freshModule().load().pages[0].buttons["0,1"];
+  check("v0.10.6 当 toggleSyncMode 为 auto/process 时自动清洗残留的 window_toggle 动作与「前台/后台」角标",
+    healedWinMode.action2 && healedWinMode.action2.type === "command" &&
+    healedWinMode.action2.target.includes("taskkill") &&
+    healedWinMode.badgeState1.text === "" &&
+    healedWinMode.badgeState2.text === "运行中");
+  check("v0.10.6 文字图标工坊配置 (textIconConfig) 完整持久化用于二次无损回填编辑",
+    healedWinMode.textIconConfig && healedWinMode.textIconConfig.style === "neon" && healedWinMode.textIconConfig.text1 === "微信");
 }
 
 // ------------------------------------------------------------- 收尾 ------

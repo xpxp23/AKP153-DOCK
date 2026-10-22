@@ -171,7 +171,7 @@
           </div>
 
           <div class="settings-card">
-            <h5 class="card-title">物理按键输入保护与差量帧缓冲引擎 (v0.10.5)</h5>
+            <h5 class="card-title">物理按键输入保护与差量帧缓冲引擎 (v0.10.6)</h5>
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">按键连击防抖时间</span>
@@ -295,7 +295,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.10.5 (Unidirectional Store · Offscreen Dirty-Rect · Widget Studio · Hardware Profile Adapter)</span>
+                <span class="about-v">v0.10.6 (Text Icon Studio · Mirror Isolation · Window Restore · Unidirectional Store)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -578,6 +578,7 @@
             <label class="lkm-label">图标配置</label>
             <div class="btnrow" style="gap:6px;">
               <button type="button" id="lkmOpenIconPicker" class="ghost tiny">🎨 挑选矢量图标</button>
+              <button type="button" id="lkmOpenTextIcon" class="ghost tiny">🔤 文字图标…</button>
               <button type="button" id="lkmPickLocalIcon" class="ghost tiny">🖼️ 本地图片…</button>
               <button type="button" id="lkmClearIcon" class="ghost tiny danger">🗑️ 清除图标</button>
             </div>
@@ -784,6 +785,7 @@
     <div class="ip-head">
       <h3>精选矢量图标库</h3>
       <input id="ipSearch" class="ip-search" placeholder="搜索图标名称或标签…" />
+      <button id="ipOpenTextIcon" class="primary tiny" title="打开自定义多样式文字图标工坊">🔤 自定义文字图标…</button>
       <button id="ipBatchImport" class="ghost" title="选择多个本地图片、图标或程序批量存入当前分类">📁 批量导入…</button>
       <button id="ipClose" class="ghost">关闭</button>
     </div>

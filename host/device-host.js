@@ -1,6 +1,6 @@
 'use strict';
 /**
- * AKP153 / Multi-Model StreamDock Device Host (v0.10.5)
+ * AKP153 / Multi-Model StreamDock Device Host (v0.10.6)
  *
  * Runs as a PLAIN NODE process (not inside Electron) so that:
  *   - node-hid's N-API prebuild is used directly (no electron-rebuild / VS build tools)

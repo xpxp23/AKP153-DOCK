@@ -657,15 +657,23 @@ async function resolveButtonProcessName(spec) {
 
 function resolveEffectiveSyncMode(spec) {
   if (!spec) return 'manual';
-  const explicit = String(spec.toggleSyncMode || 'auto').toLowerCase();
-  const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target } : null);
-  const act2Target = String((act2 && act2.target) || '').toLowerCase();
-  if (explicit === 'window' || (act2 && (act2.type === 'window_toggle' || act2Target.startsWith('window_toggle:') || act2Target.startsWith('smart_window:')))) {
-    return 'window';
-  }
+  const explicit = String(spec.toggleSyncMode || '').toLowerCase();
+  // 严格优先尊重用户显式选择的同步模式，绝不允许残留的 action2.type === "window_toggle" 反向劫持回 window 模式！
   if (explicit === 'manual') return 'manual';
   if (explicit === 'process') return 'process';
-  // auto mode:
+  if (explicit === 'window') return 'window';
+  if (explicit === 'auto') {
+    if (spec.type !== 'app' || !spec.target) return 'manual';
+    if (runner.isScriptTarget(spec.target)) return 'manual';
+    if (spec._downgradedToManual) return 'manual';
+    return 'auto';
+  }
+  // 仅当 toggleSyncMode 未设置时，才根据 action2 推断兼容旧配置
+  const act2 = spec.action2 || (spec.act2Target ? { type: spec.act2Type || 'command', target: spec.act2Target } : null);
+  const act2Target = String((act2 && act2.target) || '').toLowerCase();
+  if (act2 && (act2.type === 'window_toggle' || act2Target.startsWith('window_toggle:') || act2Target.startsWith('smart_window:'))) {
+    return 'window';
+  }
   if (spec.type !== 'app' || !spec.target) return 'manual';
   if (runner.isScriptTarget(spec.target)) return 'manual';
   if (spec._downgradedToManual) return 'manual';
@@ -880,18 +888,31 @@ async function onKeyDown(row, col) {
 
     if (syncMode === 'window') {
       const procName = await resolveButtonProcessName(spec);
-      if (!hasAction2 && procName) {
+      if (procName) {
         const actRes = await NativeInput.activateOrToggleWindow(procName, true);
         if (!actRes || actRes.state === 'NOT_RUNNING' || actRes.state === 'TRAY_HIDDEN' || actRes.state === 'EMPTY') {
+          // 进程未运行或深藏托盘无法直接通过 HWND 恢复时，执行主动作 spec 重新拉起/唤醒单实例主窗口
           actionToRun = spec;
           spec._activeState = 1;
           spec._windowSubState = 'focused';
           spec._graceUntil = Date.now() + 7000;
           spec._everSeenRunning = false;
+          runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
+            activeState: 1,
+            windowSubState: 'focused',
+            graceUntil: spec._graceUntil,
+            everSeenRunning: false,
+          });
+          broadcast('key:toggleState', {
+            pageId: page.id,
+            row: effectiveRow,
+            col: effectiveCol,
+            activeState: 1,
+            windowSubState: 'focused',
+          });
         } else {
           spec._activeState = 1;
           spec._windowSubState = (actRes.state === 'MINIMIZED') ? 'minimized' : 'focused';
-          // 设置 1.5s 窗口动画保护宽限期，防止最小化动画期间被 fg 事件反向覆盖回 focused
           spec._graceUntil = Date.now() + 1500;
           runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
             activeState: spec._activeState,
@@ -909,34 +930,7 @@ async function onKeyDown(row, col) {
           log(`key r${row}c${col} -> window_toggle (${procName}) => ${actRes.state}`);
           return;
         }
-      } else {
-        const winState = procName ? await NativeInput.queryWindowState(procName) : 'NOT_RUNNING';
-        if (winState === 'NOT_RUNNING' || winState === 'TRAY_HIDDEN') {
-          actionToRun = spec;
-          spec._activeState = 1;
-          spec._windowSubState = 'focused';
-          spec._graceUntil = Date.now() + 7000;
-          spec._everSeenRunning = false;
-        } else {
-          actionToRun = hasAction2 ? act2 : { type: 'window_toggle', target: procName, watchProcess: procName };
-          spec._activeState = 1;
-          spec._windowSubState = (winState === 'FOREGROUND') ? 'minimized' : 'focused';
-          spec._graceUntil = Date.now() + 1500;
-        }
       }
-      runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
-        activeState: spec._activeState,
-        windowSubState: spec._windowSubState,
-        graceUntil: spec._graceUntil || 0,
-        everSeenRunning: !!spec._everSeenRunning,
-      });
-      broadcast('key:toggleState', {
-        pageId: page.id,
-        row: effectiveRow,
-        col: effectiveCol,
-        activeState: spec._activeState,
-        windowSubState: spec._windowSubState,
-      });
     } else {
       // 'auto' | 'process' | 'manual'
       const inGrace = spec._graceUntil && Date.now() < spec._graceUntil;

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * probe.js - AKP153 跨机便携化路径展开与智能软件探针 (v0.10.5)
+ * probe.js - AKP153 跨机便携化路径展开与智能软件探针 (v0.10.6)
  */
 const fs = require('fs');
 const path = require('path');

@@ -4496,7 +4496,7 @@ body[data-theme="dark"] .drawer.open .library {
 }
 
 /* =====================================================================
- * v0.10.5 UI/UX 全面美学升级：
+ * v0.10.6 UI/UX 全面美学升级：
  * 1. 一体式联屏玻璃副屏拟物外框 (Unified Side-Strip Glass Bezel)
  * 2. 多设备型号自适应布局与无极物理旋钮交互座舱 (Hardware Profile Adapter & Rotary Encoders)
  * 3. 页面与场景上下文切换丝滑过渡动效 (Context Transitions)
@@ -4782,4 +4782,196 @@ body[data-theme="dark"] .ws-freq-pill {
 .smart-badge-banner-desc {
   font-size: 10.5px;
   color: var(--muted);
+}
+
+/* 7. 硬件真彩 Canvas 预览模式强隔离：彻底消除一大一小双角标及文字/图标重影 */
+.cell.has-canvas > .badge-overlay,
+.cell.has-canvas > .thumb,
+.cell.has-canvas > .glyph,
+.cell.has-canvas > .cap,
+.cell.hw-mirror-cell > .badge-overlay,
+.cell.hw-mirror-cell > .thumb,
+.cell.hw-mirror-cell > .glyph,
+.cell.hw-mirror-cell > .cap {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* 8. 文字图标工坊 (Text Icon Studio Modal) */
+.text-icon-modal-box {
+  width: 680px;
+  max-width: 95vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+  overflow: hidden;
+}
+body[data-theme="dark"] .text-icon-modal-box {
+  background: #161b22;
+  border-color: #30363d;
+  color: #e6edf3;
+}
+.tis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.tis-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tis-body {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 16px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+.tis-preview-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+body[data-theme="dark"] .tis-preview-col {
+  background: #0d1117;
+  border-color: #30363d;
+}
+.tis-canvas-stage {
+  width: 132px;
+  height: 132px;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.14);
+  background-image:
+    linear-gradient(45deg, rgba(148,163,184,0.14) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148,163,184,0.14) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148,163,184,0.14) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148,163,184,0.14) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tis-canvas-stage canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.tis-quick-seeds {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: center;
+}
+.tis-seed-pill {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.tis-seed-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+body[data-theme="dark"] .tis-seed-pill {
+  background: #161b22;
+  border-color: #30363d;
+  color: #c9d1d9;
+}
+.tis-controls-col {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.tis-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.tis-tpl-card {
+  padding: 7px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.14s ease;
+}
+.tis-tpl-card:hover {
+  border-color: var(--accent);
+}
+.tis-tpl-card.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+body[data-theme="dark"] .tis-tpl-card {
+  background: #0d1117;
+  border-color: #30363d;
+  color: #c9d1d9;
+}
+.tis-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tis-pal-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+  transition: transform 0.14s ease;
+}
+.tis-pal-dot:hover {
+  transform: scale(1.15);
+}
+.tis-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+body[data-theme="dark"] .tis-foot {
+  background: #0d1117;
+  border-top-color: #30363d;
 }
