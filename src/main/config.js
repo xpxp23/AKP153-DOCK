@@ -44,7 +44,8 @@ const DEFAULTS = {
   contextBars: [],           // 场景上下文副屏栏规则列表
   weatherCity: 'Auto',       // 动态天气组件默认城市
   pomodoroMinutes: 25,       // 番茄钟默认专注分钟数
-  hudEnabled: true,          // 全屏游戏/后台切页、调音量、启停宏时顶部毛玻璃 HUD 胶囊提示
+  hudEnabled: true,          // 全屏游戏/后台切页、调音量、启停宏时桌面悬浮毛玻璃 OSD 灵动岛胶囊提示
+  osdPosition: 'bottom',     // 桌面悬浮 OSD 胶囊位置 ('bottom' | 'top')
   currentProfile: 'office',  // 当前激活的顶层 Profile ID
   profiles: [],              // 多套顶层配置文件 (办公/直播/剪辑/游戏模式)
   pages: [],
@@ -288,16 +289,23 @@ function normalizeKeySpec(s, posKey = null) {
     s.badgeToggle = true;
   }
 
-  // 跨格联屏越界保护：确保 col + colSpan <= 5
+  // 跨格联屏越界保护：统一兼容 spanCols 与旧版 colSpan，确保 col + spanCols <= 5
+  if (s.colSpan !== undefined && s.spanCols === undefined) {
+    s.spanCols = Number(s.colSpan) || 1;
+  }
+  delete s.colSpan;
   if (posKey && typeof posKey === 'string' && posKey.includes(',')) {
     const [, colStr] = posKey.split(',');
     const col = Number(colStr);
     if (!Number.isNaN(col) && col >= 0 && col < 5) {
       const maxSpan = 5 - col;
-      if (s.colSpan && Number(s.colSpan) > maxSpan) {
-        s.colSpan = maxSpan;
+      if (s.spanCols && Number(s.spanCols) > maxSpan) {
+        s.spanCols = maxSpan;
       }
     }
+  }
+  if (s.spanCols !== undefined && Number(s.spanCols) <= 1) {
+    delete s.spanCols;
   }
 
   // 规范化自定义小组件刷新周期与图层编排
@@ -376,6 +384,10 @@ function normalize(rawObj) {
       clone(DEFAULT_GRADIENT),
       (p.gradient && typeof p.gradient === 'object') ? p.gradient : {}
     );
+    p.stripPanorama = Object.assign(
+      { enabled: false, mode: 'vu_meter', color: '#0b111e', accent: '#00e5ff' },
+      (p.stripPanorama && typeof p.stripPanorama === 'object') ? p.stripPanorama : {}
+    );
     for (const st of Object.values(p.strips)) {
       if (st && typeof st === 'object') {
         st.pluginConfig = (st.pluginConfig && typeof st.pluginConfig === 'object') ? Object.assign({}, st.pluginConfig) : {};
@@ -436,7 +448,11 @@ function normalize(rawObj) {
     for (const k of ['icon', 'icon2']) {
       if (typeof obj[k] === 'string' && obj[k].startsWith('@icon:')) {
         const ref = obj[k].slice(6);
-        if (target.iconStore[ref]) obj[k] = target.iconStore[ref];
+        if (target.iconStore[ref]) {
+          const dataUrl = target.iconStore[ref];
+          iconHashMemo.set(dataUrl, ref);
+          obj[k] = dataUrl;
+        }
       }
     }
     if (obj.action2 && typeof obj.action2 === 'object') hydrateIconObj(obj.action2);

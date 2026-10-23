@@ -232,7 +232,7 @@ let lastTelemetry = {
   plugins: BUILTIN_MARKET_PLUGINS.map(p => Object.assign({}, p))
 };
 
-// v0.10.6: Unidirectional Renderer RuntimeStateStore & Dirty-Rect Hash Cache
+// v0.11.0: Unidirectional Renderer RuntimeStateStore & Dirty-Rect Hash Cache
 const rendererRuntimeStore = new Map(); // "${pageId}:${row},${col}" -> { activeState, windowSubState }
 const dirtyRectHashStore = new Map();   // "${pageId}:${row},${col}" -> visualHash
 const widgetLastTickMap = new Map();    // "${pageId}:${row},${col}" -> timestamp
@@ -1143,14 +1143,16 @@ function getActiveBadge(spec, keyPos = null) {
   if (hasToggleBadge) {
     const s1 = spec.badgeState1 || { text: spec.badge || '待机', bg: spec.badgeBg || '#546e7a', color: '#ffffff' };
     const s2 = spec.badgeState2 || { text: spec.badge2 || '运行中', bg: spec.color2 || '#107c41', color: '#ffffff' };
-    if (stateIdx === 1 && spec.toggleSyncMode === 'window' && (windowSubState === 'minimized' || windowSubState === 'background')) {
-      return {
-        text: '后台',
-        bg: '#d97706',
-        color: '#ffffff',
-        state: 1,
-        isToggle: true,
-      };
+    if (stateIdx === 1 && spec.toggleSyncMode === 'window') {
+      if (windowSubState === 'tray_hidden') {
+        return { text: '托盘', bg: '#9333ea', color: '#ffffff', state: 1, isToggle: true };
+      }
+      if (windowSubState === 'minimized') {
+        return { text: '最小化', bg: '#d97706', color: '#ffffff', state: 1, isToggle: true };
+      }
+      if (windowSubState === 'background') {
+        return { text: '后台可见', bg: '#0284c7', color: '#ffffff', state: 1, isToggle: true };
+      }
     }
     const sObj = stateIdx === 1 ? s2 : s1;
     const text = String(sObj && sObj.text !== undefined ? sObj.text : '').trim();
@@ -1211,6 +1213,9 @@ function computeRenderModel(spec, keyPos = null) {
       winSub,
       spec.widgetKind || '',
       spec.pluginId || '',
+      spec.holdPageId || '',
+      spec.animFps || 0,
+      spec.textIconConfig ? JSON.stringify(spec.textIconConfig) : '',
       layersSig,
     ].join('§'),
   };
@@ -1270,31 +1275,53 @@ async function paintKey(spec, size, keyPos) {
     drawBase(ctx, size, spec);
   }
 
-  const label = spec.label || '';
+  const label = String(spec.label || '').trim();
   const fg = spec.textColor || sampledFg || contrast(spec.color);
   const pos = spec.labelPos || 'bottom';
   const fs = Math.max(8, Math.round((size * (Number(spec.fontSize) || 17)) / 100));
-  const iconBox = (size * (Number(spec.iconScale) || 62)) / 100;
+  const rawScale = Number(spec.iconScale) || 62;
+  const isFullBleed = Boolean(
+    (spec.textIconConfig && spec.textIconConfig.fullBleed && !label && rawScale >= 96) ||
+    (!label && rawScale >= 99)
+  );
+  const effectiveScale = isFullBleed ? 100 : Math.max(25, Math.min(115, rawScale));
+  const iconBox = (size * effectiveScale) / 100;
 
-  let iconTop = size * 0.07;
-  if (!label) iconTop = (size - iconBox) / 2;
-  else if (pos === 'top') iconTop = Math.min(size - iconBox - size * 0.06, size * 0.14 + fs * 1.35);
-  else if (pos === 'center') iconTop = size * 0.03;
+  let iconTop;
+  if (isFullBleed) {
+    iconTop = 0;
+  } else if (!label || pos === 'center') {
+    // 修复 Bug 3：无文字或文字居中叠加模式下，图标严格置于画布几何正中心
+    iconTop = (size - iconBox) / 2;
+  } else if (pos === 'top') {
+    iconTop = Math.min(size - iconBox - size * 0.06, size * 0.14 + fs * 1.35);
+  } else {
+    // pos === 'bottom'：根据文字实际行数计算上半区可用空间并居中图标
+    const linesCount = Math.min(2, label.split(/\r?\n/).filter(Boolean).length || 1);
+    const textBlockH = linesCount * (fs * 1.18) + size * 0.11;
+    const availH = Math.max(iconBox, size - textBlockH);
+    iconTop = Math.max(size * 0.04, (availH - iconBox) / 2);
+  }
 
   if (spec.icon) {
     const img = await loadImage(spec.icon);
     if (img) {
-      const s = Math.min(iconBox / img.width, iconBox / img.height);
-      const w = img.width * s, h = img.height * s;
-      ctx.drawImage(img, (size - w) / 2, iconTop + (iconBox - h) / 2, w, h);
+      if (isFullBleed) {
+        ctx.drawImage(img, 0, 0, size, size);
+      } else {
+        const s = Math.min(iconBox / img.width, iconBox / img.height);
+        const w = img.width * s, h = img.height * s;
+        ctx.drawImage(img, (size - w) / 2, iconTop + (iconBox - h) / 2, w, h);
+      }
     }
   } else if (spec.type && spec.type !== 'text') {
     const gl = computeDynamicGlyph(spec);
     ctx.fillStyle = fg;
-    ctx.font = `${Math.round(iconBox * 0.72)}px "Microsoft YaHei", sans-serif`;
+    ctx.font = `${Math.round(iconBox * 0.72)}px "Microsoft YaHei", "Segoe UI Emoji", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(gl, size / 2, iconTop + iconBox / 2);
+    // 修正 Unicode 符号基线视觉下沉偏移
+    ctx.fillText(gl, size / 2, iconTop + iconBox / 2 + (label ? 0 : Math.round(size * 0.015)));
   }
 
   // 自定义角标徽章（静态徽章或动态双态 Toggle 徽章）
@@ -1320,6 +1347,24 @@ async function paintKey(spec, size, keyPos) {
     ctx.fill();
     ctx.shadowColor = 'transparent';
     ctx.fillStyle = activeBadge.color || '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, bx + bw / 2, by + bh / 2 + 0.5);
+    ctx.restore();
+  } else if (spec && spec.holdPageId) {
+    ctx.save();
+    const bh = Math.max(13, Math.round(size * 0.18));
+    const badgeText = '📂 弹层';
+    ctx.font = `bold ${Math.round(bh * 0.64)}px "Microsoft YaHei", sans-serif`;
+    const bw = Math.max(bh, Math.round((ctx.measureText ? ctx.measureText(badgeText).width : 28) + 7));
+    const bx = size * 0.05;
+    const by = size * 0.05;
+    ctx.fillStyle = 'rgba(124, 58, 237, 0.9)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, bh / 2);
+    else ctx.rect(bx, by, bw, bh);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeText, bx + bw / 2, by + bh / 2 + 0.5);
@@ -1417,7 +1462,8 @@ let offscreenWorker = null;
 let offscreenSeq = 1;
 const offscreenPending = new Map();
 let isWindowVisible = true;
-let hwMirrorEnabled = false;
+// 阶段一 2：默认全局启用 1:1 硬件级高清 Canvas 渲染管线，彻底消除 DOM 预览与真机 LCD 的偏差
+let hwMirrorEnabled = true;
 const _hwMirrorCanvasCache = new Map();
 let cachedPluginSchemas = [];
 
@@ -1453,7 +1499,13 @@ function ensureOffscreenWorker() {
           ctx.drawImage(m.bitmap, 0, 0, s, s);
           ctx.restore();
           if (m.bitmap && m.bitmap.close) m.bitmap.close();
-          const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.90 });
+          const maxBytes = m.maxBytes || 10240;
+          let q = 0.90;
+          let blob = await c.convertToBlob({ type: 'image/jpeg', quality: q });
+          while (blob.size > maxBytes && q > 0.35) {
+            q -= 0.10;
+            blob = await c.convertToBlob({ type: 'image/jpeg', quality: Math.max(0.3, q) });
+          }
           let b64 = '';
           if (typeof FileReaderSync !== 'undefined') {
             const url = new FileReaderSync().readAsDataURL(blob);
@@ -1554,10 +1606,62 @@ async function pushKey(row, col, force = false) {
   const spec = isBackCell(row, col) ? backSpec() : pageButtons()[row + ',' + col];
   const size = col === 5 ? 80 : 96;
   const blank = { color: '#20262e', label: '' };
-  const c = await paintKey(spec || blank, size, { row, col });
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
+  const pageId = (curPage() && curPage().id) || 'p1';
+  const sigKey = `${pageId}:${row},${col}`;
+  const gradSig = (curPage() && curPage().gradient && curPage().gradient.enabled)
+    ? `${curPage().gradient.from}_${curPage().gradient.to}_${curPage().gradient.angle}`
+    : '';
+  const modelSig = `${computeRenderModel(spec || blank, { row, col }).visualHash}|${rotMode}|${gradSig}`;
+  if (!force && (!spec || spec.type !== 'widget') && dirtyRectHashStore.get(sigKey) === modelSig) {
+    return;
+  }
+  dirtyRectHashStore.set(sigKey, modelSig);
+
+  const c = await paintKey(spec || blank, size, { row, col });
   const b64 = await encodeCanvasToJpegB64(c, rotMode);
   await api.deviceDraw({ row, col, data: b64, force: !!force });
+
+  // 阶段二 1：GIF / WebP / 动态呼吸贴纸帧率预算调度器 (8~12 FPS 低功耗推送)
+  if (col < 5 && spec && Number(spec.animFps) >= 4 && api.deviceStartAnim) {
+    scheduleKeyLowPowerAnim(row, col, spec, c, rotMode).catch(() => {});
+  } else if (col < 5 && (!spec || !spec.animFps) && api.deviceStopAnim) {
+    api.deviceStopAnim({ row, col }).catch(() => {});
+  }
+}
+
+async function scheduleKeyLowPowerAnim(row, col, spec, baseCanvas, rotMode) {
+  if (DEMO || !cfg || isDeviceAsleep || !api.deviceStartAnim) return;
+  const fps = Math.max(4, Math.min(12, Number(spec.animFps) || 8));
+  // 若按键已预解码多帧序列 (GIF/WebP 帧)，直接编码发送；否则生成 6 帧流光霓虹呼吸序列
+  const framesB64 = [];
+  if (Array.isArray(spec.animFrames) && spec.animFrames.length > 1) {
+    for (const frameUrl of spec.animFrames.slice(0, 12)) {
+      const fSpec = Object.assign({}, spec, { icon: frameUrl });
+      const fc = await paintKey(fSpec, 96, { row, col });
+      framesB64.push(await encodeCanvasToJpegB64(fc, rotMode));
+    }
+  } else {
+    const accent = (spec.textIconConfig && spec.textIconConfig.accent) || spec.color2 || '#38bdf8';
+    for (let i = 0; i < 6; i++) {
+      const phase = (i / 6) * Math.PI * 2;
+      const pulse = 0.5 + 0.5 * Math.sin(phase);
+      const fc = document.createElement('canvas');
+      fc.width = fc.height = 96;
+      const fctx = fc.getContext('2d');
+      fctx.drawImage(baseCanvas, 0, 0);
+      fctx.save();
+      fctx.strokeStyle = accent;
+      fctx.globalAlpha = 0.25 + pulse * 0.65;
+      fctx.lineWidth = 2 + pulse * 2.5;
+      fctx.strokeRect(2, 2, 92, 92);
+      fctx.restore();
+      framesB64.push(await encodeCanvasToJpegB64(fc, rotMode));
+    }
+  }
+  if (framesB64.length > 1) {
+    await api.deviceStartAnim({ row, col, frames: framesB64, fps, loop: true });
+  }
 }
 
 /** 显示屏上的页码/页名。顶层页显示「第 N/M 页」，子页显示「子页 · 名字」。 */
@@ -2554,7 +2658,209 @@ function paintWidgetCanvas(spec, size, keyPos) {
   return c;
 }
 
+// 阶段二 2：副屏（3-Segment Side LCD）1×3 竖向全画幅贯穿联屏渲染引擎 (80×240 连续画布)
+function paintPanoramaStripCanvas(page, preStats = null) {
+  const pano = (page && page.stripPanorama) || { enabled: false, mode: 'vu_meter', accent: '#10b981' };
+  const mode = pano.mode || 'vu_meter';
+  const accent = pano.accent || '#10b981';
+  const W = 80;
+  const H = 240;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Deep metallic background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#090d16');
+  bg.addColorStop(0.5, '#0f172a');
+  bg.addColorStop(1, '#060911');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle vertical neon rails
+  ctx.strokeStyle = accent + '55';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(1, 1, W - 2, H - 2);
+
+  const stats = preStats || lastSysStats || { cpu: 24, mem: 48 };
+  const vol = (preStats && preStats.volume !== undefined) ? preStats.volume : (lastAudioState ? lastAudioState.volume : 58);
+  const isMute = (preStats && preStats.isMute !== undefined) ? !!preStats.isMute : !!(lastAudioState && lastAudioState.isMute);
+  const now = Date.now();
+
+  if (mode === 'vu_meter') {
+    // 贯穿式双声道 L/R 24 段专业录音棚 VU 电平柱
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 11px "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(isMute ? '🔇 MUTED' : `🔊 ${vol}%`, W / 2, 16);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = 'bold 9px Consolas, monospace';
+    ctx.fillText('L        dB        R', W / 2, 29);
+
+    const segCount = 24;
+    const topY = 36;
+    const botY = 216;
+    const totalH = botY - topY;
+    const segH = Math.floor(totalH / segCount) - 2;
+    const waveL = isMute ? 0 : Math.max(4, Math.min(100, vol + Math.sin(now / 160) * 14 + Math.cos(now / 95) * 8));
+    const waveR = isMute ? 0 : Math.max(4, Math.min(100, vol + Math.cos(now / 145) * 15 + Math.sin(now / 110) * 7));
+    const activeL = Math.round((waveL / 100) * segCount);
+    const activeR = Math.round((waveR / 100) * segCount);
+
+    for (let i = 0; i < segCount; i++) {
+      // i = 0 is bottom, i = segCount - 1 is top
+      const y = botY - (i + 1) * (segH + 2);
+      const ratio = i / segCount;
+      let segColor = accent;
+      if (ratio > 0.82) segColor = '#ef4444';
+      else if (ratio > 0.64) segColor = '#f59e0b';
+
+      // Left channel bar
+      ctx.fillStyle = i < activeL ? segColor : 'rgba(255,255,255,0.08)';
+      ctx.fillRect(10, y, 20, segH);
+
+      // Right channel bar
+      ctx.fillStyle = i < activeR ? segColor : 'rgba(255,255,255,0.08)';
+      ctx.fillRect(W - 30, y, 20, segH);
+
+      // Center dB tick marks
+      if (i % 4 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        const dbVal = i === segCount - 1 ? '0' : `-${(segCount - i) * 2}`;
+        ctx.font = '8px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(dbVal, W / 2, y + segH);
+      }
+    }
+
+    ctx.fillStyle = accent;
+    ctx.font = 'bold 9.5px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('STEREO VU', W / 2, 232);
+  } else if (mode === 'lyrics_waterfall') {
+    // 贯穿式多行滚动歌词瀑布 + 顶部黑胶唱头
+    const media = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
+      title: '晴天', artist: '周杰伦', lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在', progressPct: 36
+    };
+    ctx.fillStyle = accent;
+    ctx.font = 'bold 10.5px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎵 LIVE LYRICS', W / 2, 16);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 11.5px "Microsoft YaHei", sans-serif';
+    ctx.fillText(String(media.title || '正在播放').slice(0, 6), W / 2, 33);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.58)';
+    ctx.font = '9.5px "Microsoft YaHei", sans-serif';
+    ctx.fillText(String(media.artist || 'Artist').slice(0, 7), W / 2, 47);
+
+    // Divider line
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.beginPath();
+    ctx.moveTo(8, 55);
+    ctx.lineTo(W - 8, 55);
+    ctx.stroke();
+
+    // Multi-line vertical waterfall
+    const rawLyric = String(media.lyric || '故事的小黄花 从出生那年就飘着') + ' · ' + String(media.subLyric || '随记忆一直晃到现在');
+    const chunks = [];
+    for (let i = 0; i < rawLyric.length; i += 5) {
+      chunks.push(rawLyric.slice(i, i + 5));
+    }
+    const activeLineIdx = Math.floor((now / 1800) % Math.max(1, chunks.length));
+    const startY = 76;
+    const lineH = 22;
+    for (let slot = 0; slot < 6; slot++) {
+      const idx = (activeLineIdx + slot) % Math.max(1, chunks.length);
+      const lineText = chunks[idx] || '';
+      const isCurrent = slot === 1;
+      ctx.font = isCurrent ? 'bold 12.5px "Microsoft YaHei", sans-serif' : '10.5px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = isCurrent ? accent : (slot === 0 ? 'rgba(255,255,255,0.38)' : 'rgba(255,255,255,0.72)');
+      ctx.fillText(lineText, W / 2, startY + slot * lineH);
+    }
+
+    // Bottom progress bar
+    const prog = Math.max(5, Math.min(100, Number(media.progressPct) || 38));
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillRect(8, 224, W - 16, 5);
+    ctx.fillStyle = accent;
+    ctx.fillRect(8, 224, Math.round(((W - 16) * prog) / 100), 5);
+  } else {
+    // thermo_triple: CPU / GPU / RAM 三联水冷温度能量柱
+    const cpu = Math.max(0, Math.min(100, Math.round(Number(stats.cpu) || 24)));
+    const gpu = Math.max(0, Math.min(100, Math.round(Number((lastTelemetry && lastTelemetry.gpu && (lastTelemetry.gpu.temp || lastTelemetry.gpu.load)) || 48))));
+    const mem = Math.max(0, Math.min(100, Math.round(Number(stats.mem) || 52)));
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 10px Consolas, "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🌡️ THERMO 3X', W / 2, 16);
+
+    const cols = [
+      { name: 'CPU', val: cpu, unit: '%', x: 16, color: '#38bdf8' },
+      { name: 'GPU', val: gpu, unit: '°', x: 40, color: accent || '#10b981' },
+      { name: 'RAM', val: mem, unit: '%', x: 64, color: '#a855f7' },
+    ];
+    const tubeTop = 38;
+    const tubeBot = 198;
+    const tubeH = tubeBot - tubeTop;
+
+    for (const colItem of cols) {
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.font = 'bold 9px Consolas, monospace';
+      ctx.fillText(colItem.name, colItem.x, 31);
+
+      // Tube track
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(colItem.x - 6, tubeTop, 12, tubeH, 6);
+      else ctx.rect(colItem.x - 6, tubeTop, 12, tubeH);
+      ctx.fill();
+
+      // Liquid fill
+      const fillH = Math.max(8, Math.round((tubeH * colItem.val) / 100));
+      const fillY = tubeBot - fillH;
+      const gTube = ctx.createLinearGradient(0, fillY, 0, tubeBot);
+      gTube.addColorStop(0, colItem.color);
+      gTube.addColorStop(1, colItem.color + '44');
+      ctx.fillStyle = gTube;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(colItem.x - 5, fillY, 10, fillH, 5);
+      else ctx.rect(colItem.x - 5, fillY, 10, fillH);
+      ctx.fill();
+
+      // Bulb at bottom
+      ctx.fillStyle = colItem.color;
+      ctx.beginPath();
+      ctx.arc(colItem.x, tubeBot + 4, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Value readout
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 9.5px Consolas, monospace';
+      ctx.fillText(`${colItem.val}${colItem.unit}`, colItem.x, 228);
+    }
+  }
+  return c;
+}
+
+function isPageStripPanoramaActive(page = curPage()) {
+  if (activeRendererContextBar && cfg && cfg.contextBarEnabled !== false) return false;
+  return Boolean(page && page.stripPanorama && page.stripPanorama.enabled);
+}
+
 async function buildStripCanvas(row, preStats = null) {
+  const page = curPage();
+  if (isPageStripPanoramaActive(page)) {
+    const fullCnv = paintPanoramaStripCanvas(page, preStats);
+    const slice = document.createElement('canvas');
+    slice.width = slice.height = 80;
+    slice.getContext('2d').drawImage(fullCnv, 0, row * 80, 80, 80, 0, 0, 80, 80);
+    return slice;
+  }
   const spec = effectiveStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   if (spec && spec.type === 'telemetry' && spec.telemetryType) {
     return paintWidgetCanvas(Object.assign({}, spec, { widgetKind: spec.telemetryType }), 80, { row, col: 5 });
@@ -2618,12 +2924,29 @@ async function repaintAllKeys(force = false, gen = null) {
   }
   const items = await Promise.all(jobs);
   if (myGen !== repaintGen) return;
+  if (force) dirtyRectHashStore.clear();
+  if (api.deviceClearAnims) {
+    await api.deviceClearAnims().catch(() => {});
+  }
   if (api.deviceBatchDraw) {
     await api.deviceBatchDraw(items);
   } else {
     for (const item of items) {
       if (myGen !== repaintGen) return;
       await api.deviceDraw(item);
+    }
+  }
+  // 唤醒当前激活页上配置了低功耗动态帧率 (8~12 FPS) 的按键动效
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < KEY_COLS; col++) {
+      const sp = pageButtons()[`${row},${col}`];
+      if (sp && Number(sp.animFps) >= 4) {
+        paintKey(sp, 96, { row, col }).then((cnv) => {
+          if (cnv && myGen === repaintGen) {
+            scheduleKeyLowPowerAnim(row, col, sp, cnv, rotMode).catch(() => {});
+          }
+        }).catch(() => {});
+      }
     }
   }
 }
@@ -2951,6 +3274,23 @@ async function swapCells(a, b) {
 }
 
 function renderStripCellContent(cell, row, page, grad) {
+  const panoActive = isPageStripPanoramaActive(page);
+  const gridEl = $('grid');
+  if (gridEl) gridEl.classList.toggle('panorama-strip-active', panoActive);
+  if (panoActive) {
+    cell.classList.add('display', 'has-canvas');
+    cell.classList.remove('filled', 'pos-top', 'pos-center');
+    const fullCnv = paintPanoramaStripCanvas(page, lastSysStats);
+    const slice = document.createElement('canvas');
+    slice.width = slice.height = 80;
+    slice.className = 'cell-canvas-preview';
+    slice.getContext('2d').drawImage(fullCnv, 0, row * 80, 80, 80, 0, 0, 80, 80);
+    cell.appendChild(slice);
+    if (row === 0) {
+      cell.appendChild(el('span', 'badge', '1×3 联屏'));
+    }
+    return;
+  }
   const rawS = effectiveStrips()[String(row)] || { type: 'text', label: '', color: '#263238' };
   const s = (rawS.type === 'telemetry' && rawS.telemetryType)
     ? Object.assign({}, rawS, { type: rawS.telemetryType, widgetKind: rawS.telemetryType })
@@ -3136,7 +3476,7 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
     cell.style.color = contrast(spec.color);
   }
 
-  // v0.10.6 彻底修复「硬件真彩」模式下出现一大一小双角标与文字重影：
+  // v0.11.0 彻底修复「硬件真彩」模式下出现一大一小双角标与文字重影：
   // 启用 hwMirrorEnabled 时，仅挂载 1:1 硬件级 Canvas 画面，不再挂载冗余的 DOM .thumb/.glyph/.badge-overlay/.cap
   if (hwMirrorEnabled) {
     cell.classList.add('has-canvas', 'hw-mirror-cell');
@@ -3197,12 +3537,22 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
       cell.appendChild(runTag);
     }
 
-    const capEl = el('span', 'cap', spec.label || '');
-    const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
-    capEl.style.fontSize = `${capPx}px`;
-    if (!spec.label) capEl.style.display = 'none';
-    cell.appendChild(capEl);
+    const cleanLabel = String(spec.label || '').trim();
+    if (cleanLabel) {
+      const capEl = el('span', 'cap', cleanLabel);
+      const capPx = Math.max(9, Math.min(22, Math.round(72 * (fontSizePct / 100))));
+      capEl.style.fontSize = `${capPx}px`;
+      cell.appendChild(capEl);
+    }
   }
+
+  const cleanLabelForClass = String(spec.label || '').trim();
+  const isFullBleedCell = Boolean(
+    (spec.textIconConfig && spec.textIconConfig.fullBleed && !cleanLabelForClass && (Number(spec.iconScale) || 100) >= 96) ||
+    (!cleanLabelForClass && Number(spec.iconScale) >= 99)
+  );
+  cell.classList.toggle('no-label', !cleanLabelForClass);
+  cell.classList.toggle('full-bleed-cell', isFullBleedCell);
 
   cell.appendChild(el('span', 'tag', `r${row}c${col}`));
   if (TYPE_SHORT[spec.type]) cell.appendChild(el('span', 'badge', TYPE_SHORT[spec.type]));
@@ -3339,11 +3689,35 @@ async function onDrop(row, col, e) {
   } else {
     const cls = await api.actionClassify(target);
     const abs = cls.abs || target;
-    // Never save a path we cannot resolve - that is how the app directory ended
-    // up as the target for every dropped file.
     if (!cls.exists) {
       toast('路径不存在：' + abs);
       return;
+    }
+    const ext = String(abs.split('.').pop() || '').toLowerCase();
+    // 阶段二 1 二次优化：支持直接拖入 GIF / WebP 动态贴纸或图片作为按键图标（若格子已有动作则无损保留原动作）
+    if (['gif', 'webp', 'apng'].includes(ext) && col < 5) {
+      const frames = await decodeAnimatedImageFileFrames(abs);
+      if (frames && frames.length > 0) {
+        const existingSpec = pageButtons()[row + ',' + col];
+        pushHistory(`拖入动态图标 r${row}c${col}`);
+        spec = existingSpec ? Object.assign({}, existingSpec) : {
+          type: 'app',
+          label: '',
+          target: abs,
+          args: '',
+          color: '#0f172a',
+        };
+        spec.icon = frames[0];
+        if (frames.length > 1) spec.animFrames = frames;
+        spec.animFps = Number(spec.animFps) || 8;
+        if (!spec.label) spec.iconScale = 100;
+        pageButtons()[row + ',' + col] = spec;
+        await saveConfig();
+        select(row, col);
+        await pushKey(row, col, true);
+        toast(`🎞️ 已应用动态图标（${frames.length} 帧 · ${spec.animFps} FPS 低功耗帧率调度）`);
+        return;
+      }
     }
     spec = { type: cls.type, label: cls.label, target: abs, args: '', icon: '', color: colorFor(cls.type) };
     const icon = await api.iconExtract(abs);
@@ -3556,7 +3930,7 @@ function saveConfig() {
 }
 
 function syncSelectedToggleBadge() {
-  // v0.10.6 修复：当开启双态角标 (badgeToggle) 时，绝不将当前激活态角标回写污染静态 s.badge 字段，
+  // v0.11.0 修复：当开启双态角标 (badgeToggle) 时，绝不将当前激活态角标回写污染静态 s.badge 字段，
   // 从而彻底解决“运行中 / 无”预设在编辑后待机态仍然残留“运行中”角标的 Bug！
 }
 
@@ -4360,13 +4734,150 @@ function renderActionCardHtml(act, idx, total) {
   `;
 }
 
+function renderNodeFlowEditorHtml(spec) {
+  const nf = (spec && spec.nodeFlow) || { enabled: false, startNodeId: 'N1', nodes: [] };
+  const nodes = Array.isArray(nf.nodes) ? nf.nodes : [];
+  const nodeOpts = (curVal) => [
+    `<option value="" ${!curVal ? 'selected' : ''}>⏹ 结束流程 (END)</option>`,
+    ...nodes.map(n => `<option value="${escapeAttr(n.id)}" ${curVal === n.id ? 'selected' : ''}>↳ 跳至 #${escapeHtml(n.id)} (${escapeHtml(n.title || n.type)})</option>`)
+  ].join('');
+
+  return `
+    <div class="node-flow-box">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <div>
+          <span style="font-size:12px; font-weight:700; color:var(--ink);">🕸️ 可视化条件节点宏流程图 (Node-Based Macro Flow)</span>
+          <div style="font-size:10.5px; color:var(--muted);">支持窗口状态判定、屏幕像素颜色识别、进程分支与 True/False 条件跳转</div>
+        </div>
+        <span class="long-press-pill" style="background:rgba(124,58,237,0.16); color:#a855f7;">入口: #${escapeHtml(nf.startNodeId || (nodes[0] && nodes[0].id) || 'N1')}</span>
+      </div>
+
+      <div class="node-flow-list" id="nf-node-list">
+        ${nodes.map((nd, idx) => {
+          const isCond = ['if_window', 'if_color', 'if_process'].includes(nd.type);
+          return `
+            <div class="node-flow-card ${isCond ? 'condition-node' : 'action-node'}" data-nf-idx="${idx}">
+              <div class="node-flow-head">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span class="node-id-badge">#${escapeHtml(nd.id || ('N' + (idx + 1)))}</span>
+                  <select class="nf-field" data-idx="${idx}" data-field="type" style="width:auto; font-size:11.5px; padding:2px 6px;">
+                    <option value="if_window" ${nd.type === 'if_window' ? 'selected' : ''}>🪟 条件: 窗口状态判断</option>
+                    <option value="if_color" ${nd.type === 'if_color' ? 'selected' : ''}>🎨 条件: 图像像素颜色识别</option>
+                    <option value="if_process" ${nd.type === 'if_process' ? 'selected' : ''}>🔍 条件: 进程运行判断</option>
+                    <option value="hotkey" ${nd.type === 'hotkey' ? 'selected' : ''}>⌨️ 动作: 发送快捷键</option>
+                    <option value="mouse_click" ${nd.type === 'mouse_click' ? 'selected' : ''}>🖱️ 动作: 鼠标坐标点击</option>
+                    <option value="delay" ${nd.type === 'delay' ? 'selected' : ''}>⏱️ 动作: 延时等待 (ms)</option>
+                    <option value="app" ${nd.type === 'app' ? 'selected' : ''}>🚀 动作: 启动程序/路径</option>
+                    <option value="command" ${nd.type === 'command' ? 'selected' : ''}>⚡ 动作: 执行命令</option>
+                    <option value="text" ${nd.type === 'text' ? 'selected' : ''}>✍️ 动作: 输入文本</option>
+                  </select>
+                </div>
+                <div style="display:flex; gap:4px;">
+                  <button type="button" class="ghost tiny" data-nf-del="${idx}" title="删除此节点">🗑️</button>
+                </div>
+              </div>
+
+              ${nd.type === 'if_window' ? `
+                <div style="display:grid; grid-template-columns: 1.2fr 1fr; gap:6px;">
+                  <input class="nf-field" data-idx="${idx}" data-field="target" placeholder="目标进程名 (如 Weixin / chrome)" value="${escapeAttr(nd.target || '')}" />
+                  <select class="nf-field" data-idx="${idx}" data-field="expectState">
+                    <option value="focused" ${(nd.expectState || 'focused') === 'focused' ? 'selected' : ''}>处于前台焦点 (Focused)</option>
+                    <option value="visible" ${nd.expectState === 'visible' ? 'selected' : ''}>窗口可见 (含后台)</option>
+                    <option value="minimized" ${nd.expectState === 'minimized' ? 'selected' : ''}>已最小化/隐藏</option>
+                    <option value="running" ${nd.expectState === 'running' ? 'selected' : ''}>进程正在运行</option>
+                  </select>
+                </div>
+              ` : nd.type === 'if_color' ? `
+                <div style="display:grid; grid-template-columns: 65px 65px 60px 1fr auto; gap:5px; align-items:center;">
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="x" placeholder="X" value="${Number(nd.x) || 500}" />
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="y" placeholder="Y" value="${Number(nd.y) || 500}" />
+                  <input type="color" class="nf-field" data-idx="${idx}" data-field="color" value="${nd.color || '#00e676'}" style="height:26px; padding:0;" />
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="tolerance" placeholder="容差" value="${Number(nd.tolerance) || 24}" title="RGB 颜色容差 (0~120)" />
+                  <button type="button" class="ghost tiny nf-pick-pixel" data-idx="${idx}" title="屏幕十字准星吸管拾取坐标与像素颜色">🎯 吸管</button>
+                </div>
+              ` : nd.type === 'if_process' ? `
+                <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap:6px;">
+                  <input class="nf-field" data-idx="${idx}" data-field="target" placeholder="进程名 (如 obs64.exe)" value="${escapeAttr(nd.target || '')}" />
+                  <select class="nf-field" data-idx="${idx}" data-field="expectRunning">
+                    <option value="true" ${nd.expectRunning !== false ? 'selected' : ''}>正在运行 = True</option>
+                    <option value="false" ${nd.expectRunning === false ? 'selected' : ''}>未运行 = True</option>
+                  </select>
+                </div>
+              ` : nd.type === 'delay' ? `
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="font-size:11px; color:var(--muted);">等待时长：</span>
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="ms" value="${Number(nd.ms) || 300}" style="width:100px;" /> ms
+                </div>
+              ` : nd.type === 'mouse_click' ? `
+                <div style="display:grid; grid-template-columns: 75px 75px 1fr auto; gap:6px; align-items:center;">
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="x" placeholder="X" value="${Number(nd.x) || 500}" />
+                  <input type="number" class="nf-field" data-idx="${idx}" data-field="y" placeholder="Y" value="${Number(nd.y) || 500}" />
+                  <select class="nf-field" data-idx="${idx}" data-field="button">
+                    <option value="left" ${(nd.button || 'left') === 'left' ? 'selected' : ''}>左键单击</option>
+                    <option value="right" ${nd.button === 'right' ? 'selected' : ''}>右键单击</option>
+                  </select>
+                  <button type="button" class="ghost tiny nf-pick-pixel" data-idx="${idx}">🎯 拾取坐标</button>
+                </div>
+              ` : `
+                <div>
+                  <input class="nf-field" data-idx="${idx}" data-field="target" placeholder="输入快捷键 (如 Ctrl+Shift+M) / 命令 / 路径 / 文本" value="${escapeAttr(nd.target || nd.text || '')}" />
+                </div>
+              `}
+
+              ${isCond ? `
+                <div class="node-branch-row">
+                  <div class="node-branch-pill true-branch">
+                    <span>✓ 满足 (True)</span>
+                    <select class="nf-field" data-idx="${idx}" data-field="nextTrue" style="flex:1; font-size:11px; padding:1px 4px;">
+                      ${nodeOpts(nd.nextTrue)}
+                    </select>
+                  </div>
+                  <div class="node-branch-pill false-branch">
+                    <span>✕ 不满足 (False)</span>
+                    <select class="nf-field" data-idx="${idx}" data-field="nextFalse" style="flex:1; font-size:11px; padding:1px 4px;">
+                      ${nodeOpts(nd.nextFalse)}
+                    </select>
+                  </div>
+                </div>
+              ` : `
+                <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);">
+                  <span>➔ 执行后跳至：</span>
+                  <select class="nf-field" data-idx="${idx}" data-field="next" style="flex:1; font-size:11px; padding:2px 6px;">
+                    ${nodeOpts(nd.next)}
+                  </select>
+                </div>
+              `}
+            </div>
+          `;
+        }).join('')}
+        ${nodes.length === 0 ? '<div class="muted" style="text-align:center; padding:12px; border:1px dashed var(--line); border-radius:8px;">暂无流程节点，点击下方按钮添加条件或动作节点 ⬇️</div>' : ''}
+      </div>
+
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+        <button type="button" class="ghost tiny" data-nf-add="if_window">＋ 🪟 窗口状态判断</button>
+        <button type="button" class="ghost tiny" data-nf-add="if_color">＋ 🎨 图像颜色识别</button>
+        <button type="button" class="ghost tiny" data-nf-add="if_process">＋ 🔍 进程存活判断</button>
+        <button type="button" class="ghost tiny" data-nf-add="hotkey">＋ ⌨️ 快捷键节点</button>
+        <button type="button" class="ghost tiny" data-nf-add="mouse_click">＋ 🖱️ 坐标点击节点</button>
+        <button type="button" class="ghost tiny" data-nf-add="delay">＋ ⏱️ 延时节点</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderMacroEditorHtml(spec) {
   const actions = Array.isArray(spec.actions) ? spec.actions : [];
   const loop = spec.loop || { mode: 'once', interval: 50 };
+  const isNodeFlow = Boolean(spec.nodeFlow && spec.nodeFlow.enabled);
 
   return `
     <div class="macro-box">
-      <div class="macro-loop-box">
+      <div class="color-capsule-group" style="margin-bottom:8px;">
+        <button type="button" id="m-mode-linear" class="color-capsule-pill ${!isNodeFlow ? 'active' : ''}">📋 线性动作序列 (${actions.length})</button>
+        <button type="button" id="m-mode-nodeflow" class="color-capsule-pill ${isNodeFlow ? 'active' : ''}">🕸️ 可视化条件节点图 (${(spec.nodeFlow && Array.isArray(spec.nodeFlow.nodes)) ? spec.nodeFlow.nodes.length : 0})</button>
+      </div>
+      ${isNodeFlow ? renderNodeFlowEditorHtml(spec) : ''}
+      <div class="macro-loop-box" style="${isNodeFlow ? 'display:none;' : ''}">
         <div class="macro-loop-row">
           <label style="font-weight: 600; color: var(--fg);">🔁 宏执行模式：</label>
           <select id="m-loop-mode" style="width: auto; flex: 1;">
@@ -4397,7 +4908,7 @@ function renderMacroEditorHtml(spec) {
         </div>
       </div>
 
-      <div class="macro-action-list" id="m-action-list">
+      <div class="macro-action-list" id="m-action-list" style="${isNodeFlow ? 'display:none;' : ''}">
         ${actions.map((act, idx) => renderActionCardHtml(act, idx, actions.length)).join('')}
         ${actions.length === 0 ? '<p class="muted" style="text-align: center; padding: 14px 0; background: var(--card); border: 1px dashed var(--line); border-radius: 8px;">动作队列暂为空，请点击下方按钮添加动作步骤 ⬇️</p>' : ''}
       </div>
@@ -4693,6 +5204,123 @@ function wireMacroEditor(box, spec) {
       }
     };
   }
+
+  // 阶段三 2：可视化条件节点宏流程图 (Node-Based Macro Flow) 事件绑定
+  const btnModeLinear = box.querySelector('#m-mode-linear');
+  const btnModeNodeFlow = box.querySelector('#m-mode-nodeflow');
+  if (btnModeLinear && btnModeNodeFlow) {
+    btnModeLinear.onclick = async () => {
+      if (spec.nodeFlow) spec.nodeFlow.enabled = false;
+      await commit(true);
+      renderInspector();
+    };
+    btnModeNodeFlow.onclick = async () => {
+      if (!spec.nodeFlow || typeof spec.nodeFlow !== 'object') {
+        spec.nodeFlow = {
+          enabled: true,
+          startNodeId: 'N1',
+          nodes: [
+            { id: 'N1', type: 'if_window', target: 'chrome', expectState: 'focused', nextTrue: 'N2', nextFalse: 'N3' },
+            { id: 'N2', type: 'hotkey', target: 'Ctrl+T', next: '' },
+            { id: 'N3', type: 'app', target: 'chrome.exe', next: '' },
+          ]
+        };
+      } else {
+        spec.nodeFlow.enabled = true;
+      }
+      await commit(true);
+      renderInspector();
+    };
+  }
+
+  box.querySelectorAll('[data-nf-add]').forEach((btn) => {
+    btn.onclick = async () => {
+      if (!spec.nodeFlow) spec.nodeFlow = { enabled: true, startNodeId: 'N1', nodes: [] };
+      const nodes = spec.nodeFlow.nodes || (spec.nodeFlow.nodes = []);
+      const nextNum = nodes.length + 1;
+      const newId = 'N' + nextNum;
+      const type = btn.dataset.nfAdd;
+      const nd = { id: newId, type };
+      if (type === 'if_window') { nd.target = 'Weixin'; nd.expectState = 'focused'; nd.nextTrue = ''; nd.nextFalse = ''; }
+      else if (type === 'if_color') { nd.x = 500; nd.y = 500; nd.color = '#00e676'; nd.tolerance = 24; nd.nextTrue = ''; nd.nextFalse = ''; }
+      else if (type === 'if_process') { nd.target = 'obs64.exe'; nd.expectRunning = true; nd.nextTrue = ''; nd.nextFalse = ''; }
+      else if (type === 'hotkey') { nd.target = 'Ctrl+C'; nd.next = ''; }
+      else if (type === 'mouse_click') { nd.x = 640; nd.y = 400; nd.button = 'left'; nd.next = ''; }
+      else if (type === 'delay') { nd.ms = 300; nd.next = ''; }
+      if (nodes.length > 0) {
+        const prev = nodes[nodes.length - 1];
+        if (['if_window', 'if_color', 'if_process'].includes(prev.type)) {
+          if (!prev.nextTrue) prev.nextTrue = newId;
+        } else if (!prev.next) {
+          prev.next = newId;
+        }
+      } else {
+        spec.nodeFlow.startNodeId = newId;
+      }
+      nodes.push(nd);
+      await commit(true);
+      renderInspector();
+    };
+  });
+
+  box.querySelectorAll('[data-nf-del]').forEach((btn) => {
+    btn.onclick = async () => {
+      const idx = Number(btn.dataset.nfDel);
+      if (spec.nodeFlow && Array.isArray(spec.nodeFlow.nodes)) {
+        spec.nodeFlow.nodes.splice(idx, 1);
+        if (spec.nodeFlow.nodes[0]) spec.nodeFlow.startNodeId = spec.nodeFlow.nodes[0].id;
+        await commit(true);
+        renderInspector();
+      }
+    };
+  });
+
+  box.querySelectorAll('.nf-field').forEach((inp) => {
+    inp.onchange = async () => {
+      const idx = Number(inp.dataset.idx);
+      const field = inp.dataset.field;
+      const nd = spec.nodeFlow && spec.nodeFlow.nodes && spec.nodeFlow.nodes[idx];
+      if (!nd) return;
+      let val = inp.value;
+      if (inp.type === 'number') val = Number(val) || 0;
+      else if (field === 'expectRunning') val = val === 'true';
+      nd[field] = val;
+      if (field === 'target' && nd.type === 'text') nd.text = val;
+      await commit(true);
+      if (field === 'type') renderInspector();
+    };
+  });
+
+  box.querySelectorAll('.nf-pick-pixel').forEach((btn) => {
+    btn.onclick = async () => {
+      const idx = Number(btn.dataset.idx);
+      const nd = spec.nodeFlow && spec.nodeFlow.nodes && spec.nodeFlow.nodes[idx];
+      if (!nd) return;
+      if (!DEMO && api.pixelPick) {
+        btn.disabled = true;
+        btn.textContent = '🎯 请点击屏幕任意位置…';
+        try {
+          const res = await api.pixelPick();
+          if (res && res.ok) {
+            nd.x = res.x;
+            nd.y = res.y;
+            if (res.hex) nd.color = res.hex;
+            await commit(true);
+            renderInspector();
+            toast(`🎯 已拾取像素 (${res.x}, ${res.y}) 颜色: ${res.hex}`);
+            return;
+          }
+        } catch (_) {}
+      }
+      startColorCoordPicker(btn, async (x, y, hex) => {
+        nd.x = x;
+        nd.y = y;
+        if (hex) nd.color = hex;
+        await commit(true);
+        renderInspector();
+      });
+    };
+  });
 }
 
 function renderVolumeEditorHtml(spec, prefix = 'i-vol') {
@@ -6220,21 +6848,40 @@ function renderInspector() {
               ` : ''}
             </div>
 
-            <!-- 双态状态切换策略 -->
+            <!-- 双态状态切换策略 + 阶段一 1：十字准星拾取窗口 & 实时进程雷达 -->
             <div class="dual-sync-policy-card" style="background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:8px 0;">
               <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:5px;">
                 <label style="font-size:11.5px; font-weight:600; color:var(--ink); margin:0;">🧠 状态切换与进程同步策略</label>
-                <span style="font-size:10px; color:var(--accent);">v0.10 焦点接管状态机</span>
+                <span style="font-size:10px; color:var(--accent);">v0.11 4态窗口焦点引擎</span>
               </div>
               <select id="i-toggle-sync-mode" style="font-size:12px;">
                 <option value="auto" ${(!spec.toggleSyncMode || spec.toggleSyncMode === 'auto') ? 'selected' : ''}>🧠 智能混合模式 (推荐：常驻软件同步进程，脚本/启动器自动保持双态)</option>
-                <option value="window" ${spec.toggleSyncMode === 'window' ? 'selected' : ''}>🪟 任务栏窗口模式 (未启动则启动 → 后台则置顶 → 前台则最小化隐藏)</option>
+                <option value="window" ${spec.toggleSyncMode === 'window' ? 'selected' : ''}>🪟 任务栏窗口模式 (未启动则启动 → 后台可见/最小化则置顶 → 前台则最小化)</option>
                 <option value="manual" ${spec.toggleSyncMode === 'manual' ? 'selected' : ''}>🔄 纯手动乒乓切换 (适合开关命令，严格按击交替形态 1 ⇄ 2)</option>
                 <option value="process" ${spec.toggleSyncMode === 'process' ? 'selected' : ''}>📡 严格绑定进程存活 (仅当目标或指定监测进程运行时处于形态 2)</option>
               </select>
-              <div style="margin-top:6px; ${(spec.toggleSyncMode === 'process' || spec.toggleSyncMode === 'window') ? '' : 'display:none;'}">
-                <label style="font-size:11px; color:var(--muted);">自定义监测进程名（支持多个以 | 分隔，如 WeChat.exe|Weixin.exe）</label>
-                <input id="i-watch-process" placeholder="留空则自动解析形态 1 目标进程名" value="${escapeAttr(spec.watchProcess || '')}" style="font-size:12px;" />
+              <div style="margin-top:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <label style="font-size:11px; color:var(--muted); margin:0;">关联监测进程树（支持 | 分隔，自动兼容 Launcher 壳进程）</label>
+                  <button type="button" class="crosshair-pick-btn" id="i-crosshair-pick-win" title="鼠标变为十字准星，点击任意正在运行的软件窗口即可一键抓取真实主进程、路径、HWND与图标">
+                    🎯 十字准星拾取窗口
+                  </button>
+                </div>
+                <input id="i-watch-process" placeholder="留空则自动解析（支持 WeChat|Weixin 等关联进程树）" value="${escapeAttr(spec.watchProcess || '')}" style="font-size:12px;" />
+              </div>
+              <div style="margin-top:6px; ${spec.toggleSyncMode === 'window' ? '' : 'display:none;'}">
+                <label style="font-size:11px; color:var(--muted);">托盘深度隐藏唤醒热键（可选，如微信 Ctrl+Alt+W，留空则自动单实例重入唤醒）</label>
+                <input id="i-tray-wake-hotkey" placeholder="如 Ctrl+Alt+W（解决缩入托盘后无窗口句柄的唤醒）" value="${escapeAttr(spec.trayWakeHotkey || '')}" style="font-size:12px;" />
+              </div>
+              <div class="win-radar-card" id="i-win-radar-card">
+                <div class="win-radar-head">
+                  <span style="font-size:11px; font-weight:700; color:var(--ink);">🟢 实时进程与窗口雷达</span>
+                  <div style="display:flex; gap:4px; align-items:center;">
+                    <span class="win-radar-status-pill stopped" id="i-radar-pill">检测中…</span>
+                    <button type="button" class="ghost tiny" id="i-radar-refresh" style="padding:1px 6px; font-size:10px;">↻ 刷新</button>
+                  </div>
+                </div>
+                <div class="win-radar-meta" id="i-radar-meta">点击「↻ 刷新」或「🎯 十字准星拾取窗口」查看实时 HWND / PID / 窗口类名</div>
               </div>
             </div>
 
@@ -6368,7 +7015,31 @@ function renderInspector() {
           </div>
         `}
 
-              </div>
+        ${!spec.toggleAction && (spec.type === 'app' || spec.type === 'window_toggle') ? `
+          <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--line); display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <span style="font-size:11px; color:var(--muted);">遇到启动器壳进程（如微信/Discord/Steam）？</span>
+            <button type="button" class="crosshair-pick-btn" id="i-crosshair-pick-win-single" title="点击任意正在运行的窗口，直接提取真实主进程路径、类名与高清图标">
+              🎯 十字准星拾取窗口
+            </button>
+          </div>
+        ` : ''}
+
+        <!-- 阶段三 1：基于窗口上下文的子文件夹 / 弹出式临时键盘层 (Hold-to-Layer) -->
+        <div style="margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid rgba(124,58,237,0.32); background:rgba(124,58,237,0.05);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="font-size:11.5px; font-weight:700; color:var(--ink); margin:0;">📂 弹出式临时键盘层 (Hold-to-Layer)</label>
+            <span style="font-size:10px; color:#a855f7; font-weight:600;">按住展开二级工具盘 · 松手自动弹回</span>
+          </div>
+          <select id="i-hold-page-id" style="font-size:12px;">
+            <option value="" ${!spec.holdPageId ? 'selected' : ''}>🚫 不启用临时弹层（执行上方常规按键动作）</option>
+            ${pageTree().filter(x => x.page.id !== curPage().id).map(({ page, depth }) => `
+              <option value="${escapeAttr(page.id)}" ${spec.holdPageId === page.id ? 'selected' : ''}>
+                📂 按住/点击临时弹出：「${'　'.repeat(depth)}${escapeHtml(page.name)}」 (松手或点选后自动弹回本页)
+              </option>
+            `).join('')}
+          </select>
+        </div>
+      </div>
     </details>
 
     <details class="sec" data-sec="look" ${secOpen.look ? 'open' : ''}>
@@ -6434,12 +7105,27 @@ function renderInspector() {
           <span>字号 <b id="v-font">${Number(spec.fontSize) || 17}</b>%</span>
           <input id="i-fontsize" type="range" min="8" max="40" value="${Number(spec.fontSize) || 17}" />
           <span>图标 <b id="v-icon">${Number(spec.iconScale) || 62}</b>%</span>
-          <input id="i-iconscale" type="range" min="25" max="100" value="${Number(spec.iconScale) || 62}" />
+          <input id="i-iconscale" type="range" min="25" max="115" value="${Number(spec.iconScale) || 62}" />
           <span>文字位置</span>
           <select id="i-labelpos">
             ${[['bottom', '底部'], ['center', '居中'], ['top', '顶部']].map(([v, n]) =>
               `<option value="${v}" ${(spec.labelPos || 'bottom') === v ? 'selected' : ''}>${n}</option>`).join('')}
           </select>
+        </div>
+        <!-- 阶段二 1：GIF / WebP / 动态贴纸与低功耗帧率调度器 (8~12 FPS) -->
+        <div style="margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <span style="font-size:11.5px; font-weight:600; color:var(--ink);">🎞️ 动态图标与低功耗帧率预算 (8~12 FPS)</span>
+            <button type="button" class="ghost tiny" id="i-pick-anim-gif" style="font-size:10.5px; padding:2px 7px;">🎞️ 导入 GIF/WebP 动图…</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <select id="i-anim-fps" style="flex:1; font-size:11.5px;">
+              <option value="0" ${!spec.animFps ? 'selected' : ''}>⏸ 静态图标（0 FPS · 零总线带宽占用）</option>
+              <option value="8" ${Number(spec.animFps) === 8 ? 'selected' : ''}>🟢 8 FPS 节能呼吸/动图模式（推荐）</option>
+              <option value="10" ${Number(spec.animFps) === 10 ? 'selected' : ''}>⚡ 10 FPS 均衡流畅动图模式</option>
+              <option value="12" ${Number(spec.animFps) === 12 ? 'selected' : ''}>🚀 12 FPS 高帧率硬件动效上限</option>
+            </select>
+          </div>
         </div>
       </div>
     </details>
@@ -6635,13 +7321,16 @@ function renderInspector() {
         pushHistory('生成自定义文字图标');
         spec.icon = res.dataUrl;
         spec.textIconConfig = res.config;
+        const targetScale = Number(res.config && res.config.cardScale) || ((res.config && res.config.fullBleed) ? 100 : 88);
         if (res.config && res.config.hideKeyLabel) {
           spec.label = '';
-          spec.iconScale = Math.max(Number(spec.iconScale) || 62, 84);
+          spec.iconScale = targetScale;
+        } else {
+          spec.iconScale = Math.max(Number(spec.iconScale) || 62, Math.min(92, targetScale));
         }
         await commit(true);
         renderInspector();
-        toast(`🔤 已应用「${res.templateName || '文字图标'}」样式`);
+        toast(`🔤 已应用「${res.templateName || '文字图标'}」(${spec.iconScale}% 占格)`);
       });
     };
   }
@@ -6650,8 +7339,12 @@ function renderInspector() {
   if (btnCrop) {
     btnCrop.onclick = () => {
       if (!spec.icon) return;
-      openCropper(spec.icon, async (cropped) => {
+      openCropper(spec.icon, async (cropped, isFullBleed) => {
         spec.icon = cropped;
+        if (isFullBleed) {
+          spec.iconScale = 100;
+          if (!String(spec.label || '').trim()) spec.label = '';
+        }
         await commit(true);
         renderInspector();
       });
@@ -7126,8 +7819,146 @@ function renderInspector() {
     iptWatchProc.addEventListener('change', async () => {
       spec.watchProcess = iptWatchProc.value.trim();
       await commit(false);
+      refreshProcessRadarUI();
     });
   }
+  const iptTrayHk = $('i-tray-wake-hotkey');
+  if (iptTrayHk) {
+    iptTrayHk.addEventListener('change', async () => {
+      spec.trayWakeHotkey = iptTrayHk.value.trim();
+      await commit(false);
+    });
+  }
+  const selHoldPage = $('i-hold-page-id');
+  if (selHoldPage) {
+    selHoldPage.addEventListener('change', async () => {
+      if (selHoldPage.value) {
+        spec.holdPageId = selHoldPage.value;
+      } else {
+        delete spec.holdPageId;
+      }
+      await commit(true);
+      toast(spec.holdPageId ? '📂 已启用按住/点击弹出临时键盘层 (Hold-to-Layer)' : '已关闭临时键盘层');
+    });
+  }
+  const selAnimFps = $('i-anim-fps');
+  if (selAnimFps) {
+    selAnimFps.addEventListener('change', async () => {
+      const fps = Number(selAnimFps.value) || 0;
+      if (fps > 0) spec.animFps = fps;
+      else {
+        delete spec.animFps;
+        delete spec.animFrames;
+      }
+      await commit(true);
+    });
+  }
+  const btnPickAnimGif = $('i-pick-anim-gif');
+  if (btnPickAnimGif) {
+    btnPickAnimGif.onclick = async () => {
+      if (DEMO || !api.dialogPick) return;
+      const p = await api.dialogPick({
+        properties: ['openFile'],
+        filters: [{ name: '动态图标 (GIF / WebP / APNG / PNG)', extensions: ['gif', 'webp', 'png'] }]
+      });
+      if (!p) return;
+      const frames = await decodeAnimatedImageFileFrames(p);
+      if (frames && frames.length > 0) {
+        spec.icon = frames[0];
+        if (frames.length > 1) spec.animFrames = frames;
+        spec.animFps = Number(spec.animFps) || 8;
+        await commit(true);
+        renderInspector();
+        toast(`🎞️ 已载入动态图标（共 ${frames.length} 帧，${spec.animFps} FPS 低功耗调度）`);
+      }
+    };
+  }
+
+  async function refreshProcessRadarUI() {
+    const pill = $('i-radar-pill');
+    const meta = $('i-radar-meta');
+    if (!pill || !meta) return;
+    const rawTarget = spec.watchProcess || (spec.target ? spec.target.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '') : '');
+    if (!rawTarget) {
+      pill.className = 'win-radar-status-pill stopped';
+      pill.textContent = '未绑定';
+      meta.textContent = '请先选择程序或点击「🎯 十字准星拾取窗口」';
+      return;
+    }
+    if (DEMO || !api.windowRadar) {
+      pill.className = 'win-radar-status-pill focused';
+      pill.textContent = '就绪 (演示)';
+      meta.textContent = `监测进程: ${rawTarget}`;
+      return;
+    }
+    try {
+      const r = await api.windowRadar(rawTarget);
+      if (!r || !r.ok || r.state === 'NOT_RUNNING') {
+        pill.className = 'win-radar-status-pill stopped';
+        pill.textContent = '⚪ 未运行';
+        meta.textContent = `目标进程「${rawTarget}」当前未启动（按键将直接启动程序）`;
+      } else if (r.state === 'FOREGROUND') {
+        pill.className = 'win-radar-status-pill focused';
+        pill.textContent = '🟢 前台焦点';
+        meta.textContent = `PID: ${r.pid} · HWND: ${r.hwnd} · 类名: ${r.className || '-'} · 标题: ${(r.title || '').slice(0, 22)}`;
+      } else if (r.state === 'VISIBLE_BACKGROUND') {
+        pill.className = 'win-radar-status-pill background';
+        pill.textContent = '🔵 后台可见';
+        meta.textContent = `PID: ${r.pid} · HWND: ${r.hwnd} · 窗口在后台可见（按键将置顶聚焦）`;
+      } else if (r.state === 'MINIMIZED') {
+        pill.className = 'win-radar-status-pill minimized';
+        pill.textContent = '🟠 已最小化';
+        meta.textContent = `PID: ${r.pid} · HWND: ${r.hwnd} · 最小化在任务栏（按键将还原置顶）`;
+      } else if (r.state === 'TRAY_HIDDEN') {
+        pill.className = 'win-radar-status-pill tray_hidden';
+        pill.textContent = '🟣 缩入托盘';
+        meta.textContent = `PID: ${r.pid} · 进程存活但隐藏于系统托盘（按键将走三级托盘唤醒链）`;
+      }
+    } catch (_) {}
+  }
+
+  const btnRadarRefresh = $('i-radar-refresh');
+  if (btnRadarRefresh) btnRadarRefresh.onclick = () => refreshProcessRadarUI();
+  refreshProcessRadarUI();
+
+  const handleCrosshairPickWindow = async (btnEl) => {
+    if (DEMO || !api.windowPick) {
+      toast('演示模式下不可调用 Win32 十字准星拾取器');
+      return;
+    }
+    const origHtml = btnEl.innerHTML;
+    btnEl.disabled = true;
+    btnEl.innerHTML = '🎯 请点击目标软件窗口 (Esc 取消)…';
+    try {
+      const res = await api.windowPick();
+      if (res && res.ok) {
+        pushHistory(`十字准星拾取窗口：${res.procName}`);
+        if (res.exePath) spec.target = res.exePath;
+        spec.watchProcess = res.watchProcess || res.procName;
+        if (!spec.label || spec.label === '新按键' || spec.label === '窗口切换') {
+          spec.label = (res.title ? res.title.split(/[-—|]/)[0].trim().slice(0, 10) : res.procName) || res.procName;
+        }
+        if (res.icon) spec.icon = res.icon;
+        if (spec.toggleAction && spec.toggleSyncMode === 'window' && spec.action2) {
+          spec.action2.type = 'window_toggle';
+          spec.action2.target = spec.watchProcess;
+          spec.action2.watchProcess = spec.watchProcess;
+        }
+        await commit(true);
+        renderInspector();
+        toast(`🎯 已精准锁定「${res.procName}」(PID: ${res.pid}, 关联进程树: ${spec.watchProcess})`);
+      } else if (res && !res.cancelled) {
+        toast('未拾取到有效窗口：' + (res.error || '请重试'));
+      }
+    } finally {
+      if (btnEl && btnEl.isConnected) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = origHtml;
+      }
+    }
+  };
+  if ($('i-crosshair-pick-win')) $('i-crosshair-pick-win').onclick = (e) => handleCrosshairPickWindow(e.currentTarget);
+  if ($('i-crosshair-pick-win-single')) $('i-crosshair-pick-win-single').onclick = (e) => handleCrosshairPickWindow(e.currentTarget);
 
   // 状态 2 快捷辅助按钮
   const btnAct2Win = $('i-act2-pickwin');
@@ -7532,8 +8363,11 @@ function renderInspector() {
     const icon = await api.iconExtract(p);
     if (!icon) { toast('这个文件取不到图标'); return; }
     if (isImg) {
-      openCropper(icon, async (cropped) => {
+      openCropper(icon, async (cropped, isFullBleed) => {
         spec.icon = cropped;
+        if (isFullBleed) {
+          spec.iconScale = 100;
+        }
         await commit(true);
         renderInspector();
       });
@@ -7676,6 +8510,41 @@ function renderPageInspector(box) {
             </div>
           `).join('')}
         </div>
+      </div>
+    </details>
+
+    <details class="sec" data-sec="page-panorama" open>
+      <summary>🖥️ 副屏 1×3 竖向全画幅贯穿联屏模式 (Vertical Panorama)</summary>
+      <div class="body">
+        ${(() => {
+          const pano = p.stripPanorama || (p.stripPanorama = { enabled: false, mode: 'vu_meter', accent: '#10b981' });
+          return `
+            <div class="switch-card" style="margin-bottom:8px;">
+              <div class="switch-card-info">
+                <span class="switch-card-title">合并右侧 3 块副屏为 80×240 竖向全画幅画布</span>
+                <span class="switch-card-desc">打通物理隔断，呈现贯穿式双声道 VU 电平柱、滚动歌词瀑布或三联水冷温度计</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="g-pano-enable" ${pano.enabled ? 'checked' : ''} />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div id="g-pano-controls" style="${pano.enabled ? '' : 'opacity:0.45; pointer-events:none;'}">
+              <div class="row">
+                <label>全画幅贯穿视觉主题</label>
+                <select id="g-pano-mode">
+                  <option value="vu_meter" ${(pano.mode || 'vu_meter') === 'vu_meter' ? 'selected' : ''}>🎚️ 贯穿式双声道 L/R 24 段专业 VU 音频电平柱</option>
+                  <option value="lyrics_waterfall" ${pano.mode === 'lyrics_waterfall' ? 'selected' : ''}>🎵 完整多行滚动歌词瀑布 + 实时播放进度</option>
+                  <option value="thermo_triple" ${pano.mode === 'thermo_triple' ? 'selected' : ''}>🌡️ CPU / GPU / RAM 三联水冷温度能量计</option>
+                </select>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-top:6px;">
+                <span style="font-size:11.5px; color:var(--muted);">联屏主题霓虹色</span>
+                <input type="color" id="g-pano-accent" value="${pano.accent || '#10b981'}" style="width:42px; height:26px; padding:0; border:none; cursor:pointer;" />
+              </div>
+            </div>
+          `;
+        })()}
       </div>
     </details>
 
@@ -7855,6 +8724,39 @@ function renderPageInspector(box) {
       renderPageInspector(box);
     };
   });
+
+  const chkPano = box.querySelector('#g-pano-enable');
+  if (chkPano) {
+    chkPano.onchange = async () => {
+      if (!p.stripPanorama) p.stripPanorama = { enabled: false, mode: 'vu_meter', accent: '#10b981' };
+      p.stripPanorama.enabled = chkPano.checked;
+      refreshStripCells(lastSysStats);
+      await commit(false);
+      if (!DEMO) await repaintStrips();
+      renderPageInspector(box);
+      toast(chkPano.checked ? '🖥️ 已开启副屏 1×3 竖向全画幅贯穿联屏模式' : '已恢复 3 块独立副屏模式');
+    };
+  }
+  const selPanoMode = box.querySelector('#g-pano-mode');
+  if (selPanoMode) {
+    selPanoMode.onchange = async () => {
+      if (!p.stripPanorama) p.stripPanorama = { enabled: true, mode: 'vu_meter', accent: '#10b981' };
+      p.stripPanorama.mode = selPanoMode.value;
+      refreshStripCells(lastSysStats);
+      await commit(false);
+      if (!DEMO) await repaintStrips();
+    };
+  }
+  const iptPanoAccent = box.querySelector('#g-pano-accent');
+  if (iptPanoAccent) {
+    iptPanoAccent.oninput = async () => {
+      if (!p.stripPanorama) p.stripPanorama = { enabled: true, mode: 'vu_meter', accent: '#10b981' };
+      p.stripPanorama.accent = iptPanoAccent.value;
+      refreshStripCells(lastSysStats);
+      scheduleDebouncedCommit(false);
+      if (!DEMO) await repaintStrips();
+    };
+  }
 
   box.querySelector('#g-repaint-all').onclick = () => repaintAllKeys(true);
 }
@@ -8422,6 +9324,18 @@ function updateLkmSwatch(previewState) {
   }
 
   wrap.appendChild(sw);
+  // 同步挂载 1:1 硬件级 Canvas 预览，确保按键库编辑弹窗与真机屏幕 100% 一致
+  paintKey(previewSpec, 96, null).then((cnv) => {
+    if (!cnv || !sw.isConnected) return;
+    cnv.style.position = 'absolute';
+    cnv.style.inset = '0';
+    cnv.style.width = '100%';
+    cnv.style.height = '100%';
+    cnv.style.borderRadius = 'inherit';
+    cnv.style.pointerEvents = 'none';
+    sw.innerHTML = '';
+    sw.appendChild(cnv);
+  }).catch(() => {});
 
   // 同步更新双态面板中的角标效果
   const badgeWrap = $('lkmBadgePreviewWrap');
@@ -9713,7 +10627,7 @@ function getCustomSubCategories() {
 }
 
 
-// ------------------------------------------------------------------- v0.10.6 模式/动作切换状态清洗器与内置「🔤 文字图标工坊」
+// ------------------------------------------------------------------- v0.11.0 模式/动作切换状态清洗器与内置「🔤 文字图标工坊」
 
 function sanitizeSpecOnModeOrTypeChange(spec, opts = {}) {
   if (!spec || typeof spec !== "object") return;
@@ -9813,6 +10727,12 @@ const TEXT_ICON_TEMPLATES = [
   { id: "gradient_text", name: "流光渐变字", badge: "Gradient", desc: "多色流光渐变填充字 + 极光底栏", defaultText1: "AI", defaultText2: "AGENT", accent: "#ec4899", bgColor: "#0f1021" },
   { id: "terminal", name: "终端代码", badge: "Shell", desc: "三色窗口顶栏 + 极客命令提示符", defaultText1: "git", defaultText2: "push", accent: "#2dd4bf", bgColor: "#0a0f16" },
   { id: "ring", name: "环形徽标", badge: "Orbital", desc: "精密刻度能量圆环 + 中心视觉锚点", defaultText1: "MAX", defaultText2: "100%", accent: "#60a5fa", bgColor: "#0b1324" },
+  { id: "split", name: "上下分栏卡", badge: "Split", desc: "顶部主题色横幅铭牌 + 下部深邃高对比主字", defaultText1: "SCENE", defaultText2: "主视角", accent: "#f59e0b", bgColor: "#111827" },
+  { id: "hud", name: "机甲准星 HUD", badge: "Tactical", desc: "四角战术锁定准星 + 扫描网格线", defaultText1: "LOCK", defaultText2: "F12", accent: "#10b981", bgColor: "#061411" },
+  { id: "pixel", name: "复古像素街机", badge: "8-Bit", desc: "阶梯像素外框 + 硬朗双层立体投影", defaultText1: "RUN", defaultText2: "1UP", accent: "#f43f5e", bgColor: "#18091c" },
+  { id: "outline", name: "极简双线框", badge: "Wire", desc: "高对比几何双内框 + 纯净现代排版", defaultText1: "MUTE", defaultText2: "AUDIO", accent: "#e2e8f0", bgColor: "#090d16" },
+  { id: "aurora", name: "弥散极光流体", badge: "Aurora", desc: "多源径向弥散流体高光 + 柔光玻璃面", defaultText1: "FLOW", defaultText2: "SYNC", accent: "#818cf8", bgColor: "#0b0f29" },
+  { id: "shortcut_cap", name: "快捷键组合帽", badge: "Hotkey", desc: "顶部修饰键胶囊组 + 中部超大主按键", defaultText1: "CTRL+⇧", defaultText2: "K", accent: "#22d3ee", bgColor: "#0f172a" },
 ];
 
 const TEXT_ICON_PALETTES = [
@@ -9843,6 +10763,25 @@ function fitSingleLineFontSize(ctx, text, maxW, startFs, minFs, weight, fontFami
   return fs;
 }
 
+function drawSpacedText(ctx, text, x, y, spacingPx = 0) {
+  const str = String(text || "");
+  if (!spacingPx || str.length <= 1) {
+    ctx.fillText(str, x, y);
+    return;
+  }
+  const chars = Array.from(str);
+  const widths = chars.map(ch => ctx.measureText(ch).width);
+  const totalW = widths.reduce((a, b) => a + b, 0) + spacingPx * (chars.length - 1);
+  let curX = x - totalW / 2;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = "left";
+  for (let i = 0; i < chars.length; i++) {
+    ctx.fillText(chars[i], curX, y);
+    curX += widths[i] + spacingPx;
+  }
+  ctx.textAlign = prevAlign;
+}
+
 function renderTextIconCanvas(rawCfg, size = 192) {
   const c = document.createElement("canvas");
   c.width = c.height = size;
@@ -9856,44 +10795,79 @@ function renderTextIconCanvas(rawCfg, size = 192) {
   const accent = (rawCfg && rawCfg.accent) || tpl.accent || "#38bdf8";
   const bgColor = (rawCfg && rawCfg.bgColor) || tpl.bgColor || "#0f172a";
   const textColor = (rawCfg && rawCfg.textColor) || "#ffffff";
+  const color2Text = (rawCfg && rawCfg.color2Text) || accent;
   const bgTransparent = !!(rawCfg && rawCfg.bgTransparent);
+  const fullBleed = (rawCfg && rawCfg.fullBleed !== undefined) ? !!rawCfg.fullBleed : true;
   const fontObj = TEXT_ICON_FONTS.find(f => f.id === (rawCfg && rawCfg.fontId)) || TEXT_ICON_FONTS[0];
   const fontFamily = fontObj.family;
-  const fontScale = Math.max(60, Math.min(145, Number(rawCfg && rawCfg.fontScale) || 100)) / 100;
-  const radius = Math.round(Math.max(8, Math.min(80, Number(rawCfg && rawCfg.radius !== undefined ? rawCfg.radius : 36))) * s);
-  const pad = Math.round(10 * s);
+  const fontScale = Math.max(55, Math.min(150, Number(rawCfg && rawCfg.fontScale) || 100)) / 100;
+  const scale1 = (Math.max(55, Math.min(155, Number(rawCfg && rawCfg.scale1) || 100)) / 100) * fontScale;
+  const scale2 = (Math.max(55, Math.min(155, Number(rawCfg && rawCfg.scale2) || 100)) / 100) * fontScale;
+  const gradAngle = Number(rawCfg && rawCfg.gradAngle !== undefined ? rawCfg.gradAngle : 135) % 360;
+  const offsetX = Math.max(-45, Math.min(45, Number(rawCfg && rawCfg.offsetX) || 0)) * s;
+  const offsetY = Math.max(-45, Math.min(45, Number(rawCfg && rawCfg.offsetY) || 0)) * s;
+  const letterSpacing = Math.max(-3, Math.min(18, Number(rawCfg && rawCfg.letterSpacing) || 0)) * s;
+  const badgeGlyph = String((rawCfg && rawCfg.badgeGlyph) || "").trim();
+
+  // 修复 Bug 1：满格出血模式 (fullBleed) 下 pad = 0，直接铺满 192×192 全画幅！
+  const pad = fullBleed ? 0 : Math.round(10 * s);
   const boxW = size - pad * 2;
   const boxH = size - pad * 2;
+  const rawRad = Number(rawCfg && rawCfg.radius !== undefined ? rawCfg.radius : (fullBleed ? 22 : 36));
+  const radius = Math.round(Math.max(0, Math.min(80, rawRad)) * s);
 
   ctx.clearRect(0, 0, size, size);
 
   const drawRoundedBox = (x, y, w, h, r) => {
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    if (r > 0 && ctx.roundRect) ctx.roundRect(x, y, w, h, r);
     else ctx.rect(x, y, w, h);
   };
 
-  // Base background (unless transparent mode is enabled so board gradient shines through)
+  const rad = ((gradAngle - 90) * Math.PI) / 180;
+  const gx0 = size / 2 - Math.cos(rad) * (boxW / 2);
+  const gy0 = size / 2 - Math.sin(rad) * (boxH / 2);
+  const gx1 = size / 2 + Math.cos(rad) * (boxW / 2);
+  const gy1 = size / 2 + Math.sin(rad) * (boxH / 2);
+
   if (!bgTransparent) {
     ctx.save();
     drawRoundedBox(pad, pad, boxW, boxH, radius);
     ctx.clip();
-    const bgGrad = ctx.createLinearGradient(pad, pad, pad + boxW, pad + boxH);
+    const bgGrad = ctx.createLinearGradient(gx0, gy0, gx1, gy1);
     bgGrad.addColorStop(0, bgColor);
     bgGrad.addColorStop(1, "#050811");
     ctx.fillStyle = bgGrad;
     ctx.fillRect(pad, pad, boxW, boxH);
 
-    // Subtle radial ambient glow from accent color
-    const radGlow = ctx.createRadialGradient(size * 0.5, size * 0.32, 4 * s, size * 0.5, size * 0.5, size * 0.52);
-    radGlow.addColorStop(0, accent + "44");
+    const radGlow = ctx.createRadialGradient(size * 0.5, size * 0.32, 4 * s, size * 0.5, size * 0.5, size * 0.56);
+    radGlow.addColorStop(0, accent + "48");
     radGlow.addColorStop(1, "transparent");
     ctx.fillStyle = radGlow;
     ctx.fillRect(pad, pad, boxW, boxH);
     ctx.restore();
   }
 
-  // Template-specific decorative chrome
+  const drawBadgeOverlay = () => {
+    if (!badgeGlyph) return;
+    ctx.save();
+    const bSize = Math.round(34 * s);
+    const bx = size - pad - bSize - Math.round(10 * s);
+    const by = pad + Math.round(10 * s);
+    drawRoundedBox(bx, by, bSize, bSize, Math.round(10 * s));
+    ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
+    ctx.fill();
+    ctx.strokeStyle = accent + "aa";
+    ctx.lineWidth = 1.6 * s;
+    ctx.stroke();
+    ctx.font = `${Math.round(20 * s)}px "Segoe UI Emoji", "Microsoft YaHei", sans-serif`;
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeGlyph, bx + bSize / 2, by + bSize / 2 + 1 * s);
+    ctx.restore();
+  };
+
   if (style === "glass") {
     ctx.save();
     drawRoundedBox(pad, pad, boxW, boxH, radius);
@@ -9908,14 +10882,14 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.restore();
 
     ctx.save();
-    drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, Math.max(4, radius - 2));
+    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(0, radius - 2));
     ctx.strokeStyle = accent + "88";
     ctx.lineWidth = 2.5 * s;
     ctx.stroke();
     ctx.restore();
   } else if (style === "neon") {
     ctx.save();
-    drawRoundedBox(pad + 4 * s, pad + 4 * s, boxW - 8 * s, boxH - 8 * s, Math.max(6, radius - 4));
+    drawRoundedBox(pad + 4 * s, pad + 4 * s, boxW - 8 * s, boxH - 8 * s, Math.max(2, radius - 4));
     ctx.shadowColor = accent;
     ctx.shadowBlur = 14 * s;
     ctx.strokeStyle = accent;
@@ -9923,20 +10897,17 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.stroke();
     ctx.restore();
 
-    // Corner cyber brackets
     ctx.save();
     ctx.strokeStyle = "#ffffffcc";
     ctx.lineWidth = 2.2 * s;
     const cLen = 14 * s;
     const m = pad + 11 * s;
-    // Top-left & bottom-right accents
     ctx.beginPath();
     ctx.moveTo(m, m + cLen); ctx.lineTo(m, m); ctx.lineTo(m + cLen, m);
     ctx.moveTo(size - m - cLen, size - m); ctx.lineTo(size - m, size - m); ctx.lineTo(size - m, size - m - cLen);
     ctx.stroke();
     ctx.restore();
   } else if (style === "keycap") {
-    // 3D Mechanical Keycap Bevel
     ctx.save();
     const outerR = radius;
     if (bgTransparent) {
@@ -9944,27 +10915,24 @@ function renderTextIconCanvas(rawCfg, size = 192) {
       ctx.fillStyle = bgColor;
       ctx.fill();
     }
-    // Bottom & side shadow bevel
-    drawRoundedBox(pad, pad, boxW, boxH, outerR);
+    drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, outerR);
     ctx.lineWidth = 3 * s;
     ctx.strokeStyle = "rgba(0,0,0,0.65)";
     ctx.stroke();
 
-    const dishPad = Math.round(23 * s);
+    const dishPad = pad + Math.round(16 * s);
     const dishW = size - dishPad * 2;
     const dishH = size - dishPad * 2 - Math.round(4 * s);
-    const dishY = dishPad - Math.round(3 * s);
+    const dishY = dishPad - Math.round(2 * s);
     const dishR = Math.max(8, Math.round(outerR * 0.72));
 
-    // Chamfer lines connecting outer corners to inner dish
-    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
     ctx.lineWidth = 1.6 * s;
     ctx.beginPath();
-    ctx.moveTo(pad + 8 * s, pad + 8 * s); ctx.lineTo(dishPad + 4 * s, dishY + 4 * s);
-    ctx.moveTo(size - pad - 8 * s, pad + 8 * s); ctx.lineTo(size - dishPad - 4 * s, dishY + 4 * s);
+    ctx.moveTo(pad + 6 * s, pad + 6 * s); ctx.lineTo(dishPad + 4 * s, dishY + 4 * s);
+    ctx.moveTo(size - pad - 6 * s, pad + 6 * s); ctx.lineTo(size - dishPad - 4 * s, dishY + 4 * s);
     ctx.stroke();
 
-    // Inner concave dish
     drawRoundedBox(dishPad, dishY, dishW, dishH, dishR);
     const dishGrad = ctx.createLinearGradient(dishPad, dishY, dishPad, dishY + dishH);
     dishGrad.addColorStop(0, "#1e293b");
@@ -9982,8 +10950,7 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.lineWidth = 2.2 * s;
     ctx.stroke();
 
-    // Top glowing pill bar
-    const pillW = Math.round(boxW * 0.76);
+    const pillW = Math.round(boxW * 0.78);
     const pillH = Math.round(44 * s);
     const pillX = Math.round((size - pillW) / 2);
     const pillY = Math.round(pad + 18 * s);
@@ -9994,31 +10961,164 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.fill();
     ctx.restore();
 
-    // Render text inside pill & bottom area directly
     ctx.save();
     const topStr = text2 ? text1 : "ACTION";
     const botStr = text2 ? text2 : text1;
-    const pillFs = fitSingleLineFontSize(ctx, topStr, boxW * 0.66, Math.round(24 * s * fontScale), Math.round(12 * s), "900", fontFamily);
+    const pillFs = fitSingleLineFontSize(ctx, topStr, boxW * 0.68, Math.round(24 * s * scale1), Math.round(12 * s), "900", fontFamily);
     ctx.font = `900 ${pillFs}px ${fontFamily}`;
     ctx.fillStyle = "#06101e";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(topStr, size / 2, pad + 40 * s);
+    drawSpacedText(ctx, topStr, size / 2 + offsetX, pad + 40 * s + offsetY, letterSpacing);
 
-    const botFs = fitSingleLineFontSize(ctx, botStr, boxW * 0.82, Math.round(48 * s * fontScale), Math.round(18 * s), "900", fontFamily);
+    const botFs = fitSingleLineFontSize(ctx, botStr, boxW * 0.84, Math.round(50 * s * (text2 ? scale2 : scale1)), Math.round(18 * s), "900", fontFamily);
     ctx.font = `900 ${botFs}px ${fontFamily}`;
-    ctx.fillStyle = textColor;
+    ctx.fillStyle = text2 ? color2Text : textColor;
     ctx.shadowColor = "rgba(0,0,0,0.55)";
     ctx.shadowBlur = 6 * s;
-    ctx.fillText(botStr, size / 2, size * 0.67);
+    drawSpacedText(ctx, botStr, size / 2 + offsetX, size * 0.68 + offsetY, letterSpacing);
     ctx.restore();
+    drawBadgeOverlay();
     return c;
+  } else if (style === "split") {
+    // 新增预设 9：上下分栏色块卡 (Split Banner)
+    ctx.save();
+    drawRoundedBox(pad, pad, boxW, boxH, radius);
+    ctx.clip();
+    const topH = Math.round(boxH * 0.38);
+    ctx.fillStyle = accent;
+    ctx.fillRect(pad, pad, boxW, topH);
+
+    const topStr = text2 ? text1 : "MODE";
+    const botStr = text2 ? text2 : text1;
+    const fsTop = fitSingleLineFontSize(ctx, topStr, boxW * 0.82, Math.round(28 * s * scale1), Math.round(13 * s), "900", fontFamily);
+    ctx.font = `900 ${fsTop}px ${fontFamily}`;
+    ctx.fillStyle = "#06101e";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    drawSpacedText(ctx, topStr, size / 2 + offsetX, pad + topH / 2 + offsetY * 0.5, letterSpacing);
+
+    const fsBot = fitSingleLineFontSize(ctx, botStr, boxW * 0.84, Math.round(50 * s * (text2 ? scale2 : scale1)), Math.round(18 * s), "900", fontFamily);
+    ctx.font = `900 ${fsBot}px ${fontFamily}`;
+    ctx.fillStyle = textColor;
+    drawSpacedText(ctx, botStr, size / 2 + offsetX, pad + topH + (boxH - topH) / 2 + offsetY, letterSpacing);
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, radius);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2.5 * s;
+    ctx.stroke();
+    ctx.restore();
+    drawBadgeOverlay();
+    return c;
+  } else if (style === "shortcut_cap") {
+    // 新增预设 14：快捷键组合键帽 (Shortcut Cap)
+    ctx.save();
+    drawRoundedBox(pad + 3 * s, pad + 3 * s, boxW - 6 * s, boxH - 6 * s, radius);
+    ctx.strokeStyle = accent + "88";
+    ctx.lineWidth = 2.5 * s;
+    ctx.stroke();
+
+    const modStr = text2 ? text1 : "CTRL";
+    const mainKey = text2 ? text2 : text1;
+    const capW = Math.round(boxW * 0.72);
+    const capH = Math.round(34 * s);
+    drawRoundedBox((size - capW) / 2, pad + 16 * s, capW, capH, 8 * s);
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fill();
+    ctx.strokeStyle = accent + "99";
+    ctx.lineWidth = 1.5 * s;
+    ctx.stroke();
+
+    const fsMod = fitSingleLineFontSize(ctx, modStr, capW * 0.86, Math.round(20 * s * scale1), Math.round(11 * s), "800", fontFamily);
+    ctx.font = `800 ${fsMod}px ${fontFamily}`;
+    ctx.fillStyle = accent;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(modStr, size / 2, pad + 33 * s);
+
+    const fsKey = fitSingleLineFontSize(ctx, mainKey, boxW * 0.82, Math.round(64 * s * scale2), Math.round(22 * s), "900", fontFamily);
+    ctx.font = `900 ${fsKey}px ${fontFamily}`;
+    ctx.fillStyle = textColor;
+    ctx.shadowColor = accent + "66";
+    ctx.shadowBlur = 10 * s;
+    drawSpacedText(ctx, mainKey, size / 2 + offsetX, size * 0.67 + offsetY, letterSpacing);
+    ctx.restore();
+    drawBadgeOverlay();
+    return c;
+  } else if (style === "hud") {
+    // 新增预设 10：机甲准星 HUD (Tactical HUD)
+    ctx.save();
+    ctx.strokeStyle = accent + "22";
+    ctx.lineWidth = 1 * s;
+    for (let y = pad + 16 * s; y < size - pad; y += 16 * s) {
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(size - pad, y); ctx.stroke();
+    }
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3.2 * s;
+    const m = pad + 10 * s;
+    const len = 22 * s;
+    ctx.beginPath();
+    ctx.moveTo(m, m + len); ctx.lineTo(m, m); ctx.lineTo(m + len, m);
+    ctx.moveTo(size - m - len, m); ctx.lineTo(size - m, m); ctx.lineTo(size - m, m + len);
+    ctx.moveTo(m, size - m - len); ctx.lineTo(m, size - m); ctx.lineTo(m + len, size - m);
+    ctx.moveTo(size - m - len, size - m); ctx.lineTo(size - m, size - m); ctx.lineTo(size - m, size - m - len);
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "pixel") {
+    // 新增预设 11：复古像素街机 (8-Bit Pixel)
+    ctx.save();
+    const pStep = Math.round(6 * s);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = pStep;
+    ctx.strokeRect(pad + pStep, pad + pStep, boxW - pStep * 2, boxH - pStep * 2);
+    ctx.strokeStyle = "#ffffff88";
+    ctx.lineWidth = Math.max(2, Math.round(2 * s));
+    ctx.strokeRect(pad + pStep * 2.2, pad + pStep * 2.2, boxW - pStep * 4.4, boxH - pStep * 4.4);
+    ctx.restore();
+  } else if (style === "outline") {
+    // 新增预设 12：极简双线框 (Wire Outline)
+    ctx.save();
+    drawRoundedBox(pad + 4 * s, pad + 4 * s, boxW - 8 * s, boxH - 8 * s, Math.max(2, radius - 4));
+    ctx.strokeStyle = textColor;
+    ctx.lineWidth = 2.8 * s;
+    ctx.stroke();
+    drawRoundedBox(pad + 11 * s, pad + 11 * s, boxW - 22 * s, boxH - 22 * s, Math.max(2, radius - 9));
+    ctx.strokeStyle = accent + "aa";
+    ctx.lineWidth = 1.4 * s;
+    ctx.stroke();
+    ctx.restore();
+  } else if (style === "aurora") {
+    // 新增预设 13：弥散极光流体 (Aurora Fluid)
+    ctx.save();
+    drawRoundedBox(pad, pad, boxW, boxH, radius);
+    ctx.clip();
+    const g1 = ctx.createRadialGradient(size * 0.22, size * 0.24, 4 * s, size * 0.22, size * 0.24, size * 0.65);
+    g1.addColorStop(0, accent + "99");
+    g1.addColorStop(1, "transparent");
+    ctx.fillStyle = g1;
+    ctx.fillRect(pad, pad, boxW, boxH);
+
+    const g2 = ctx.createRadialGradient(size * 0.82, size * 0.78, 4 * s, size * 0.82, size * 0.78, size * 0.65);
+    g2.addColorStop(0, color2Text + "88");
+    g2.addColorStop(1, "transparent");
+    ctx.fillStyle = g2;
+    ctx.fillRect(pad, pad, boxW, boxH);
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(2, radius - 2));
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 2 * s;
+    ctx.stroke();
+    ctx.restore();
   } else if (style === "stamp") {
     ctx.save();
     ctx.translate(size / 2, size / 2);
     ctx.rotate((-6 * Math.PI) / 180);
-    const sw = boxW - 18 * s;
-    const sh = boxH - 18 * s;
+    const sw = boxW - 14 * s;
+    const sh = boxH - 14 * s;
     drawRoundedBox(-sw / 2, -sh / 2, sw, sh, Math.min(radius, 28 * s));
     ctx.strokeStyle = accent;
     ctx.lineWidth = 5 * s;
@@ -10031,28 +11131,29 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const maxW = sw - 26 * s;
+    const maxW = sw - 22 * s;
     if (text2) {
-      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(44 * s * fontScale), Math.round(16 * s), "900", fontFamily);
+      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(46 * s * scale1), Math.round(16 * s), "900", fontFamily);
       ctx.font = `900 ${fs1}px ${fontFamily}`;
       ctx.fillStyle = textColor;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(text1, 0, -14 * s);
+      drawSpacedText(ctx, text1, offsetX, -14 * s + offsetY, letterSpacing);
 
-      const fs2 = fitSingleLineFontSize(ctx, text2, maxW, Math.round(22 * s * fontScale), Math.round(11 * s), "800", fontFamily);
+      const fs2 = fitSingleLineFontSize(ctx, text2, maxW, Math.round(24 * s * scale2), Math.round(11 * s), "800", fontFamily);
       ctx.font = `800 ${fs2}px ${fontFamily}`;
-      ctx.fillStyle = accent;
-      ctx.fillText(text2, 0, 24 * s);
+      ctx.fillStyle = color2Text;
+      drawSpacedText(ctx, text2, offsetX, 24 * s + offsetY, letterSpacing);
     } else {
-      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(52 * s * fontScale), Math.round(18 * s), "900", fontFamily);
+      const fs1 = fitSingleLineFontSize(ctx, text1, maxW, Math.round(54 * s * scale1), Math.round(18 * s), "900", fontFamily);
       ctx.font = `900 ${fs1}px ${fontFamily}`;
       ctx.fillStyle = accent;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(text1, 0, 2 * s);
+      drawSpacedText(ctx, text1, offsetX, 2 * s + offsetY, letterSpacing);
     }
     ctx.restore();
+    drawBadgeOverlay();
     return c;
   } else if (style === "terminal") {
     ctx.save();
@@ -10061,7 +11162,6 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.lineWidth = 2.2 * s;
     ctx.stroke();
 
-    // Terminal header bar & traffic dots
     const dotY = pad + 18 * s;
     const dots = [["#ff5f56", pad + 20 * s], ["#ffbd2e", pad + 34 * s], ["#27c93f", pad + 48 * s]];
     for (const [col, dx] of dots) {
@@ -10078,28 +11178,29 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.stroke();
 
     const termFont = "Consolas, 'JetBrains Mono', 'Microsoft YaHei', monospace";
-    const maxW = boxW - 24 * s;
+    const maxW = boxW - 20 * s;
     const line1Str = `>${text1}`;
-    const fs1 = fitSingleLineFontSize(ctx, line1Str, maxW, Math.round((text2 ? 40 : 46) * s * fontScale), Math.round(15 * s), "bold", termFont);
+    const fs1 = fitSingleLineFontSize(ctx, line1Str, maxW, Math.round((text2 ? 42 : 48) * s * scale1), Math.round(15 * s), "bold", termFont);
     ctx.font = `bold ${fs1}px ${termFont}`;
     ctx.fillStyle = accent;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(line1Str, size / 2, text2 ? size * 0.51 : size * 0.58);
+    drawSpacedText(ctx, line1Str, size / 2 + offsetX, (text2 ? size * 0.51 : size * 0.58) + offsetY, letterSpacing);
 
     if (text2) {
-      const fs2 = fitSingleLineFontSize(ctx, text2 + "_", maxW, Math.round(25 * s * fontScale), Math.round(12 * s), "bold", termFont);
+      const fs2 = fitSingleLineFontSize(ctx, text2 + "_", maxW, Math.round(26 * s * scale2), Math.round(12 * s), "bold", termFont);
       ctx.font = `bold ${fs2}px ${termFont}`;
-      ctx.fillStyle = textColor;
-      ctx.fillText(text2 + "_", size / 2, size * 0.75);
+      ctx.fillStyle = color2Text || textColor;
+      drawSpacedText(ctx, text2 + "_", size / 2 + offsetX, size * 0.75 + offsetY, letterSpacing);
     }
     ctx.restore();
+    drawBadgeOverlay();
     return c;
   } else if (style === "ring") {
     ctx.save();
     const cx = size / 2;
     const cy = size / 2;
-    const ringR = Math.round(size * 0.39);
+    const ringR = Math.round(size * 0.41);
 
     ctx.beginPath();
     ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
@@ -10118,37 +11219,42 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.restore();
   } else if (style === "gradient_text") {
     ctx.save();
-    // Bottom glowing accent bar
-    const barW = Math.round(boxW * 0.52);
+    const barW = Math.round(boxW * 0.56);
     const barH = Math.round(6 * s);
     drawRoundedBox((size - barW) / 2, size - pad - 18 * s, barW, barH, barH / 2);
     const barGrad = ctx.createLinearGradient((size - barW) / 2, 0, (size + barW) / 2, 0);
     barGrad.addColorStop(0, accent);
-    barGrad.addColorStop(1, "#38bdf8");
+    barGrad.addColorStop(1, color2Text || "#38bdf8");
     ctx.fillStyle = barGrad;
     ctx.fill();
     ctx.restore();
   }
 
-  // Standard 1-line or 2-line centered typography for glass / neon / keycap / gradient_text / ring
+  // Standard 1-line or 2-line centered typography
   ctx.save();
-  const maxTextW = style === "ring" ? boxW * 0.64 : (style === "keycap" ? boxW * 0.68 : boxW * 0.82);
-  const centerY = style === "keycap" ? size * 0.48 : size * 0.5;
+  const maxTextW = style === "ring" ? boxW * 0.66 : (style === "keycap" ? boxW * 0.72 : boxW * 0.86);
+  const centerY = (style === "keycap" ? size * 0.48 : size * 0.5) + offsetY;
+  const centerX = size / 2 + offsetX;
 
   const makeTextFill = (yTop, yBot) => {
     if (style === "gradient_text") {
       const tg = ctx.createLinearGradient(size * 0.2, yTop, size * 0.8, yBot);
       tg.addColorStop(0, "#ffffff");
       tg.addColorStop(0.45, accent);
-      tg.addColorStop(1, "#38bdf8");
+      tg.addColorStop(1, color2Text || "#38bdf8");
       return tg;
     }
     return textColor;
   };
 
-  if (style === "neon") {
+  if (style === "neon" || style === "hud") {
     ctx.shadowColor = accent;
     ctx.shadowBlur = 16 * s;
+  } else if (style === "pixel") {
+    ctx.shadowColor = accent;
+    ctx.shadowOffsetX = 3 * s;
+    ctx.shadowOffsetY = 3 * s;
+    ctx.shadowBlur = 0;
   } else {
     ctx.shadowColor = "rgba(0,0,0,0.55)";
     ctx.shadowBlur = 6 * s;
@@ -10159,27 +11265,28 @@ function renderTextIconCanvas(rawCfg, size = 192) {
   ctx.textBaseline = "middle";
 
   if (text2) {
-    const base1 = Math.round((text1.length <= 2 ? 56 : (text1.length === 3 ? 46 : 38)) * s * fontScale);
+    const base1 = Math.round((text1.length <= 2 ? 58 : (text1.length === 3 ? 48 : 40)) * s * scale1);
     const fs1 = fitSingleLineFontSize(ctx, text1, maxTextW, base1, Math.round(16 * s), "900", fontFamily);
     ctx.font = `900 ${fs1}px ${fontFamily}`;
     ctx.fillStyle = makeTextFill(centerY - fs1, centerY);
-    ctx.fillText(text1, size / 2, centerY - Math.round(17 * s));
+    drawSpacedText(ctx, text1, centerX, centerY - Math.round(18 * s), letterSpacing);
 
-    const base2 = Math.round(23 * s * fontScale);
+    const base2 = Math.round(24 * s * scale2);
     const fs2 = fitSingleLineFontSize(ctx, text2, maxTextW, base2, Math.round(11 * s), "800", fontFamily);
     ctx.font = `800 ${fs2}px ${fontFamily}`;
-    ctx.shadowBlur = style === "neon" ? 8 * s : 3 * s;
-    ctx.fillStyle = accent;
-    ctx.fillText(text2, size / 2, centerY + Math.round(25 * s));
+    ctx.shadowBlur = (style === "neon" || style === "hud") ? 8 * s : 3 * s;
+    ctx.fillStyle = color2Text || accent;
+    drawSpacedText(ctx, text2, centerX, centerY + Math.round(25 * s), letterSpacing);
   } else {
-    const base1 = Math.round((text1.length === 1 ? 76 : (text1.length === 2 ? 64 : (text1.length === 3 ? 50 : 40))) * s * fontScale);
+    const base1 = Math.round((text1.length === 1 ? 80 : (text1.length === 2 ? 66 : (text1.length === 3 ? 52 : 42))) * s * scale1);
     const fs1 = fitSingleLineFontSize(ctx, text1, maxTextW, base1, Math.round(16 * s), "900", fontFamily);
     ctx.font = `900 ${fs1}px ${fontFamily}`;
     ctx.fillStyle = makeTextFill(centerY - fs1 / 2, centerY + fs1 / 2);
-    ctx.fillText(text1, size / 2, centerY + 1 * s);
+    drawSpacedText(ctx, text1, centerX, centerY + 1 * s, letterSpacing);
   }
 
   ctx.restore();
+  drawBadgeOverlay();
   return c;
 }
 
@@ -10197,12 +11304,24 @@ function openTextIconStudio(initialSpec, onApply) {
     accent: "#38bdf8",
     bgColor: (initialSpec && initialSpec.color) || "#0f172a",
     textColor: "#ffffff",
+    color2Text: "#38bdf8",
     fontId: "sans",
     fontScale: 100,
-    radius: 36,
+    scale1: 100,
+    scale2: 100,
+    cardScale: (initialSpec && Number(initialSpec.iconScale) >= 90) ? Number(initialSpec.iconScale) : 100,
+    radius: 22,
+    gradAngle: 135,
+    offsetX: 0,
+    offsetY: 0,
+    letterSpacing: 0,
+    badgeGlyph: "",
+    fullBleed: true,
     bgTransparent: false,
     hideKeyLabel: true,
   }, existingCfg || {});
+
+  const BADGE_GLYPHS = ["", "⚡", "🔥", "🎙️", "🎮", "🎬", "🔒", "🚀", "🎵", "📡"];
 
   const wrap = document.createElement("div");
   wrap.className = "modal";
@@ -10211,22 +11330,30 @@ function openTextIconStudio(initialSpec, onApply) {
     <div class="modalbox text-icon-modal-box">
       <div class="tis-head">
         <div>
-          <h3 style="margin:0; font-size:15px;">🔤 文字图标工坊 (Text Icon Studio)</h3>
-          <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">内置 8 套高颜值图标视觉模板 · 支持双行文字、发光霓虹、3D 键帽与透明整板流光底</div>
+          <h3 style="margin:0; font-size:15px;">🔤 文字图标工坊 2.0 (Text Icon Studio Pro)</h3>
+          <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">14 套精调模板 · 100% 满格全出血无黑边 · 双行独立字号/字色 · 图文徽标混排 · 一键同步全页</div>
         </div>
         <button type="button" class="ghost tiny" id="tisCloseBtn">✕ 关闭</button>
       </div>
 
       <div class="tis-body">
         <div class="tis-preview-col">
-          <div style="font-size:11px; font-weight:700; color:var(--muted);">1:1 实时高清渲染预览</div>
+          <div style="font-size:11px; font-weight:700; color:var(--muted);">1:1 硬件满格实时渲染预览</div>
           <div class="tis-preview-stage" id="tisPreviewStage">
             <canvas id="tisPreviewCanvas" width="192" height="192"></canvas>
           </div>
-          <div style="font-size:10.5px; color:var(--muted); text-align:center; line-height:1.4;">
-            192×192 超采样矢量级抗锯齿<br>支持随时再次点击「🔤 文字图标」无损回填修改
+          <div style="font-size:10px; color:var(--muted); margin-top:2px;">3×3 真机邻键实景对比预览</div>
+          <div class="tis-context-preview-grid" id="tisContextGrid">
+            ${Array.from({ length: 9 }).map((_, i) => `
+              <div class="tis-ctx-cell ${i === 4 ? 'center-active' : ''}" data-ctx-idx="${i}"></div>
+            `).join("")}
           </div>
-          <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink); cursor:pointer; margin-top:4px;">
+
+          <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:var(--accent); cursor:pointer; margin-top:4px;">
+            <input type="checkbox" id="tisFullBleed" ${state.fullBleed !== false ? "checked" : ""} />
+            <span>🔳 满格全出血模式（100% 铺满真机按键无黑边）</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink); cursor:pointer;">
             <input type="checkbox" id="tisBgTransparent" ${state.bgTransparent ? "checked" : ""} />
             <span>🌈 透明底色（透出整板流光渐变）</span>
           </label>
@@ -10237,9 +11364,9 @@ function openTextIconStudio(initialSpec, onApply) {
           <button type="button" class="ghost tiny" id="tisSaveToLibBtn" style="width:100%; margin-top:4px;">⭐ 同时存入自定义图标库</button>
         </div>
 
-        <div class="tis-ctrl-col">
+        <div class="tis-ctrl-col" style="max-height: 70vh; overflow-y: auto; padding-right: 4px;">
           <div>
-            <div style="font-size:11.5px; font-weight:700; color:var(--ink); margin-bottom:6px;">🎨 1. 选择视觉模板 (8 套精调样式)</div>
+            <div style="font-size:11.5px; font-weight:700; color:var(--ink); margin-bottom:6px;">🎨 1. 选择视觉模板 (14 套精调样式)</div>
             <div class="tis-template-grid" id="tisTemplateGrid">
               ${TEXT_ICON_TEMPLATES.map(t => `
                 <button type="button" class="tis-tpl-card ${state.style === t.id ? "active" : ""}" data-tpl="${t.id}" title="${escapeAttr(t.desc)}">
@@ -10252,16 +11379,26 @@ function openTextIconStudio(initialSpec, onApply) {
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
             <div>
-              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">主标题文字 (第 1 行，建议 1~5 字)</label>
-              <input id="tisText1" type="text" maxlength="8" value="${escapeAttr(state.text1)}" placeholder="如 DEV / 静音 / ⌘C" style="font-weight:700;" />
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">主标题文字 (第 1 行)</label>
+              <input id="tisText1" type="text" maxlength="10" value="${escapeAttr(state.text1)}" placeholder="如 DEV / 静音 / ⌘C" style="font-weight:700;" />
             </div>
             <div>
-              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">副标题 / 胶囊标 (第 2 行，可留空)</label>
-              <input id="tisText2" type="text" maxlength="10" value="${escapeAttr(state.text2)}" placeholder="留空则为单行居中大字" />
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">副标题 / 第 2 行 (可留空)</label>
+              <input id="tisText2" type="text" maxlength="12" value="${escapeAttr(state.text2)}" placeholder="留空则为单行居中大字" />
             </div>
           </div>
 
-          <div style="display:grid; grid-template-columns: 1.2fr 1fr; gap:8px; align-items:center;">
+          <div>
+            <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">🧩 右上角图文混排微标 (Icon + Text Badge)</label>
+            <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+              ${BADGE_GLYPHS.map(g => `
+                <button type="button" class="ghost tiny tis-badge-pill ${(state.badgeGlyph || '') === g ? 'active' : ''}" data-glyph="${escapeAttr(g)}" style="padding:2px 8px; ${state.badgeGlyph === g ? 'border-color:var(--accent); color:var(--accent); font-weight:700;' : ''}">${g || '无'}</button>
+              `).join("")}
+              <input id="tisBadgeCustom" type="text" maxlength="2" value="${escapeAttr(state.badgeGlyph || '')}" placeholder="自定Emoji" style="width:72px; font-size:11.5px; padding:2px 6px;" />
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: 1.15fr 1fr; gap:8px; align-items:center;">
             <div>
               <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:4px;">字体风格</label>
               <select id="tisFontId">
@@ -10278,43 +11415,83 @@ function openTextIconStudio(initialSpec, onApply) {
             </div>
           </div>
 
-          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; background:var(--panel-2); padding:8px 10px; border-radius:8px; border:1px solid var(--line);">
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-              <span style="font-size:11px; color:var(--muted);">霓虹/主色</span>
-              <input id="tisAccentColor" type="color" value="${state.accent}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+          <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; background:var(--panel-2); padding:8px 10px; border-radius:8px; border:1px solid var(--line);">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px;">
+              <span style="font-size:11px; color:var(--muted);">主霓虹</span>
+              <input id="tisAccentColor" type="color" value="${state.accent}" style="width:28px; height:22px; padding:0; border:none; cursor:pointer;" />
             </div>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-              <span style="font-size:11px; color:var(--muted);">背景底色</span>
-              <input id="tisBgColor" type="color" value="${state.bgColor}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px;">
+              <span style="font-size:11px; color:var(--muted);">背景色</span>
+              <input id="tisBgColor" type="color" value="${state.bgColor}" style="width:28px; height:22px; padding:0; border:none; cursor:pointer;" />
             </div>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-              <span style="font-size:11px; color:var(--muted);">主文字色</span>
-              <input id="tisTextColor" type="color" value="${state.textColor}" style="width:32px; height:24px; padding:0; border:none; cursor:pointer;" />
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px;">
+              <span style="font-size:11px; color:var(--muted);">第1行色</span>
+              <input id="tisTextColor" type="color" value="${state.textColor}" style="width:28px; height:22px; padding:0; border:none; cursor:pointer;" />
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px;">
+              <span style="font-size:11px; color:var(--muted);">第2行色</span>
+              <input id="tisColor2Text" type="color" value="${state.color2Text || state.accent}" style="width:28px; height:22px; padding:0; border:none; cursor:pointer;" />
             </div>
           </div>
 
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
             <div>
-              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:3px;">
-                <span>字号缩放比例</span>
-                <b id="tisFontScaleVal">${state.fontScale}%</b>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>占格比例</span>
+                <b id="tisCardScaleVal">${state.cardScale || 100}%</b>
               </div>
-              <input id="tisFontScale" type="range" min="65" max="135" value="${state.fontScale}" />
+              <input id="tisCardScale" type="range" min="60" max="115" value="${state.cardScale || 100}" />
             </div>
             <div>
-              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:3px;">
-                <span>外框圆角弧度</span>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>第1行字号</span>
+                <b id="tisScale1Val">${state.scale1 || 100}%</b>
+              </div>
+              <input id="tisScale1" type="range" min="60" max="145" value="${state.scale1 || 100}" />
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>第2行字号</span>
+                <b id="tisScale2Val">${state.scale2 || 100}%</b>
+              </div>
+              <input id="tisScale2" type="range" min="60" max="145" value="${state.scale2 || 100}" />
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>圆角弧度</span>
                 <b id="tisRadiusVal">${state.radius}px</b>
               </div>
-              <input id="tisRadius" type="range" min="10" max="76" value="${state.radius}" />
+              <input id="tisRadius" type="range" min="0" max="76" value="${state.radius}" />
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>渐变角度</span>
+                <b id="tisGradAngleVal">${state.gradAngle || 135}°</b>
+              </div>
+              <input id="tisGradAngle" type="range" min="0" max="360" step="15" value="${state.gradAngle || 135}" />
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px;">
+                <span>字间距</span>
+                <b id="tisSpacingVal">${state.letterSpacing || 0}px</b>
+              </div>
+              <input id="tisSpacing" type="range" min="-2" max="14" value="${state.letterSpacing || 0}" />
             </div>
           </div>
         </div>
       </div>
 
-      <div class="tis-foot">
-        <button type="button" class="ghost" id="tisCancelBtn">取消</button>
-        <button type="button" class="primary" id="tisApplyBtn" style="min-width:130px;">✓ 立即生成并应用</button>
+      <div class="tis-foot" style="justify-content: space-between;">
+        <button type="button" class="ghost tiny" id="tisBatchSyncPageBtn" title="将当前模板、配色、圆角与满格设置一键同步到当前页所有使用文字图标的按键（保留各自文字内容）">
+          ⚡ 一键同步模板样式到本页所有同类按键
+        </button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="ghost" id="tisCancelBtn">取消</button>
+          <button type="button" class="primary" id="tisApplyBtn" style="min-width:130px;">✓ 立即生成并应用</button>
+        </div>
       </div>
     </div>
   `;
@@ -10327,9 +11504,46 @@ function openTextIconStudio(initialSpec, onApply) {
     const pctx = previewCnv.getContext("2d");
     pctx.clearRect(0, 0, 192, 192);
     pctx.drawImage(rendered, 0, 0);
+
+    // 更新 3×3 局部真机邻键实景预览中心格
+    const centerCell = wrap.querySelector('.tis-ctx-cell.center-active');
+    if (centerCell) {
+      centerCell.innerHTML = '';
+      const mini = document.createElement('canvas');
+      mini.width = mini.height = 64;
+      mini.getContext('2d').drawImage(rendered, 0, 0, 64, 64);
+      centerCell.appendChild(mini);
+    }
+  };
+
+  // 初始化周围 8 颗真实邻键缩略图
+  const initNeighborContextCells = () => {
+    const r0 = (selected && selected.col < 5) ? selected.row : 1;
+    const c0 = (selected && selected.col < 5) ? selected.col : 2;
+    const btns = pageButtons();
+    wrap.querySelectorAll('.tis-ctx-cell').forEach((cellEl) => {
+      const idx = Number(cellEl.dataset.ctxIdx);
+      if (idx === 4) return;
+      const dr = Math.floor(idx / 3) - 1;
+      const dc = (idx % 3) - 1;
+      const nr = r0 + dr;
+      const nc = c0 + dc;
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < KEY_COLS) {
+        const nSpec = btns[`${nr},${nc}`];
+        if (nSpec) {
+          paintKey(nSpec, 64, { row: nr, col: nc }).then((cnv) => {
+            if (cnv && cellEl.isConnected) {
+              cellEl.innerHTML = '';
+              cellEl.appendChild(cnv);
+            }
+          }).catch(() => {});
+        }
+      }
+    });
   };
 
   updatePreview();
+  initNeighborContextCells();
 
   const close = () => wrap.remove();
   wrap.querySelector("#tisCloseBtn").onclick = close;
@@ -10344,55 +11558,84 @@ function openTextIconStudio(initialSpec, onApply) {
       if (tpl) {
         state.accent = tpl.accent;
         state.bgColor = tpl.bgColor;
+        state.color2Text = tpl.accent;
         wrap.querySelector("#tisAccentColor").value = state.accent;
         wrap.querySelector("#tisBgColor").value = state.bgColor;
+        wrap.querySelector("#tisColor2Text").value = state.color2Text;
       }
       wrap.querySelectorAll(".tis-tpl-card").forEach(b => b.classList.toggle("active", b === btn));
       updatePreview();
     };
   });
 
-  wrap.querySelector("#tisText1").oninput = (e) => {
-    state.text1 = e.target.value;
+  wrap.querySelector("#tisText1").oninput = (e) => { state.text1 = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisText2").oninput = (e) => { state.text2 = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisFontId").onchange = (e) => { state.fontId = e.target.value; updatePreview(); };
+
+  wrap.querySelectorAll(".tis-badge-pill").forEach(btn => {
+    btn.onclick = () => {
+      state.badgeGlyph = btn.dataset.glyph || "";
+      wrap.querySelector("#tisBadgeCustom").value = state.badgeGlyph;
+      wrap.querySelectorAll(".tis-badge-pill").forEach(b => {
+        const act = b === btn;
+        b.classList.toggle("active", act);
+        b.style.borderColor = act ? "var(--accent)" : "";
+        b.style.color = act ? "var(--accent)" : "";
+      });
+      updatePreview();
+    };
+  });
+  wrap.querySelector("#tisBadgeCustom").oninput = (e) => {
+    state.badgeGlyph = e.target.value.trim();
     updatePreview();
   };
-  wrap.querySelector("#tisText2").oninput = (e) => {
-    state.text2 = e.target.value;
-    updatePreview();
-  };
-  wrap.querySelector("#tisFontId").onchange = (e) => {
-    state.fontId = e.target.value;
-    updatePreview();
-  };
+
   wrap.querySelectorAll(".tis-color-dot").forEach(dot => {
     dot.onclick = () => {
       state.accent = dot.dataset.accent;
       state.bgColor = dot.dataset.bg;
       state.textColor = dot.dataset.fg || "#ffffff";
+      state.color2Text = dot.dataset.accent;
       wrap.querySelector("#tisAccentColor").value = state.accent;
       wrap.querySelector("#tisBgColor").value = state.bgColor;
       wrap.querySelector("#tisTextColor").value = state.textColor;
+      wrap.querySelector("#tisColor2Text").value = state.color2Text;
       updatePreview();
     };
   });
   wrap.querySelector("#tisAccentColor").oninput = (e) => { state.accent = e.target.value; updatePreview(); };
   wrap.querySelector("#tisBgColor").oninput = (e) => { state.bgColor = e.target.value; updatePreview(); };
   wrap.querySelector("#tisTextColor").oninput = (e) => { state.textColor = e.target.value; updatePreview(); };
+  wrap.querySelector("#tisColor2Text").oninput = (e) => { state.color2Text = e.target.value; updatePreview(); };
+
+  wrap.querySelector("#tisFullBleed").onchange = (e) => {
+    state.fullBleed = e.target.checked;
+    if (state.fullBleed) {
+      state.cardScale = 100;
+      wrap.querySelector("#tisCardScale").value = 100;
+      wrap.querySelector("#tisCardScaleVal").textContent = "100%";
+    }
+    updatePreview();
+  };
   wrap.querySelector("#tisBgTransparent").onchange = (e) => { state.bgTransparent = e.target.checked; updatePreview(); };
   wrap.querySelector("#tisHideKeyLabel").onchange = (e) => { state.hideKeyLabel = e.target.checked; };
 
-  const fsInput = wrap.querySelector("#tisFontScale");
-  fsInput.oninput = () => {
-    state.fontScale = Number(fsInput.value);
-    wrap.querySelector("#tisFontScaleVal").textContent = state.fontScale + "%";
-    updatePreview();
+  const bindRange = (id, valId, key, unit = "%") => {
+    const inp = wrap.querySelector(id);
+    if (!inp) return;
+    inp.oninput = () => {
+      state[key] = Number(inp.value);
+      const vEl = wrap.querySelector(valId);
+      if (vEl) vEl.textContent = state[key] + unit;
+      updatePreview();
+    };
   };
-  const radInput = wrap.querySelector("#tisRadius");
-  radInput.oninput = () => {
-    state.radius = Number(radInput.value);
-    wrap.querySelector("#tisRadiusVal").textContent = state.radius + "px";
-    updatePreview();
-  };
+  bindRange("#tisCardScale", "#tisCardScaleVal", "cardScale", "%");
+  bindRange("#tisScale1", "#tisScale1Val", "scale1", "%");
+  bindRange("#tisScale2", "#tisScale2Val", "scale2", "%");
+  bindRange("#tisRadius", "#tisRadiusVal", "radius", "px");
+  bindRange("#tisGradAngle", "#tisGradAngleVal", "gradAngle", "°");
+  bindRange("#tisSpacing", "#tisSpacingVal", "letterSpacing", "px");
 
   wrap.querySelector("#tisSaveToLibBtn").onclick = async () => {
     const outCnv = renderTextIconCanvas(state, 192);
@@ -10410,6 +11653,47 @@ function openTextIconStudio(initialSpec, onApply) {
     });
     await saveConfig();
     toast(`⭐ 已将文字图标「${name}」存入自定义图标库`);
+  };
+
+  wrap.querySelector("#tisBatchSyncPageBtn").onclick = async () => {
+    const btns = pageButtons();
+    let count = 0;
+    pushHistory("批量同步全页文字图标模板样式");
+    for (const [posKey, sp] of Object.entries(btns)) {
+      if (!sp || !sp.textIconConfig) continue;
+      const merged = Object.assign({}, sp.textIconConfig, {
+        style: state.style,
+        accent: state.accent,
+        bgColor: state.bgColor,
+        textColor: state.textColor,
+        color2Text: state.color2Text,
+        fontId: state.fontId,
+        scale1: state.scale1,
+        scale2: state.scale2,
+        cardScale: state.cardScale,
+        radius: state.radius,
+        gradAngle: state.gradAngle,
+        letterSpacing: state.letterSpacing,
+        fullBleed: state.fullBleed,
+        bgTransparent: state.bgTransparent,
+        hideKeyLabel: state.hideKeyLabel,
+      });
+      sp.textIconConfig = merged;
+      sp.icon = renderTextIconCanvas(merged, 192).toDataURL("image/png");
+      if (merged.hideKeyLabel) {
+        sp.label = "";
+        sp.iconScale = Number(merged.cardScale) || (merged.fullBleed ? 100 : 88);
+      }
+      count++;
+    }
+    if (count === 0) {
+      toast("当前页面还没有其它使用文字图标的按键");
+      return;
+    }
+    await saveConfig();
+    refreshGrid();
+    if (!DEMO) await repaintAllKeys(true);
+    toast(`⚡ 已将当前模板样式一键同步至本页 ${count} 个文字图标按键！`);
   };
 
   wrap.querySelector("#tisApplyBtn").onclick = () => {
@@ -10995,15 +12279,21 @@ function initIconPicker() {
         ? currentLibModalSpec
         : ((selected && selected.col < 5) ? pageButtons()[`${selected.row},${selected.col}`] : null);
       openTextIconStudio(targetSpec || {}, async (res) => {
+        const targetScale = Number(res.config && res.config.cardScale) || ((res.config && res.config.fullBleed) ? 100 : 88);
         if (iconPickerTarget === 'libModal' && currentLibModalSpec) {
           currentLibModalSpec.icon = res.dataUrl;
           currentLibModalSpec.textIconConfig = res.config;
-          if (res.config && res.config.hideKeyLabel) currentLibModalSpec.label = '';
+          if (res.config && res.config.hideKeyLabel) {
+            currentLibModalSpec.label = '';
+            currentLibModalSpec.iconScale = targetScale;
+          } else {
+            currentLibModalSpec.iconScale = Math.max(Number(currentLibModalSpec.iconScale) || 62, Math.min(92, targetScale));
+          }
           updateLkmStyleUI();
           updateLkmSwatch();
           closeIconPicker();
           iconPickerTarget = null;
-          toast(`🔤 已为按键应用「${res.templateName}」文字图标`);
+          toast(`🔤 已为按键应用「${res.templateName}」文字图标 (${currentLibModalSpec.iconScale}%)`);
           return;
         }
         if (selected && selected.col < 5 && !isBackCell(selected.row, selected.col)) {
@@ -11014,12 +12304,14 @@ function initIconPicker() {
             sp.textIconConfig = res.config;
             if (res.config && res.config.hideKeyLabel) {
               sp.label = '';
-              sp.iconScale = Math.max(Number(sp.iconScale) || 62, 84);
+              sp.iconScale = targetScale;
+            } else {
+              sp.iconScale = Math.max(Number(sp.iconScale) || 62, Math.min(92, targetScale));
             }
             await commit(true);
             renderInspector();
             closeIconPicker();
-            toast(`🔤 已应用「${res.templateName}」文字图标`);
+            toast(`🔤 已应用「${res.templateName}」文字图标 (${sp.iconScale}%)`);
           }
         }
       });
@@ -11387,10 +12679,44 @@ function initCropper() {
 
     // 导出高保真带透明通道的 PNG（体积通常仅 15KB~35KB）
     const croppedDataUrl = outCanvas.toDataURL('image/png');
+    const isFullBleed = $('cropFullBleed') ? !!$('cropFullBleed').checked : true;
     const cb = cropperState.onConfirm;
     closeCropper();
-    cb(croppedDataUrl);
+    cb(croppedDataUrl, isFullBleed);
   };
+}
+
+// 阶段二 1：利用 Chromium ImageDecoder 解码 GIF / WebP / APNG 序列帧（最多采样 10 帧供 8~12 FPS 低功耗调度）
+async function decodeAnimatedImageFileFrames(filePath) {
+  if (!filePath || !api.iconExtract) return [];
+  const dataUrl = await api.iconExtract(filePath);
+  if (!dataUrl) return [];
+  if (typeof ImageDecoder !== 'undefined' && dataUrl.startsWith('data:image/')) {
+    try {
+      const resp = await fetch(dataUrl);
+      const mime = dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/gif';
+      const buf = await resp.arrayBuffer();
+      const decoder = new ImageDecoder({ data: buf, type: mime });
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      const total = Math.min(10, (track && track.frameCount) || 1);
+      if (total > 1) {
+        const frames = [];
+        for (let i = 0; i < total; i++) {
+          const { image } = await decoder.decode({ frameIndex: i });
+          const c = document.createElement('canvas');
+          c.width = c.height = 96;
+          c.getContext('2d').drawImage(image, 0, 0, 96, 96);
+          if (image.close) image.close();
+          frames.push(c.toDataURL('image/png'));
+        }
+        decoder.close();
+        return frames;
+      }
+      decoder.close();
+    } catch (_) {}
+  }
+  return [dataUrl];
 }
 
 // ------------------------------------------------------------ keyboard shortcuts
@@ -11699,6 +13025,15 @@ function bindShell() {
       cfg.hudEnabled = e.target.checked;
       if (!DEMO) await saveConfig();
       toast(e.target.checked ? '已开启桌面毛玻璃 HUD 悬浮提示窗' : '已关闭桌面 HUD 悬浮提示窗');
+    });
+  }
+  const osdPosSel = $('prefOsdPosition');
+  if (osdPosSel) {
+    osdPosSel.value = cfg.osdPosition || 'bottom';
+    osdPosSel.addEventListener('change', async (e) => {
+      cfg.osdPosition = e.target.value || 'bottom';
+      if (!DEMO) await saveConfig();
+      toast(cfg.osdPosition === 'top' ? '✨ OSD 灵动岛位置已设为：屏幕顶部中央' : '✨ OSD 灵动岛位置已设为：屏幕底部中央');
     });
   }
   const btnPrevHud = $('btnPreviewHud');
@@ -12049,15 +13384,18 @@ function bindShell() {
       $('lkmOpenTextIcon').onclick = () => {
         if (!currentLibModalSpec) return;
         openTextIconStudio(currentLibModalSpec, (res) => {
+          const targetScale = Number(res.config && res.config.cardScale) || ((res.config && res.config.fullBleed) ? 100 : 88);
           currentLibModalSpec.icon = res.dataUrl;
           currentLibModalSpec.textIconConfig = res.config;
           if (res.config && res.config.hideKeyLabel) {
             currentLibModalSpec.label = '';
-            currentLibModalSpec.iconScale = Math.max(Number(currentLibModalSpec.iconScale) || 62, 84);
+            currentLibModalSpec.iconScale = targetScale;
+          } else {
+            currentLibModalSpec.iconScale = Math.max(Number(currentLibModalSpec.iconScale) || 62, Math.min(92, targetScale));
           }
           updateLkmStyleUI();
           updateLkmSwatch();
-          toast(`🔤 已应用「${res.templateName}」文字图标`);
+          toast(`🔤 已应用「${res.templateName}」文字图标 (${currentLibModalSpec.iconScale}%)`);
         });
       };
     }
@@ -12322,7 +13660,9 @@ function bindShell() {
 
   const hwMirrorBtn = $('hwMirrorToggleBtn');
   if (hwMirrorBtn) {
-    hwMirrorBtn.onclick = () => {
+    hwMirrorBtn.classList.toggle('active-mirror', hwMirrorEnabled);
+    hwMirrorBtn.onclick = (e) => {
+      if (e) e.stopPropagation();
       hwMirrorEnabled = !hwMirrorEnabled;
       hwMirrorBtn.classList.toggle('active-mirror', hwMirrorEnabled);
       refreshGrid();
@@ -12997,7 +14337,7 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // v0.10.6 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
+  // v0.11.0 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
   let _telemetryTickBusy = false;
   let _lastFullStatsFetchAt = 0;
   setInterval(async () => {
@@ -13033,7 +14373,13 @@ async function boot() {
     }
 
     const dueStripRows = [];
-    if (now - _lastFullStatsFetchAt >= 2400) {
+    const panoOn = isPageStripPanoramaActive(page);
+    if (panoOn && now - _lastFullStatsFetchAt >= 480) {
+      _lastFullStatsFetchAt = now;
+      dueStripRows.push(0, 1, 2);
+      neededTypes.add('gpu');
+      neededTypes.add('media_now');
+    } else if (now - _lastFullStatsFetchAt >= 2400) {
       _lastFullStatsFetchAt = now;
       for (const row of [0, 1, 2]) {
         const s = strips[String(row)];

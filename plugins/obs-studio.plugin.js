@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 官方深度集成插件：OBS Studio WebSocket (v5) 双向导播与电平监控 (v0.10.6)
+ * 官方深度集成插件：OBS Studio WebSocket (v5) 双向导播与电平监控 (v0.11.0)
  *
  * 特性：
  * - 原生零依赖实现 RFC6455 WebSocket + OBS WebSocket v5 (SHA256 挑战认证、场景列表同步、推流/录制状态、一键切景)
@@ -267,7 +267,7 @@ module.exports = {
   name: 'OBS Studio WebSocket v5 导播台',
   category: '音频与直播',
   author: 'AKP153 Official',
-  version: '0.10.6',
+  version: '0.11.0',
   defaultIntervalMs: 400,
   description: '基于 OBS WebSocket v5 协议实时显示录制/推流状态、当前场景高亮、麦克风分贝表与一键切景/启停录制',
   color: '#1e1b4b',

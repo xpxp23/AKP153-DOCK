@@ -632,19 +632,22 @@ body[data-theme="dark"] .ps-big-snapshot-btn:hover {
     font-size: 11px;
     padding: 0 6px;
   }
-  .cell .thumb {
-    max-width: 40% !important;
-    max-height: 40% !important;
+  .cell:not(.no-label):not(.full-bleed-cell) .thumb {
+    max-width: 68%;
+    max-height: 68%;
   }
   .cell .glyph {
-    font-size: 1.35rem !important;
+    font-size: 1.35rem;
   }
   .cell .cap {
-    display: block !important;
-    font-size: 9.5px !important;
-    line-height: 1.15 !important;
-    white-space: nowrap !important;
-    word-break: normal !important;
+    font-size: 9.5px;
+    line-height: 1.15;
+    white-space: nowrap;
+    word-break: normal;
+  }
+  .cell .cap:empty,
+  .cell.no-label .cap {
+    display: none !important;
   }
 }
 
@@ -4496,7 +4499,7 @@ body[data-theme="dark"] .drawer.open .library {
 }
 
 /* =====================================================================
- * v0.10.6 UI/UX 全面美学升级：
+ * v0.11.0 UI/UX 全面美学升级：
  * 1. 一体式联屏玻璃副屏拟物外框 (Unified Side-Strip Glass Bezel)
  * 2. 多设备型号自适应布局与无极物理旋钮交互座舱 (Hardware Profile Adapter & Rotary Encoders)
  * 3. 页面与场景上下文切换丝滑过渡动效 (Context Transitions)
@@ -4974,4 +4977,253 @@ body[data-theme="dark"] .tis-tpl-card {
 body[data-theme="dark"] .tis-foot {
   background: #0d1117;
   border-top-color: #30363d;
+}
+
+/* =====================================================================
+ * v0.11.0 旗舰级视觉与交互升级：
+ * 1. 无文字居中 (.cell.no-label) 与 100% 满格全出血 (.cell.full-bleed-cell)
+ * 2. 文字图标工坊 2.0 (Text Icon Studio Pro + 3×3 实景邻键预览 + 14 套模板)
+ * 3. 十字准星拾取窗口 + 实时进程雷达 (Live Process Radar)
+ * 4. 副屏 1×3 竖向全画幅贯穿联屏模式 (1x3 Vertical Panorama)
+ * 5. 子文件夹 / 弹出式临时键盘层 (Hold-to-Layer) 与可视化节点宏流程图 (Node Flow)
+ * ===================================================================== */
+
+.cell.no-label {
+  gap: 0 !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.cell.no-label .thumb,
+.cell.no-label .glyph {
+  margin: auto !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cell.full-bleed-cell {
+  padding: 0 !important;
+  gap: 0 !important;
+}
+
+.cell.full-bleed-cell .thumb {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 10.5px;
+}
+
+/* 文字图标工坊 2.0 升级布局 */
+.text-icon-modal-box {
+  width: 780px !important;
+  max-width: 96vw !important;
+}
+.tis-body {
+  display: grid;
+  grid-template-columns: 224px 1fr;
+  gap: 16px;
+  padding: 16px 18px;
+  overflow-y: auto;
+  max-height: calc(90vh - 118px);
+}
+.tis-ctrl-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.tis-template-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.tis-tpl-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+}
+.tis-tpl-name {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.tis-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tis-color-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+  transition: transform 0.14s ease;
+}
+.tis-color-dot:hover {
+  transform: scale(1.18);
+}
+.tis-preview-stage {
+  width: 128px;
+  height: 128px;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.14);
+  background: #0b0f19;
+}
+.tis-preview-stage canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.tis-context-3x3-wrap {
+  width: 100%;
+  padding: 8px;
+  border-radius: 10px;
+  background: #090d16;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.tis-context-3x3-wrap canvas {
+  width: 138px;
+  height: 138px;
+  border-radius: 8px;
+  display: block;
+}
+
+/* 十字准星窗口拾取器 & 实时进程雷达卡片 */
+.window-radar-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(2, 132, 199, 0.06) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.32);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+body[data-theme="dark"] .window-radar-card {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border-color: rgba(16, 185, 129, 0.38);
+}
+.window-radar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.window-radar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+}
+body[data-theme="dark"] .window-radar-status {
+  background: rgba(255, 255, 255, 0.08);
+}
+.radar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.radar-dot.st-fg { background: #10b981; box-shadow: 0 0 8px #10b981; }
+.radar-dot.st-bg { background: #38bdf8; box-shadow: 0 0 8px #38bdf8; }
+.radar-dot.st-min { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+.radar-dot.st-tray { background: #a855f7; box-shadow: 0 0 8px #a855f7; }
+.radar-dot.st-stop { background: #64748b; }
+
+.btn-crosshair-picker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid #0284c7;
+  background: linear-gradient(135deg, #0284c7 0%, #0f766e 100%);
+  color: #ffffff !important;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.28);
+  transition: all 0.15s ease;
+}
+.btn-crosshair-picker:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+/* 右侧副屏 1×3 竖向全画幅贯穿联屏模式 */
+.grid.panorama-strip-active {
+  row-gap: 10px;
+}
+.grid.panorama-strip-active .cell.display[data-row="0"] {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  border-bottom-width: 0 !important;
+  margin-bottom: -5px;
+  z-index: 2;
+}
+.grid.panorama-strip-active .cell.display[data-row="1"] {
+  border-radius: 0 !important;
+  border-top-width: 0 !important;
+  border-bottom-width: 0 !important;
+  margin-top: -5px;
+  margin-bottom: -5px;
+  z-index: 2;
+}
+.grid.panorama-strip-active .cell.display[data-row="2"] {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+  border-top-width: 0 !important;
+  margin-top: -5px;
+  z-index: 2;
+}
+
+/* 可视化节点宏流程图 (Node-Based Macro Flow) */
+.node-flow-box {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nf-node-card {
+  position: relative;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3.5px solid #38bdf8;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nf-node-card.nf-cond {
+  border-left-color: #f59e0b;
+}
+.nf-branch-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--line);
 }

@@ -510,6 +510,8 @@ app.whenReady().then(async () => {
   check('点击设置弹窗关闭按钮成功关闭', await js('document.getElementById("settingsPanel").hidden === true'));
 
   // 5. 按键动态双态角标（ON/OFF Toggle 徽标）全流程测试
+  await js('if (document.getElementById("hwMirrorToggleBtn") && document.getElementById("hwMirrorToggleBtn").classList.contains("active-mirror")) document.getElementById("hwMirrorToggleBtn").click()');
+  await sleep2(150);
   await js('document.querySelectorAll("#grid .cell.filled")[0].click()');
   await sleep2(150);
   await js('document.getElementById("tabStyle").click()');

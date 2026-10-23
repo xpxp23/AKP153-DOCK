@@ -1,6 +1,6 @@
 'use strict';
 /**
- * AKP153 / Multi-Model StreamDock Device Host (v0.10.6)
+ * AKP153 / Multi-Model StreamDock Device Host (v0.11.0)
  *
  * Runs as a PLAIN NODE process (not inside Electron) so that:
  *   - node-hid's N-API prebuild is used directly (no electron-rebuild / VS build tools)
@@ -130,10 +130,13 @@ class Device {
     return this.debounceMs;
   }
 
-  startAnim(row, col, frames, fps = 12, loop = true) {
+  startAnim(row, col, frames, fps = 10, loop = true) {
     if (!Array.isArray(frames) || frames.length === 0) return false;
     const key = `${row},${col}`;
-    const clampedFps = Math.max(2, Math.min(20, Number(fps) || 12));
+    // 低功耗帧率预算控制器：单键循环动效默认限制在 8~12 FPS（瞬态按压回弹允许最高 18 FPS）
+    const isTransient = loop === false && frames.length <= 4;
+    const maxFps = isTransient ? 18 : 12;
+    const clampedFps = Math.max(2, Math.min(maxFps, Number(fps) || 10));
     this.animations.set(key, {
       row: Number(row),
       col: Number(col),
@@ -181,11 +184,15 @@ class Device {
       }
       const now = Date.now();
       const due = [];
+      // 动态总线带宽预算：当同屏激活多个 GIF/动态图标时自动拉大最小帧间隔，单次 Tick 最多推送 4 颗动效键，绝不阻塞物理按键响应
+      const activeLoopCount = Array.from(this.animations.values()).filter((a) => a.loop).length;
+      const budgetLoadFactor = activeLoopCount > 3 ? (1 + (activeLoopCount - 3) * 0.22) : 1;
       for (const [key, anim] of this.animations.entries()) {
-        if (now - anim.lastTick >= anim.intervalMs) {
+        const effectiveInterval = anim.loop ? Math.round(anim.intervalMs * budgetLoadFactor) : anim.intervalMs;
+        if (now - anim.lastTick >= effectiveInterval) {
           anim.lastTick = now;
           const frameData = anim.frames[anim.idx];
-          if (frameData) {
+          if (frameData && due.length < 4) {
             due.push({ row: anim.row, col: anim.col, data: frameData, force: false });
           }
           anim.idx++;
@@ -438,11 +445,14 @@ class Device {
       Buffer.from([66, 65, 84, (total >> 24) & 255, (total >> 16) & 255, (total >> 8) & 255, total & 255, id]),
     ]);
     this.writeRaw(this.pad(bat));
+    const pkt = this._pktBuf;
     for (let off = 0; off < total; off += PACKET) {
       const chunk = img.subarray(off, off + PACKET);
-      const pkt = Buffer.alloc(PKT);
       pkt[0] = 0;
       chunk.copy(pkt, 1);
+      if (chunk.length < PACKET) {
+        pkt.fill(0, 1 + chunk.length);
+      }
       this.writeRaw(pkt);
     }
     this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), PREFIX, Buffer.from(CMD.STP)])));

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Hardware Profile Adapter & Descriptor Engine (v0.10.6)
+ * Hardware Profile Adapter & Descriptor Engine (v0.11.0)
  *
  * 将不同型号的 Stream Dock 硬件布局、报文协议特征（单报文 push vs 双报文 button vs 旋钮编码器）、
  * 屏幕尺寸与过渡动效参数抽象为统一的 Hardware Descriptor。

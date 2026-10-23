@@ -409,17 +409,18 @@ function showHudOverlay(payload = {}, forceShow = false) {
   try {
     const cfg = config.load();
     if (cfg.hudEnabled === false) return;
-    const winFocused = Boolean(win && !win.isDestroyed() && win.isVisible() && win.isFocused());
-    if (!forceShow && winFocused) return;
 
     const hWin = ensureHudWindow();
     const primary = screen.getPrimaryDisplay();
     if (primary && primary.workArea) {
+      const posMode = cfg.osdPosition || 'bottom';
       const x = Math.round(primary.workArea.x + (primary.workArea.width - 340) / 2);
-      const y = Math.round(primary.workArea.y + 24);
+      const y = posMode === 'top'
+        ? Math.round(primary.workArea.y + 24)
+        : Math.round(primary.workArea.y + primary.workArea.height - 96);
       hWin.setPosition(x, y, false);
     }
-    const duration = payload.duration || 1450;
+    const duration = payload.duration || 1200;
     const fullPayload = Object.assign({ duration }, payload);
     const pushHud = () => {
       if (!hWin || hWin.isDestroyed()) return;
@@ -599,7 +600,7 @@ async function goToPage(id, why, isAutoSwitch = false) {
   if (cfg.currentPage === id) return true;
   cfg.currentPage = id;
   if (!isAutoSwitch) {
-    config.save(cfg);
+    config.saveAsync(cfg).catch(() => {});
   }
   log(`page -> 「${target.name}」${target.parent ? ' (子页)' : ''}${why ? '  via ' + why : ''}`);
   runtimeStore.attachRuntimeToPage(target);
@@ -641,15 +642,48 @@ function findSpanMasterInRow(page, row, col) {
   return null;
 }
 
+const LAUNCHER_WORKER_ALIASES = {
+  wechat: 'WeChat|Weixin',
+  weixin: 'Weixin|WeChat',
+  qq: 'QQ|QQNT',
+  leigod_launcher: 'leigod|leigod_launcher',
+  steam: 'steam|steamwebhelper',
+  epicgameslauncher: 'EpicGamesLauncher',
+  clash: 'Clash for Windows|clash-verge|Mihomo Party|clash',
+};
+const siblingExeCache = new Map();
+
 async function resolveButtonProcessName(spec) {
   if (!spec) return '';
   if (spec.watchProcess && String(spec.watchProcess).trim()) {
     return String(spec.watchProcess).trim().replace(/\.exe$/i, '');
   }
-  if (!spec.target) return '';
+  const rawTarget = spec.target || (spec.action2 && spec.action2.target) || '';
+  if (!rawTarget) return '';
   try {
-    const probed = await probe.probeAppAsync(spec.target);
-    return (await runner.processNameFor(probed)) || '';
+    const probed = await probe.probeAppAsync(rawTarget);
+    const baseProc = (await runner.processNameFor(probed)) || '';
+    if (!baseProc) return '';
+    const lower = baseProc.toLowerCase();
+    if (LAUNCHER_WORKER_ALIASES[lower]) {
+      return LAUNCHER_WORKER_ALIASES[lower];
+    }
+    if (probed && (probed.endsWith('.exe') || probed.endsWith('.EXE'))) {
+      if (siblingExeCache.has(probed)) return siblingExeCache.get(probed);
+      const dir = path.dirname(probed);
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter((f) => /\.exe$/i.test(f) && !/^(unins|crash|update|setup|vc_redist)/i.test(f));
+        const names = [baseProc];
+        for (const f of files.slice(0, 5)) {
+          const bn = f.replace(/\.exe$/i, '');
+          if (bn.toLowerCase() !== lower) names.push(bn);
+        }
+        const joined = names.join('|');
+        siblingExeCache.set(probed, joined);
+        return joined;
+      }
+    }
+    return baseProc;
   } catch (_) {
     return '';
   }
@@ -819,15 +853,27 @@ async function onHardwareKeyEvent(phase, msg) {
     return;
   }
 
+  if (phase === 'up') {
+    if (activeHoldLayer && activeHoldLayer.row === row && activeHoldLayer.col === col) {
+      const heldMs = Date.now() - activeHoldLayer.enteredAt;
+      // 双报文硬件按住松开时（按住超过 220ms），松手立即自动弹回原主页面
+      if (heldMs >= 220) {
+        const retId = activeHoldLayer.returnPageId;
+        activeHoldLayer = null;
+        await goToPage(retId, 'hold-to-layer release', true);
+      }
+    }
+    return;
+  }
+
   if (phase === 'down') {
     const page = config.currentPage();
     const { spec } = page ? resolveKeySpecAt(page, row, col) : { spec: null };
-    // 对涉及状态切换、双态角标、翻页或静音切换的按键跳过异步 2 帧旧状态回弹动画，
-    // 彻底消除回弹动画第 2 帧在 67ms 后把新切换的状态角标覆盖回旧状态的竞态 Bug！
     const skipBounce = Boolean(
       spec && (
         spec.toggleAction ||
         spec.badgeToggle ||
+        spec.holdPageId ||
         spec.type === 'page' ||
         spec.type === 'profile' ||
         (spec.type === 'volume' && spec.action === 'mute')
@@ -841,6 +887,8 @@ async function onHardwareKeyEvent(phase, msg) {
     }
   }
 }
+
+let activeHoldLayer = null; // { returnPageId, overlayPageId, row, col, enteredAt }
 
 async function onKeyDown(row, col) {
   const now = Date.now();
@@ -891,17 +939,37 @@ async function onKeyDown(row, col) {
       if (procName) {
         const actRes = await NativeInput.activateOrToggleWindow(procName, true);
         if (!actRes || actRes.state === 'NOT_RUNNING' || actRes.state === 'TRAY_HIDDEN' || actRes.state === 'EMPTY') {
-          // 进程未运行或深藏托盘无法直接通过 HWND 恢复时，执行主动作 spec 重新拉起/唤醒单实例主窗口
-          actionToRun = spec;
+          // 若进程处于 TRAY_HIDDEN 托盘自隐藏状态，优先尝试自定义或内置托盘唤醒热键
+          if (actRes && actRes.state === 'TRAY_HIDDEN' && spec.trayWakeHotkey) {
+            await NativeInput.sendHotkey(spec.trayWakeHotkey);
+            await new Promise((r) => setTimeout(r, 160));
+            const recheck = await NativeInput.queryWindowState(procName);
+            if (recheck === 'FOREGROUND') {
+              spec._activeState = 1;
+              spec._windowSubState = 'focused';
+              spec._graceUntil = Date.now() + 1500;
+              runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
+                activeState: 1,
+                windowSubState: 'focused',
+                graceUntil: spec._graceUntil,
+                everSeenRunning: true,
+              });
+              broadcast('key:toggleState', { pageId: page.id, row: effectiveRow, col: effectiveCol, activeState: 1, windowSubState: 'focused' });
+              showHudOverlay({ icon: 'layers', title: `已从托盘唤醒 · ${spec.label || procName}`, subtitle: `托盘唤醒热键 ${spec.trayWakeHotkey}`, accent: '#10b981' });
+              return;
+            }
+          }
+          // 进程未运行或深藏托盘无法直接通过 HWND 恢复时，携带 bypassFocusExisting 执行主动作重新拉起/触发单实例唤醒
+          actionToRun = Object.assign({}, spec, { _bypassFocusExisting: true });
           spec._activeState = 1;
           spec._windowSubState = 'focused';
           spec._graceUntil = Date.now() + 7000;
-          spec._everSeenRunning = false;
+          spec._everSeenRunning = actRes && actRes.state === 'TRAY_HIDDEN';
           runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
             activeState: 1,
             windowSubState: 'focused',
             graceUntil: spec._graceUntil,
-            everSeenRunning: false,
+            everSeenRunning: !!spec._everSeenRunning,
           });
           broadcast('key:toggleState', {
             pageId: page.id,
@@ -909,6 +977,12 @@ async function onKeyDown(row, col) {
             col: effectiveCol,
             activeState: 1,
             windowSubState: 'focused',
+          });
+          showHudOverlay({
+            icon: 'zap',
+            title: (actRes && actRes.state === 'TRAY_HIDDEN') ? `唤醒托盘窗口 · ${spec.label || procName.split('|')[0]}` : `正在启动 · ${spec.label || procName.split('|')[0]}`,
+            subtitle: '任务栏智能窗口模式',
+            accent: '#10b981',
           });
         } else {
           spec._activeState = 1;
@@ -926,6 +1000,12 @@ async function onKeyDown(row, col) {
             col: effectiveCol,
             activeState: spec._activeState,
             windowSubState: spec._windowSubState,
+          });
+          showHudOverlay({
+            icon: 'layers',
+            title: actRes.state === 'MINIMIZED' ? `窗口已最小化 · ${spec.label || procName.split('|')[0]}` : `窗口已置顶 · ${spec.label || procName.split('|')[0]}`,
+            subtitle: actRes.state === 'MINIMIZED' ? '再次按下即可恢复至前台' : '任务栏智能窗口模式',
+            accent: actRes.state === 'MINIMIZED' ? '#f59e0b' : '#10b981',
           });
           log(`key r${row}c${col} -> window_toggle (${procName}) => ${actRes.state}`);
           return;
@@ -965,12 +1045,39 @@ async function onKeyDown(row, col) {
         col: effectiveCol,
         activeState: nextState,
       });
+      const bState = nextState === 1 ? (spec.badgeState2 || { text: '开启' }) : (spec.badgeState1 || { text: '待机' });
+      showHudOverlay({
+        icon: 'zap',
+        title: `${spec.label || '双态开关'} · ${(bState && bState.text) || (nextState === 1 ? '状态 2' : '状态 1')}`,
+        subtitle: nextState === 1 ? '已切换至激活态' : '已切回默认待机态',
+        accent: nextState === 1 ? '#10b981' : '#64748b',
+      });
     }
   }
 
   if (actionToRun && actionToRun.type === 'profile') {
     const ref = (actionToRun.mode === 'goto' && actionToRun.profileId) ? actionToRun.profileId : (actionToRun.mode || '__next__');
     await switchProfileAndBroadcast(ref, `按键 r${row}c${col} 触发`);
+    return;
+  }
+
+  // 支持「子文件夹 / 弹出式临时键盘层 (Hold-to-Layer / Pop-up Overlay Folder)」
+  const holdTargetId = (spec && spec.holdPageId) || (actionToRun && actionToRun.type === 'page' && actionToRun.mode === 'hold' ? actionToRun.pageId : null);
+  if (holdTargetId && cfgNow.pages.some((p) => p.id === holdTargetId)) {
+    if (activeHoldLayer && activeHoldLayer.overlayPageId === page.id) {
+      const retId = activeHoldLayer.returnPageId;
+      activeHoldLayer = null;
+      await goToPage(retId, 'hold-to-layer toggle back', true);
+      return;
+    }
+    activeHoldLayer = {
+      returnPageId: page.id,
+      overlayPageId: holdTargetId,
+      row: effectiveRow,
+      col: effectiveCol,
+      enteredAt: Date.now(),
+    };
+    await goToPage(holdTargetId, `临时图层 (${spec.label || '工具盘'})`, true);
     return;
   }
 
@@ -981,13 +1088,24 @@ async function onKeyDown(row, col) {
       notify('这个切页键现在没有可去的页面');
       return;
     }
+    activeHoldLayer = null;
     await goToPage(target, `key r${row}c${col} (${actionToRun.mode})`);
     return;
   }
 
   const actMulti = actionToRun && (actionToRun.type === 'multi' || actionToRun.type === 'macro');
   log(`key r${row}c${col} -> ${actionToRun.type} ${actMulti ? 'Macro (' + ((actionToRun.actions && actionToRun.actions.length) || 0) + ' actions)' : (actionToRun.target || actionToRun.hotkey || actionToRun.widgetKind || actionToRun.widgetType || '')}`);
-  const res = await runner.run(actionToRun, { row: effectiveRow, col: effectiveCol, pageId: page.id, spanOffset, spanCols });
+  const res = await runner.run(
+    actionToRun,
+    { row: effectiveRow, col: effectiveCol, pageId: page.id, spanOffset, spanCols },
+    { bypassFocusExisting: !!(actionToRun && actionToRun._bypassFocusExisting) }
+  );
+  // 若当前处于弹出式临时键盘层 (Hold-to-Layer)，执行完动作后自动弹回主页面
+  if (activeHoldLayer && activeHoldLayer.overlayPageId === page.id && spec.holdStayOpen !== true) {
+    const retId = activeHoldLayer.returnPageId;
+    activeHoldLayer = null;
+    setTimeout(() => { goToPage(retId, 'hold-to-layer auto-return', true).catch(() => {}); }, 160);
+  }
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
   if (res && res.ok) {
@@ -1103,7 +1221,7 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
       const fg = pushedFg || await NativeInput.getForegroundWindow();
       currentFgProc = fg && fg.processName ? fg.processName.toLowerCase().replace(/\.exe$/i, '') : '';
       const winTitle = (fg && fg.title) ? fg.title.trim() : '';
-      const isSelfOrShell = !currentFgProc || currentFgProc === 'electron' || currentFgProc === 'akp153 控制台' || currentFgProc === 'akp-input' || currentFgProc === 'searchhost' || currentFgProc === 'shellexperiencehost' || currentFgProc === 'explorer';
+      const isSelfOrShell = !currentFgProc || currentFgProc === 'electron' || currentFgProc === 'akp153 控制台' || currentFgProc === 'akp-input' || currentFgProc === 'searchhost' || currentFgProc === 'shellexperiencehost' || currentFgProc === 'startmenuexperiencehost' || currentFgProc === 'explorer_shell';
       if (!isSelfOrShell) {
         lastRealFgProc = currentFgProc;
       }
@@ -1205,24 +1323,27 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
       if (!page || !page.buttons) return;
       const entries = [];
       for (const [k, spec] of Object.entries(page.buttons)) {
-        if (!spec || spec.type !== 'app') continue;
-        if (!spec.toggleAction && !spec.badgeToggle) continue;
-        const syncMode = resolveEffectiveSyncMode(spec);
-        // 纯手动乒乓模式，或者仅开启了动态角标但未开启双态动作且未强制指定进程同步时，绝不覆盖用户手动状态
+        if (!spec || (spec.type !== 'app' && spec.type !== 'window_toggle')) continue;
+        if (!spec.toggleAction && !spec.badgeToggle && spec.type !== 'window_toggle') continue;
+        const syncMode = spec.type === 'window_toggle' ? 'window' : resolveEffectiveSyncMode(spec);
         if (syncMode === 'manual') continue;
-        if (!spec.toggleAction && spec.toggleSyncMode !== 'process' && spec.toggleSyncMode !== 'window') continue;
+        if (spec.type !== 'window_toggle' && !spec.toggleAction && spec.toggleSyncMode !== 'process' && spec.toggleSyncMode !== 'window') continue;
 
         const procName = await resolveButtonProcessName(spec);
         if (!procName) continue;
-        entries.push({ k, spec, syncMode, procName: procName.replace(/\.exe$/i, '').toLowerCase() });
+        const candidates = procName.split(/[|,;]+/).map((s) => s.trim().replace(/\.exe$/i, '').toLowerCase()).filter(Boolean);
+        if (!candidates.length) continue;
+        entries.push({ k, spec, syncMode, procName, candidates });
       }
       if (entries.length > 0) {
         const nowMs = Date.now();
-        const runningSet = await runner.checkProcessesRunning(entries.map((e) => e.procName));
-        for (const { k, spec, syncMode, procName } of entries) {
+        const allCandidateNames = [];
+        for (const e of entries) allCandidateNames.push(...e.candidates);
+        const runningSet = await runner.checkProcessesRunning(allCandidateNames);
+        for (const { k, spec, syncMode, procName, candidates } of entries) {
           const [row, col] = k.split(',').map(Number);
           const rt = runtimeStore.getKeyState(page.id, row, col);
-          const isAlive = runningSet.has(procName);
+          const isAlive = candidates.some((c) => runningSet.has(c));
           const curState = spec._activeState !== undefined
             ? spec._activeState
             : (rt.activeState !== undefined ? rt.activeState : (spec.badgeInitialState || 0));
@@ -1249,9 +1370,21 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
 
           const realState = isAlive ? 1 : 0;
           const effectiveFg = lastRealFgProc || currentFgProc;
-          const nextWinSub = isAlive
-            ? (effectiveFg === procName ? 'focused' : 'minimized')
-            : 'stopped';
+          const isFgMatch = isAlive && candidates.includes(effectiveFg);
+          let nextWinSub = 'stopped';
+          if (isAlive) {
+            if (isFgMatch) {
+              nextWinSub = 'focused';
+            } else if (syncMode === 'window') {
+              const wSt = await NativeInput.queryWindowState(procName).catch(() => 'VISIBLE_BACKGROUND');
+              if (wSt === 'FOREGROUND') nextWinSub = 'focused';
+              else if (wSt === 'MINIMIZED') nextWinSub = 'minimized';
+              else if (wSt === 'TRAY_HIDDEN') nextWinSub = 'tray_hidden';
+              else nextWinSub = 'background';
+            } else {
+              nextWinSub = 'minimized';
+            }
+          }
           const winSubChanged = (syncMode === 'window') && (spec._windowSubState !== nextWinSub);
 
           if (realState !== curState || winSubChanged || forceBroadcast) {
@@ -1924,12 +2057,20 @@ ipcMain.handle('system:stats', async (e, opts = {}) => {
   memHistory.push(mem);
   if (memHistory.length > 24) memHistory.shift();
 
-  let volume = 50;
-  let isMute = false;
-  try {
-    const v = await NativeInput.getVolume();
-    if (v && v.ok) { volume = v.level; isMute = v.isMute; }
-  } catch (_) {}
+  let volume = (runtimeStore.globalState.audio && runtimeStore.globalState.audio.level !== undefined)
+    ? runtimeStore.globalState.audio.level
+    : 50;
+  let isMute = !!(runtimeStore.globalState.audio && runtimeStore.globalState.audio.isMute);
+  if (!runtimeStore.globalState.audio || !runtimeStore.globalState.audio.updatedAt) {
+    try {
+      const v = await NativeInput.getVolume();
+      if (v && v.ok) {
+        volume = v.level;
+        isMute = v.isMute;
+        runtimeStore.updateGlobalState('audio', { level: volume, isMute });
+      }
+    } catch (_) {}
+  }
   const cfg = config.load();
   const reqTypes = (opts && Array.isArray(opts.types)) ? opts.types : ['gpu', 'net', 'weather', 'pomodoro', 'obs', 'media_now', 'plugin'];
   const extTelemetry = await telemetry.gatherTelemetry({
@@ -2035,6 +2176,44 @@ ipcMain.handle('profile:delete', async (e, id) => {
 ipcMain.handle('hud:show', (e, payload = {}) => {
   showHudOverlay(payload, true);
   return { ok: true };
+});
+
+ipcMain.handle('window:pick', async () => {
+  try {
+    const res = await NativeInput.pickWindow();
+    if (res && res.ok && res.exePath) {
+      try {
+        res.iconDataUrl = await extractIcon(res.exePath);
+      } catch (_) {}
+    }
+    return res || { ok: false };
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+ipcMain.handle('window:radar', async (e, procName) => {
+  try {
+    return await NativeInput.queryWindowRadar(procName);
+  } catch (err) {
+    return { ok: false, state: 'NOT_RUNNING', error: err && err.message };
+  }
+});
+
+ipcMain.handle('pixel:pick', async () => {
+  try {
+    return await NativeInput.pickPixel();
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
+});
+
+ipcMain.handle('pixel:sample', async (e, { x, y } = {}) => {
+  try {
+    return await NativeInput.samplePixel(x, y);
+  } catch (err) {
+    return { ok: false, error: err && err.message };
+  }
 });
 
 ipcMain.handle('dialog:pick', async (e, opts) => {
@@ -2454,6 +2633,7 @@ if (!gotLock) {
         pollForegroundAndProcessState(fg);
       });
       NativeInput.on('volume', (vol) => {
+        if (vol) runtimeStore.updateGlobalState('audio', vol);
         broadcast('audio:state', vol);
         if (!deviceAsleep) broadcast('device:repaint-strips', {});
       });

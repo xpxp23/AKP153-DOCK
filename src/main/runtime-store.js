@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Unidirectional Data Flow Engine: SpecStore & RuntimeStateStore (v0.10.6)
+ * Unidirectional Data Flow Engine: SpecStore & RuntimeStateStore (v0.11.0)
  *
  * 核心设计目标：
  * 1. 彻底分离「静态持久化配置 (SpecStore)」与「运行时动态状态树 (RuntimeStateStore)」。
@@ -98,8 +98,9 @@ class RuntimeStateStore extends EventEmitter {
    * 将主进程或配置加载后的运行时状态合并回页面 keys 对象（兼容现有渲染器读取 _activeState / _windowSubState）
    */
   attachRuntimeToPage(page) {
-    if (!page || !page.keys) return page;
-    for (const [posKey, spec] of Object.entries(page.keys)) {
+    const btnMap = page && (page.buttons || page.keys);
+    if (!page || !btnMap) return page;
+    for (const [posKey, spec] of Object.entries(btnMap)) {
       if (!spec) continue;
       const [r, c] = posKey.split(',').map(Number);
       const st = this.getKeyState(page.id, r, c);
@@ -177,12 +178,13 @@ function computeBadgeModel(spec, keyRuntime = {}, globalState = {}) {
   const isMonitoredApp = spec.type === 'app' && (spec.appMonitor || spec.toggleAction);
   const isToggleKey = !!spec.toggleAction || isMonitoredApp;
 
+  const syncMode = spec.toggleSyncMode || spec.appMonitorMode || 'auto';
   if (isToggleKey && hasExplicitStateBadges) {
-    // 特殊子态：当监控模式为 window (窗口前台感知) 且进程已运行但处于后台最小化/非焦点时
+    // 特殊子态：当监控模式为 window (任务栏窗口模式) 且进程已运行但处于后台可见/最小化/托盘隐藏时
     if (
-      spec.type === 'app' &&
-      (spec.appMonitorMode || 'window') === 'window' &&
-      windowSubState === 'background'
+      (spec.type === 'app' || spec.type === 'window_toggle') &&
+      syncMode === 'window' &&
+      (windowSubState === 'background' || windowSubState === 'minimized' || windowSubState === 'tray_hidden')
     ) {
       const sBg = spec.badgeStateBg || null;
       const bgText = sBg && typeof sBg.text === 'string' ? sBg.text.trim() : '后台';
@@ -322,13 +324,15 @@ function computeRenderModel(spec, keyRuntime = {}, globalState = {}) {
     badge,
     activeState,
     windowSubState,
-    colSpan: Math.max(1, Math.min(5, Number(spec.colSpan) || 1)),
-    fontSize: Number(spec.fontSize) || 14,
+    spanCols: Math.max(1, Math.min(5, Number(spec.spanCols || spec.colSpan) || 1)),
+    colSpan: Math.max(1, Math.min(5, Number(spec.spanCols || spec.colSpan) || 1)),
+    fontSize: Number(spec.fontSize) || 17,
     textColor: spec.textColor || '#ffffff',
     textAlign: spec.textAlign || 'center',
-    titlePos: spec.titlePos || 'bottom',
+    labelPos: spec.labelPos || spec.titlePos || 'bottom',
+    titlePos: spec.labelPos || spec.titlePos || 'bottom',
     hideTitle: !!spec.hideTitle,
-    iconScale: Number(spec.iconScale) || 100,
+    iconScale: Number(spec.iconScale) || 62,
     offsetX: Number(spec.offsetX) || 0,
     offsetY: Number(spec.offsetY) || 0,
     bgGradient: spec.bgGradient || '',

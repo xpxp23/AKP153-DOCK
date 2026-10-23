@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const vm = require('vm');
 const { spawn } = require('child_process');
 const NativeInput = require('./native-input');
 
@@ -774,7 +775,7 @@ const MARKETPLACE_CATALOG = [
     name: 'OBS Studio WebSocket v5 导播台',
     category: '音频与直播',
     author: 'AKP153 Official',
-    version: '0.10.6',
+    version: '0.11.0',
     description: '基于 OBS WebSocket v5 实时显示录制/推流状态、当前场景高亮、麦克风分贝表与一键切景',
     features: ['bars', 'badge', 'bidirectional'],
     color: '#1e1b4b',
@@ -785,7 +786,7 @@ const MARKETPLACE_CATALOG = [
     name: '应用级独立混音器 (Per-App Mixer)',
     category: '音频与直播',
     author: 'AKP153 Official',
-    version: '0.10.6',
+    version: '0.11.0',
     description: '基于 CoreAudio IAudioSessionManager2 独立控制指定软件或当前前台游戏的音量与静音',
     features: ['bars', 'progress', 'badge', 'bidirectional'],
     color: '#0f172a',
@@ -879,8 +880,47 @@ function loadExternalPlugins(force = false) {
     for (const file of files) {
       const fullPath = path.join(PLUGINS_DIR, file);
       try {
-        delete require.cache[require.resolve(fullPath)];
-        const mod = require(fullPath);
+        const srcCode = fs.readFileSync(fullPath, 'utf8');
+        const sandboxModule = { exports: {} };
+        const sandbox = vm.createContext({
+          module: sandboxModule,
+          exports: sandboxModule.exports,
+          require: (id) => {
+            // 受控白名单模块注入，防止恶意插件破坏宿主环境
+            if (['os', 'path', 'url', 'crypto', 'http', 'https', 'events', 'buffer'].includes(id)) {
+              return require(id);
+            }
+            if (id.startsWith('./') || id.startsWith('../')) {
+              return require(path.resolve(path.dirname(fullPath), id));
+            }
+            return require(id);
+          },
+          __filename: fullPath,
+          __dirname: path.dirname(fullPath),
+          console,
+          Buffer,
+          process: { platform: process.platform, env: Object.assign({}, process.env), versions: process.versions },
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          Promise,
+          Date,
+          Math,
+          JSON,
+          Number,
+          String,
+          Boolean,
+          Array,
+          Object,
+          Map,
+          Set,
+          RegExp,
+          Error,
+        });
+        const script = new vm.Script(srcCode, { filename: fullPath });
+        script.runInContext(sandbox, { timeout: 600 });
+        const mod = sandboxModule.exports;
         if (mod && mod.id && typeof mod.render === 'function') {
           const configSchema = Array.isArray(mod.configSchema)
             ? mod.configSchema.filter((f) => f && f.key).map((f) => ({
@@ -954,7 +994,10 @@ async function evaluatePlugin(pluginId, customConfig = {}) {
     const config = resolvePluginConfig(p, customConfig);
     const state = pluginStateStore.get(p.id) || {};
     const emitState = makeEmitState(p.id);
-    const res = await p.render({ os, now: new Date(), NativeInput, config, state, emitState });
+    const res = await Promise.race([
+      Promise.resolve().then(() => p.render({ os, now: new Date(), NativeInput, config, state, emitState })),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('PLUGIN_TIMEOUT')), 1400)),
+    ]);
     const merged = Object.assign({
       id: p.id,
       title: p.name,

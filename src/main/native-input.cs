@@ -230,6 +230,43 @@ namespace AkpInput
         [DllImport("kernel32.dll")]
         static extern bool SetProcessShutdownParameters(uint dwLevel, uint dwFlags);
 
+        [DllImport("user32.dll")]
+        static extern IntPtr WindowFromPoint(POINT Point);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint processAccess, bool bInheritHandle, uint processId);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool QueryFullProcessImageName(IntPtr hProcess, int dwFlags, StringBuilder lpExeName, ref int lpdwSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        static extern uint GetPixel(IntPtr hdc, int nXPos, int nYPos);
+
+        const uint GA_PARENT = 1;
+        const uint GA_ROOT = 2;
+        const uint GA_ROOTOWNER = 3;
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        const uint WM_SYSCOMMAND = 0x0112;
+        const int SC_MINIMIZE = 0xF020;
+        const int SC_RESTORE = 0xF120;
+        const int GWL_STYLE = -16;
+        const int WS_MINIMIZEBOX = 0x00020000;
+
         const uint WM_GETTEXT = 0x000D;
         const uint SMTO_ABORTIFHUNG = 0x0002;
         const int GWL_EXSTYLE = -20;
@@ -307,6 +344,65 @@ namespace AkpInput
                 || t.StartsWith(".NET-BroadcastEventWindow", StringComparison.OrdinalIgnoreCase);
         }
 
+        public static string GetWindowClassNameSafe(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return "";
+            try
+            {
+                var sb = new StringBuilder(256);
+                if (GetClassName(hwnd, sb, sb.Capacity) > 0)
+                {
+                    return sb.ToString().Trim();
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        public static string GetProcessExePathSafe(uint pid)
+        {
+            if (pid == 0) return "";
+            IntPtr hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (hProc != IntPtr.Zero)
+            {
+                try
+                {
+                    var sb = new StringBuilder(1024);
+                    int cap = sb.Capacity;
+                    if (QueryFullProcessImageName(hProc, 0, sb, ref cap))
+                    {
+                        return sb.ToString();
+                    }
+                }
+                catch { }
+                finally
+                {
+                    CloseHandle(hProc);
+                }
+            }
+            try
+            {
+                using (Process p = Process.GetProcessById((int)pid))
+                {
+                    return p.MainModule != null ? p.MainModule.FileName : "";
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        static bool IsExplorerShellWindow(IntPtr hwnd, string procName)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            if (!string.Equals(procName, "explorer", StringComparison.OrdinalIgnoreCase)) return false;
+            string cls = GetWindowClassNameSafe(hwnd);
+            return string.Equals(cls, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "Shell_SecondaryTrayWnd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "Progman", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "WorkerW", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(cls, "NotifyIconOverflowWindow", StringComparison.OrdinalIgnoreCase);
+        }
+
         static IntPtr FindBestProcessWindow(HashSet<uint> targetPids, IntPtr fgHwnd, bool allowHiddenTrayMain = false)
         {
             if (allowHiddenTrayMain)
@@ -316,7 +412,14 @@ namespace AkpInput
                     IntPtr remembered;
                     if (_lastKnownMainHwnd.TryGetValue(pid, out remembered) && remembered != IntPtr.Zero && IsWindow(remembered))
                     {
-                        return remembered;
+                        if (!IsWindowCloaked(remembered))
+                        {
+                            RECT r;
+                            if (IsIconic(remembered) || (GetWindowRect(remembered, out r) && (r.Right - r.Left) >= 120 && (r.Bottom - r.Top) >= 60))
+                            {
+                                return remembered;
+                            }
+                        }
                     }
                 }
             }
@@ -1247,6 +1350,10 @@ namespace AkpInput
                 }
             }
             catch { }
+            if (IsExplorerShellWindow(hwnd, procName))
+            {
+                procName = "explorer_shell";
+            }
             string title = GetWindowTitleSafe(hwnd);
             return procName + "|" + pid + "|" + title.Replace("\r", "").Replace("\n", " ");
         }
@@ -1455,7 +1562,7 @@ namespace AkpInput
                         {
                             anyAlive = true;
                             pids.Add((uint)p.Id);
-                            if (fallbackHwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero && IsWindowVisible(p.MainWindowHandle))
+                            if (fallbackHwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero && IsWindowVisible(p.MainWindowHandle) && !IsWindowCloaked(p.MainWindowHandle))
                             {
                                 fallbackHwnd = p.MainWindowHandle;
                             }
@@ -1470,13 +1577,357 @@ namespace AkpInput
             }
             if (!anyAlive) return "NOT_RUNNING";
             IntPtr fg = GetForegroundWindow();
-            IntPtr hwnd = FindBestProcessWindow(pids, fg);
+            IntPtr hwnd = FindBestProcessWindow(pids, fg, false);
             if (hwnd == IntPtr.Zero) hwnd = fallbackHwnd;
             if (hwnd == IntPtr.Zero) return "TRAY_HIDDEN";
             if (IsIconic(hwnd)) return "MINIMIZED";
+            uint fgPid = 0;
+            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
             IntPtr fgOwner = fg != IntPtr.Zero ? GetWindow(fg, GW_OWNER) : IntPtr.Zero;
-            if (fg == hwnd || fgOwner == hwnd) return "FOREGROUND";
-            return "BACKGROUND";
+            if (fg == hwnd || fgOwner == hwnd || (fgPid != 0 && pids.Contains(fgPid))) return "FOREGROUND";
+            return "VISIBLE_BACKGROUND";
+        }
+
+        public static string QueryWindowRadar(string procName)
+        {
+            var candidates = ParseProcessCandidates(procName);
+            if (candidates.Count == 0) return "NOT_RUNNING|0|0x0|||";
+            IntPtr fallbackHwnd = IntPtr.Zero;
+            uint firstPid = 0;
+            string matchedName = "";
+            var pids = new HashSet<uint>();
+            foreach (var target in candidates)
+            {
+                Process[] procs = Process.GetProcessesByName(target);
+                try
+                {
+                    foreach (var p in procs)
+                    {
+                        try
+                        {
+                            if (firstPid == 0) { firstPid = (uint)p.Id; matchedName = p.ProcessName; }
+                            pids.Add((uint)p.Id);
+                            if (fallbackHwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero && IsWindowVisible(p.MainWindowHandle) && !IsWindowCloaked(p.MainWindowHandle))
+                            {
+                                fallbackHwnd = p.MainWindowHandle;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                finally
+                {
+                    foreach (var p in procs) { try { p.Dispose(); } catch { } }
+                }
+            }
+            if (pids.Count == 0) return "NOT_RUNNING|0|0x0|||";
+            IntPtr fg = GetForegroundWindow();
+            IntPtr hwnd = FindBestProcessWindow(pids, fg, false);
+            if (hwnd == IntPtr.Zero) hwnd = fallbackHwnd;
+            uint winPid = firstPid;
+            if (hwnd != IntPtr.Zero) GetWindowThreadProcessId(hwnd, out winPid);
+            string exePath = GetProcessExePathSafe(winPid).Replace("|", " ");
+            if (hwnd == IntPtr.Zero)
+            {
+                return string.Format("TRAY_HIDDEN|{0}|0x0||{1}|{2}", winPid, exePath, matchedName);
+            }
+            string state = "VISIBLE_BACKGROUND";
+            if (IsIconic(hwnd)) state = "MINIMIZED";
+            else
+            {
+                uint fgPid = 0;
+                if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+                IntPtr fgOwner = fg != IntPtr.Zero ? GetWindow(fg, GW_OWNER) : IntPtr.Zero;
+                if (fg == hwnd || fgOwner == hwnd || (fgPid != 0 && pids.Contains(fgPid))) state = "FOREGROUND";
+            }
+            string cls = GetWindowClassNameSafe(hwnd).Replace("|", " ");
+            string title = GetWindowTitleSafe(hwnd).Replace("|", " ");
+            return string.Format("{0}|{1}|0x{2:X8}|{3}|{4}|{5}", state, winPid, hwnd.ToInt64(), cls, exePath, title);
+        }
+
+        public static string SampleScreenPixel(int x, int y)
+        {
+            IntPtr hdc = GetDC(IntPtr.Zero);
+            if (hdc == IntPtr.Zero) return "ERR NO_DC";
+            try
+            {
+                uint pixel = GetPixel(hdc, x, y);
+                if (pixel == 0xFFFFFFFF) return "ERR INVALID_COORD";
+                int r = (int)(pixel & 0x000000FF);
+                int g = (int)((pixel & 0x0000FF00) >> 8);
+                int b = (int)((pixel & 0x00FF0000) >> 16);
+                return string.Format("OK #{0:X2}{1:X2}{2:X2}|{0},{1},{2}|{3},{4}", r, g, b, x, y);
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, hdc);
+            }
+        }
+
+        public static string PickWindowInteractive(bool pickPixelOnly = false)
+        {
+            string result = "ERR CANCELLED";
+            Thread sta = new Thread(() =>
+            {
+                try
+                {
+                    using (var overlay = new CrosshairPickerForm(pickPixelOnly))
+                    {
+                        DialogResult dr = overlay.ShowDialog();
+                        if (dr == DialogResult.OK && !string.IsNullOrEmpty(overlay.ResultPayload))
+                        {
+                            result = "OK " + overlay.ResultPayload;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result = "ERR " + ex.Message.Replace("\r", " ").Replace("\n", " ");
+                }
+            });
+            sta.SetApartmentState(ApartmentState.STA);
+            sta.IsBackground = true;
+            sta.Start();
+            sta.Join(30000);
+            return result;
+        }
+
+        class CrosshairPickerForm : Form
+        {
+            private readonly bool _pixelMode;
+            private System.Windows.Forms.Timer _TrackTimer;
+            private POINT _curPt;
+            private IntPtr _hoverHwnd = IntPtr.Zero;
+            private RECT _hoverRect;
+            private string _hoverProc = "";
+            private string _hoverTitle = "";
+            private string _hoverClass = "";
+            private uint _hoverPid = 0;
+            private Color _hoverColor = Color.Black;
+            public string ResultPayload = "";
+
+            public CrosshairPickerForm(bool pixelMode)
+            {
+                _pixelMode = pixelMode;
+                this.FormBorderStyle = FormBorderStyle.None;
+                this.ShowInTaskbar = false;
+                this.TopMost = true;
+                this.StartPosition = FormStartPosition.Manual;
+                Rectangle vs = SystemInformation.VirtualScreen;
+                this.Bounds = vs;
+                this.BackColor = Color.FromArgb(14, 20, 32);
+                this.Opacity = 0.24;
+                this.Cursor = Cursors.Cross;
+                this.DoubleBuffered = true;
+                this.KeyPreview = true;
+
+                _TrackTimer = new System.Windows.Forms.Timer();
+                _TrackTimer.Interval = 32;
+                _TrackTimer.Tick += (s, e) => UpdateHoverTarget();
+                _TrackTimer.Start();
+            }
+
+            private void UpdateHoverTarget()
+            {
+                POINT pt;
+                if (!GetCursorPos(out pt)) return;
+                if (pt.X == _curPt.X && pt.Y == _curPt.Y && _hoverHwnd != IntPtr.Zero) return;
+                _curPt = pt;
+
+                if (_pixelMode)
+                {
+                    IntPtr hdc = GetDC(IntPtr.Zero);
+                    if (hdc != IntPtr.Zero)
+                    {
+                        uint px = GetPixel(hdc, pt.X, pt.Y);
+                        ReleaseDC(IntPtr.Zero, hdc);
+                        if (px != 0xFFFFFFFF)
+                        {
+                            _hoverColor = Color.FromArgb((int)(px & 0xFF), (int)((px >> 8) & 0xFF), (int)((px >> 16) & 0xFF));
+                        }
+                    }
+                    this.Invalidate();
+                    return;
+                }
+
+                // 二次优化：使用 Z-Order 顶层窗口几何命中探测替代 Visible 闪烁切换，实现零闪烁丝滑准星追踪
+                IntPtr selfHwnd = this.Handle;
+                IntPtr hit = IntPtr.Zero;
+                EnumWindows((h, lParam) =>
+                {
+                    if (h == selfHwnd || !IsWindowVisible(h) || IsIconic(h) || IsWindowCloaked(h)) return true;
+                    string cName = GetWindowClassNameSafe(h);
+                    if (cName == "Progman" || cName == "WorkerW" || cName == "Shell_TrayWnd") return true;
+                    RECT rc;
+                    if (!GetWindowRect(h, out rc)) return true;
+                    if (pt.X >= rc.Left && pt.X <= rc.Right && pt.Y >= rc.Top && pt.Y <= rc.Bottom)
+                    {
+                        hit = h;
+                        return false; // Z-Order 第一个命中的可见窗口即为鼠标正下方的最顶层真实窗口
+                    }
+                    return true;
+                }, IntPtr.Zero);
+                if (hit != IntPtr.Zero && hit != _hoverHwnd)
+                {
+                    _hoverHwnd = hit;
+                    GetWindowRect(hit, out _hoverRect);
+                    GetWindowThreadProcessId(hit, out _hoverPid);
+                    _hoverClass = GetWindowClassNameSafe(hit);
+                    _hoverTitle = GetWindowTitleSafe(hit);
+                    _hoverProc = "";
+                    try
+                    {
+                        using (Process p = Process.GetProcessById((int)_hoverPid))
+                        {
+                            _hoverProc = p.ProcessName ?? "";
+                        }
+                    }
+                    catch { }
+                }
+                this.Invalidate();
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                Graphics g = e.Graphics;
+                Rectangle vs = SystemInformation.VirtualScreen;
+                int localX = _curPt.X - vs.Left;
+                int localY = _curPt.Y - vs.Top;
+
+                using (Pen crossPen = new Pen(Color.FromArgb(220, 0, 229, 255), 1.5f))
+                {
+                    g.DrawLine(crossPen, localX - 28, localY, localX + 28, localY);
+                    g.DrawLine(crossPen, localX, localY - 28, localX, localY + 28);
+                }
+
+                if (!_pixelMode && _hoverHwnd != IntPtr.Zero)
+                {
+                    Rectangle r = new Rectangle(
+                        _hoverRect.Left - vs.Left,
+                        _hoverRect.Top - vs.Top,
+                        Math.Max(10, _hoverRect.Right - _hoverRect.Left),
+                        Math.Max(10, _hoverRect.Bottom - _hoverRect.Top)
+                    );
+                    using (Pen boxPen = new Pen(Color.FromArgb(255, 16, 185, 129), 3.5f))
+                    {
+                        g.DrawRectangle(boxPen, r);
+                    }
+                }
+
+                // 在准星旁绘制实时进程/颜色信息胶囊
+                string infoTxt = _pixelMode
+                    ? string.Format("#{0:X2}{1:X2}{2:X2} ({3}, {4})", _hoverColor.R, _hoverColor.G, _hoverColor.B, _curPt.X, _curPt.Y)
+                    : (string.IsNullOrEmpty(_hoverProc) ? "移动准星并点击目标窗口 (Esc 取消)" : string.Format("{0}.exe  [PID:{1} · {2}]", _hoverProc, _hoverPid, _hoverClass));
+                using (Font f = new Font("Microsoft YaHei", 9.5f, FontStyle.Bold))
+                {
+                    SizeF sz = g.MeasureString(infoTxt, f);
+                    int bx = Math.Min(vs.Width - (int)sz.Width - 24, localX + 18);
+                    int by = Math.Min(vs.Height - (int)sz.Height - 20, localY + 18);
+                    Rectangle pillRc = new Rectangle(bx, by, (int)sz.Width + 14, (int)sz.Height + 8);
+                    using (Brush bgB = new SolidBrush(Color.FromArgb(235, 9, 13, 22)))
+                    using (Pen borderP = new Pen(Color.FromArgb(255, 0, 229, 255), 1.5f))
+                    {
+                        g.FillRectangle(bgB, pillRc);
+                        g.DrawRectangle(borderP, pillRc);
+                    }
+                    g.DrawString(infoTxt, f, Brushes.White, bx + 7, by + 4);
+                }
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape)
+                {
+                    _TrackTimer.Stop();
+                    this.DialogResult = DialogResult.Cancel;
+                    this.Close();
+                }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                _TrackTimer.Stop();
+                if (e.Button == MouseButtons.Right)
+                {
+                    this.DialogResult = DialogResult.Cancel;
+                    this.Close();
+                    return;
+                }
+                POINT pt;
+                GetCursorPos(out pt);
+                this.Visible = false;
+                Thread.Sleep(25);
+
+                if (_pixelMode)
+                {
+                    IntPtr hdc = GetDC(IntPtr.Zero);
+                    uint px = hdc != IntPtr.Zero ? GetPixel(hdc, pt.X, pt.Y) : 0;
+                    if (hdc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, hdc);
+                    int r = (int)(px & 0xFF);
+                    int g = (int)((px >> 8) & 0xFF);
+                    int b = (int)((px >> 16) & 0xFF);
+                    ResultPayload = string.Format("{0}|{1}|#{2:X2}{3:X2}{4:X2}|{2},{3},{4}", pt.X, pt.Y, r, g, b);
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                    return;
+                }
+
+                IntPtr hit = WindowFromPoint(pt);
+                if (hit != IntPtr.Zero)
+                {
+                    IntPtr rootOwner = GetAncestor(hit, GA_ROOTOWNER);
+                    IntPtr root = GetAncestor(hit, GA_ROOT);
+                    if (rootOwner != IntPtr.Zero && IsWindowVisible(rootOwner)) hit = rootOwner;
+                    else if (root != IntPtr.Zero) hit = root;
+
+                    uint pid = 0;
+                    GetWindowThreadProcessId(hit, out pid);
+                    string procName = "";
+                    try
+                    {
+                        using (Process p = Process.GetProcessById((int)pid))
+                        {
+                            procName = p.ProcessName ?? "";
+                        }
+                    }
+                    catch { }
+                    string exePath = GetProcessExePathSafe(pid).Replace("|", " ");
+                    string cls = GetWindowClassNameSafe(hit).Replace("|", " ");
+                    string title = GetWindowTitleSafe(hit).Replace("|", " ");
+
+                    // 自动扫描同目录关联子进程（解决 Launcher 与 Worker 分离问题）
+                    var siblings = new List<string>();
+                    if (!string.IsNullOrEmpty(exePath))
+                    {
+                        try
+                        {
+                            string dir = Path.GetDirectoryName(exePath);
+                            if (!string.IsNullOrEmpty(dir))
+                            {
+                                foreach (string f in Directory.GetFiles(dir, "*.exe", SearchOption.TopDirectoryOnly))
+                                {
+                                    string bn = Path.GetFileNameWithoutExtension(f);
+                                    if (!string.IsNullOrEmpty(bn) && !bn.Equals(procName, StringComparison.OrdinalIgnoreCase) && !bn.StartsWith("unins", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        siblings.Add(bn);
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    string sibCsv = string.Join(",", siblings.ToArray());
+                    ResultPayload = string.Format("{0}|{1}|0x{2:X8}|{3}|{4}|{5}|{6}", procName, pid, hit.ToInt64(), cls, exePath, title, sibCsv);
+                    this.DialogResult = DialogResult.OK;
+                }
+                else
+                {
+                    this.DialogResult = DialogResult.Cancel;
+                }
+                this.Close();
+            }
         }
 
         public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
@@ -1564,7 +2015,12 @@ namespace AkpInput
                     ? ownerHwnd
                     : hwnd;
                 if (minPid != 0) _lastKnownMainHwnd[minPid] = targetMinHwnd;
-                ShowWindow(targetMinHwnd, 6); // SW_MINIMIZE
+                PostMessage(targetMinHwnd, WM_SYSCOMMAND, new IntPtr(SC_MINIMIZE), IntPtr.Zero);
+                Thread.Sleep(25);
+                if (!IsIconic(targetMinHwnd) && IsWindowVisible(targetMinHwnd))
+                {
+                    ShowWindow(targetMinHwnd, 6); // SW_MINIMIZE fallback
+                }
                 return "MINIMIZED";
             }
 
@@ -1594,12 +2050,25 @@ namespace AkpInput
                     attachedTarget = AttachThreadInput(curThread, targetThread, true);
                 }
 
-                if (!IsWindowVisible(hwnd))
+                if (restoredFromHiddenTray || !IsWindowVisible(hwnd))
                 {
-                    ShowWindow(hwnd, 5); // SW_SHOW (先解除托盘 SW_HIDE 隐藏态)
+                    PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
+                    ShowWindow(hwnd, 9); // SW_RESTORE
+                    Thread.Sleep(35);
+                    RECT checkRc;
+                    bool validRect = GetWindowRect(hwnd, out checkRc) && (checkRc.Right - checkRc.Left) >= 120 && (checkRc.Bottom - checkRc.Top) >= 60;
+                    if (!IsWindowVisible(hwnd) || IsWindowCloaked(hwnd) || !validRect)
+                    {
+                        // 窗口属于托盘自管生命周期（如微信/QQ/Electron托盘态），强行 SW_SHOW 会产生黑框或幽灵句柄；
+                        // 立即恢复隐藏并清除脏句柄，返回 TRAY_HIDDEN 交由主进程单实例重入或托盘热键优雅唤醒
+                        ShowWindow(hwnd, 0);
+                        if (targetPid != 0) _lastKnownMainHwnd.Remove(targetPid);
+                        return "TRAY_HIDDEN";
+                    }
                 }
-                if (IsIconic(hwnd))
+                else if (IsIconic(hwnd))
                 {
+                    PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
                     ShowWindow(hwnd, 9); // SW_RESTORE
                 }
                 else
@@ -3074,15 +3543,45 @@ namespace AkpInput
                         break;
 
                     case "win_state":
-                        string stTarget = parts.Length > 1 ? parts[1] : "";
+                        string stTarget = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1).Trim().Trim('"') : "";
                         WriteOut(reqPrefix, "OK " + QueryWindowState(stTarget));
                         break;
 
+                    case "win_radar":
+                        string radTarget = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1).Trim().Trim('"') : "";
+                        WriteOut(reqPrefix, "OK " + QueryWindowRadar(radTarget));
+                        break;
+
+                    case "pick_window":
+                        WriteOut(reqPrefix, PickWindowInteractive(false));
+                        break;
+
+                    case "pick_pixel":
+                        WriteOut(reqPrefix, PickWindowInteractive(true));
+                        break;
+
+                    case "sample_pixel":
+                        {
+                            int sx = parts.Length > 1 ? int.Parse(parts[1]) : 0;
+                            int sy = parts.Length > 2 ? int.Parse(parts[2]) : 0;
+                            WriteOut(reqPrefix, SampleScreenPixel(sx, sy));
+                        }
+                        break;
+
                     case "win_activate":
-                        string actTarget = parts.Length > 1 ? parts[1] : "";
-                        bool toggleMin = parts.Length > 2 && parts[2] == "1";
-                        string actRes = ActivateOrToggleWindow(actTarget, toggleMin);
-                        WriteOut(reqPrefix, "OK " + actRes);
+                        {
+                            if (parts.Length < 2)
+                            {
+                                WriteOut(reqPrefix, "ERR MISSING_TARGET");
+                                break;
+                            }
+                            bool hasFlag = parts.Length > 2 && (parts[parts.Length - 1] == "1" || parts[parts.Length - 1] == "0");
+                            bool toggleMin = hasFlag ? (parts[parts.Length - 1] == "1") : false;
+                            int nameCount = hasFlag ? (parts.Length - 2) : (parts.Length - 1);
+                            string actTarget = string.Join(" ", parts, 1, nameCount).Trim().Trim('"');
+                            string actRes = ActivateOrToggleWindow(actTarget, toggleMin);
+                            WriteOut(reqPrefix, "OK " + actRes);
+                        }
                         break;
 
                     case "win_close":
@@ -3280,36 +3779,44 @@ namespace AkpInput
 
                     case "app_audio_get":
                         {
-                            string appTarget = parts.Length > 1 ? parts[1] : "@foreground";
+                            string appTarget = parts.Length > 1 ? string.Join(" ", parts, 1, parts.Length - 1).Trim().Trim('"') : "@foreground";
                             WriteOut(reqPrefix, AppAudioControl(appTarget, "get", 0));
                         }
                         break;
 
                     case "app_audio_set":
                         {
-                            string appTarget = parts.Length > 1 ? parts[1] : "@foreground";
-                            int appLvl = parts.Length > 2 ? int.Parse(parts[2]) : 50;
+                            int appLvl = 50;
+                            bool hasLvl = parts.Length > 2 && int.TryParse(parts[parts.Length - 1], out appLvl);
+                            int nameCnt = hasLvl ? (parts.Length - 2) : (parts.Length - 1);
+                            string appTarget = nameCnt > 0 ? string.Join(" ", parts, 1, nameCnt).Trim().Trim('"') : "@foreground";
                             WriteOut(reqPrefix, AppAudioControl(appTarget, "set", appLvl));
                         }
                         break;
 
                     case "app_audio_step":
                         {
-                            string appTarget = parts.Length > 1 ? parts[1] : "@foreground";
-                            int appDelta = parts.Length > 2 ? int.Parse(parts[2]) : 5;
+                            int appDelta = 5;
+                            bool hasDelta = parts.Length > 2 && int.TryParse(parts[parts.Length - 1], out appDelta);
+                            int nameCnt = hasDelta ? (parts.Length - 2) : (parts.Length - 1);
+                            string appTarget = nameCnt > 0 ? string.Join(" ", parts, 1, nameCnt).Trim().Trim('"') : "@foreground";
                             WriteOut(reqPrefix, AppAudioControl(appTarget, "step", appDelta));
                         }
                         break;
 
                     case "app_audio_mute":
                         {
-                            string appTarget = parts.Length > 1 ? parts[1] : "@foreground";
                             int muteMode = -1;
+                            bool hasMode = false;
                             if (parts.Length > 2)
                             {
-                                if (parts[2] == "1" || parts[2].Equals("true", StringComparison.OrdinalIgnoreCase)) muteMode = 1;
-                                else if (parts[2] == "0" || parts[2].Equals("false", StringComparison.OrdinalIgnoreCase)) muteMode = 0;
+                                string lastTok = parts[parts.Length - 1];
+                                if (lastTok == "1" || lastTok.Equals("true", StringComparison.OrdinalIgnoreCase)) { muteMode = 1; hasMode = true; }
+                                else if (lastTok == "0" || lastTok.Equals("false", StringComparison.OrdinalIgnoreCase)) { muteMode = 0; hasMode = true; }
+                                else if (lastTok.Equals("toggle", StringComparison.OrdinalIgnoreCase)) { muteMode = -1; hasMode = true; }
                             }
+                            int nameCnt = hasMode ? (parts.Length - 2) : (parts.Length - 1);
+                            string appTarget = nameCnt > 0 ? string.Join(" ", parts, 1, nameCnt).Trim().Trim('"') : "@foreground";
                             WriteOut(reqPrefix, AppAudioControl(appTarget, "mute", muteMode));
                         }
                         break;

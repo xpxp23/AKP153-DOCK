@@ -290,9 +290,11 @@ $ErrorActionPreference='SilentlyContinue'
 $name = ${psQuote(name.replace(/\.exe$/i, ''))}
 $allowMin = ${allowMinimize ? '$true' : '$false'}
 $proc = $null
-for ($i = 0; $i -lt 8 -and -not $proc; $i++) {
-  $proc = @(Get-Process) | Where-Object { $_.ProcessName -eq $name -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-  if (-not $proc) { Start-Sleep -Milliseconds 250 }
+for ($i = 0; $i -lt 2 -and -not $proc; $i++) {
+  $allMatch = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+  if ($allMatch.Count -eq 0) { break }
+  $proc = $allMatch | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if (-not $proc -and $i -eq 0) { Start-Sleep -Milliseconds 120 }
 }
 if (-not $proc) { Write-Output 'AKP_RESULT=nowindow'; exit 0 }
 
@@ -478,16 +480,23 @@ async function runSingleAction(action, shouldStop) {
         return { ok: true, matched: false, control: 'continue' };
       }
     }
-    case 'if_process': {
+    case 'if_process':
+    case 'if_window': {
       const proc = String(action.target || '').trim();
-      const expectRunning = action.expectRunning !== undefined
-        ? Boolean(action.expectRunning)
-        : ((action.expect || 'running') !== 'stopped');
+      const expectMode = String(action.expect || (action.expectRunning === false ? 'stopped' : 'running')).toLowerCase();
       const thenAct = String(action.thenAction || 'continue').toLowerCase();
-      const alive = proc ? await isRunningAsync(proc) : false;
-      const matched = expectRunning ? alive : !alive;
+      let matched = false;
+      if (expectMode === 'foreground' || expectMode === 'background' || expectMode === 'minimized' || expectMode === 'tray_hidden') {
+        const wState = proc ? String(await NativeInput.queryWindowState(proc) || '').toUpperCase() : 'NOT_RUNNING';
+        if (expectMode === 'foreground') matched = wState === 'FOREGROUND';
+        else if (expectMode === 'background') matched = wState === 'VISIBLE_BACKGROUND' || wState === 'BACKGROUND';
+        else if (expectMode === 'minimized') matched = wState === 'MINIMIZED';
+        else if (expectMode === 'tray_hidden') matched = wState === 'TRAY_HIDDEN';
+      } else {
+        const alive = proc ? await isRunningAsync(proc) : false;
+        matched = expectMode === 'stopped' ? !alive : alive;
+      }
       if (thenAct === 'abort') {
-        // "进程运行中则立即中止宏"
         return { ok: true, matched, control: matched ? 'abort' : 'continue' };
       }
       if (matched) {
@@ -619,7 +628,34 @@ async function runSingleAction(action, shouldStop) {
   }
 }
 
-async function executeActionListOnce(actions, shouldStop) {
+async function executeNodeFlowOnce(nodeFlow, shouldStop) {
+  if (!nodeFlow || !Array.isArray(nodeFlow.nodes) || !nodeFlow.nodes.length) return;
+  const nodeMap = new Map(nodeFlow.nodes.map((n) => [String(n.id), n]));
+  let cur = nodeFlow.nodes.find((n) => n.kind === 'start') || nodeFlow.nodes[0];
+  let steps = 0;
+  while (cur && steps < 160) {
+    if (shouldStop && shouldStop()) break;
+    steps++;
+    if (cur.kind === 'start') {
+      cur = cur.next ? nodeMap.get(String(cur.next)) : null;
+      continue;
+    }
+    const res = await runSingleAction(cur.action || cur, shouldStop);
+    if (cur.kind === 'condition' || (cur.action && String(cur.action.type || '').startsWith('if_'))) {
+      const branchId = (res && res.matched) ? cur.nextTrue : cur.nextFalse;
+      cur = branchId ? nodeMap.get(String(branchId)) : null;
+    } else {
+      if (res && res.control === 'abort') break;
+      cur = cur.next ? nodeMap.get(String(cur.next)) : null;
+    }
+  }
+}
+
+async function executeActionListOnce(actions, shouldStop, nodeFlow = null) {
+  if (nodeFlow && Array.isArray(nodeFlow.nodes) && nodeFlow.nodes.length > 0 && nodeFlow.enabled) {
+    await executeNodeFlowOnce(nodeFlow, shouldStop);
+    return;
+  }
   for (let idx = 0; idx < actions.length; idx++) {
     if (shouldStop && shouldStop()) break;
     const act = actions[idx];
@@ -660,7 +696,7 @@ async function runMacro(spec, context) {
       const minInterval = Math.max(50, Number(spec.loopInterval || loopCfg.interval) || 50);
       try {
         while (!token.stop) {
-          await executeActionListOnce(actions, () => token.stop);
+          await executeActionListOnce(actions, () => token.stop, spec.nodeFlow);
           if (token.stop) break;
           await new Promise((r) => setTimeout(r, minInterval));
         }
@@ -687,7 +723,7 @@ async function runMacro(spec, context) {
 
     for (let i = 0; i < times; i++) {
       if (token.stop) break;
-      await executeActionListOnce(actions, () => token.stop);
+      await executeActionListOnce(actions, () => token.stop, spec.nodeFlow);
       if (i < times - 1 && !token.stop) {
         await interruptibleDelay(interval, () => token.stop);
       }
@@ -704,7 +740,7 @@ async function runMacro(spec, context) {
   }
 }
 
-async function run(spec, context) {
+async function run(spec, context, options = {}) {
   if (!spec) return { ok: false, error: 'EMPTY' };
   const type = String(spec.type || 'app').toLowerCase();
 
@@ -949,8 +985,9 @@ async function run(spec, context) {
 
         const wantsArgs = !!(spec.args && String(spec.args).trim());
 
-        if (FOCUSABLE.has(ext) && !wantsArgs) {
-          const allowMinimize = spec.smartToggle !== false;
+        if (FOCUSABLE.has(ext) && !wantsArgs && !(options && options.bypassFocusExisting)) {
+          // 仅当显式开启窗口模式 (toggleSyncMode === "window") 或显式指定 smartToggle === true 时才将前台窗口最小化
+          const allowMinimize = Boolean((spec.toggleAction && spec.toggleSyncMode === 'window') || spec.smartToggle === true);
           const focusResult = await focusExisting(target, allowMinimize, spec.watchProcess);
           if (focusResult) return { ok: true, action: focusResult };
         }

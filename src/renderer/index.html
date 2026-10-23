@@ -157,10 +157,14 @@
             </div>
             <div class="pref-row" style="margin-top: 12px;">
               <div class="pref-info">
-                <span class="pref-name">OSD 桌面毛玻璃悬浮提示窗 (HUD Overlay)</span>
-                <span class="pref-desc">在全屏游戏或后台时按下切页、切模式、调音量、切声卡、启停宏或番茄钟，顶部弹出 1.5s 无焦点穿透提示</span>
+                <span class="pref-name">OSD 桌面毛玻璃灵动岛胶囊 (HUD Overlay)</span>
+                <span class="pref-desc">盲按物理设备切页、调音量、触发双态开关或番茄钟时，屏幕中央弹出 1.2s 无焦点穿透毛玻璃胶囊</span>
               </div>
               <div style="display:flex; align-items:center; gap:8px;">
+                <select id="prefOsdPosition" class="pref-select" style="min-width:130px;">
+                  <option value="bottom">⬇️ 屏幕底部中央</option>
+                  <option value="top">⬆️ 屏幕顶部中央</option>
+                </select>
                 <button type="button" id="btnPreviewHud" class="ghost tiny">✨ 预览 HUD</button>
                 <label class="switch">
                   <input type="checkbox" id="prefHudEnabled" checked />
@@ -171,7 +175,7 @@
           </div>
 
           <div class="settings-card">
-            <h5 class="card-title">物理按键输入保护与差量帧缓冲引擎 (v0.10.6)</h5>
+            <h5 class="card-title">物理按键输入保护与差量帧缓冲引擎 (v0.11.0)</h5>
             <div class="pref-row">
               <div class="pref-info">
                 <span class="pref-name">按键连击防抖时间</span>
@@ -295,7 +299,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.10.6 (Text Icon Studio · Mirror Isolation · Window Restore · Unidirectional Store)</span>
+                <span class="about-v">v0.11.0 (1:1 Canvas Pipeline · Text Icon Studio 2.0 · Window Picker &amp; Radar · 1×3 Panorama · Hold-to-Layer · VM Sandbox)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>
@@ -360,7 +364,7 @@
           <span id="multiSelectHint" class="multi-select-badge" hidden>已多选 0 格</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
-          <button id="hwMirrorToggleBtn" class="device-grad-pill" title="切换 1:1 硬件真彩 Canvas 像素镜像预览（彻底消除窗口缩放导致的文字截断）">🖥️ 硬件真彩</button>
+          <button id="hwMirrorToggleBtn" class="device-grad-pill active-mirror" title="切换 1:1 硬件真彩 Canvas 像素镜像预览（默认开启，确保电脑屏幕与真机 LCD 100% 所见即所得）">🖥️ 1:1 硬件真彩</button>
           <button id="pageGradientBtn" class="device-grad-pill" title="整板无缝流光渐变与自动切页设置">🌈 整板流光</button>
         </div>
       </div>
@@ -599,7 +603,7 @@
               <label class="lkm-label">图标缩放</label>
               <span id="lkmIconScaleVal" style="font-size:11px; color:var(--muted);">62%</span>
             </div>
-            <input type="range" id="lkmIconScale" min="25" max="100" step="1" value="62" />
+            <input type="range" id="lkmIconScale" min="25" max="115" step="1" value="62" />
           </div>
           <div class="lkm-form-row">
             <label class="lkm-label">按键独立底色</label>
@@ -859,6 +863,10 @@
           <input type="range" id="cropZoom" min="0.2" max="4.0" step="0.01" value="1.0" />
           <span id="cropZoomVal" class="crop-val">100%</span>
         </div>
+        <label style="display:flex; align-items:center; justify-content:center; gap:6px; font-size:12px; color:var(--ink); cursor:pointer; margin-top:2px;">
+          <input type="checkbox" id="cropFullBleed" checked />
+          <span>✨ 铺满整个按键 (100% 满格无黑边)</span>
+        </label>
       </div>
       <div class="cropper-hint muted">
         <span>💡 拖拽平移，滚轮/滑块缩放。支持旋转与适应留白（透明穿透底色），高保真输出 192×192。</span>

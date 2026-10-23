@@ -69,6 +69,10 @@ contextBridge.exposeInMainWorld('api', {
   profileRename: (id, name, icon, accent) => ipcRenderer.invoke('profile:rename', { id, name, icon, accent }),
   profileDelete: (id) => ipcRenderer.invoke('profile:delete', id),
   hudShow: (payload) => ipcRenderer.invoke('hud:show', payload),
+  windowPick: () => ipcRenderer.invoke('window:pick'),
+  windowRadar: (procName) => ipcRenderer.invoke('window:radar', procName),
+  pixelPick: () => ipcRenderer.invoke('pixel:pick'),
+  pixelSample: (x, y) => ipcRenderer.invoke('pixel:sample', { x, y }),
 
   libraryExport: (a) => ipcRenderer.invoke('library:export', a),
   libraryImport: () => ipcRenderer.invoke('library:import'),

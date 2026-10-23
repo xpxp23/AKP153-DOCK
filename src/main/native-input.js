@@ -443,19 +443,92 @@ const NativeInput = {
 
   queryWindowState: async (procName) => {
     if (!procName) return 'NOT_RUNNING';
-    const clean = String(procName).trim().replace(/\.exe$/i, '').toLowerCase();
+    const clean = String(procName).trim().replace(/\.exe$/i, '');
     const res = await sendCmd(`win_state ${clean}`);
     if (res.startsWith('OK ')) {
       return res.slice(3).trim();
     }
-    // 兼容未重编译旧版二进制的无缝回退判断
-    const set = await NativeInput.checkProcesses([clean]);
-    if (!set || !set.has(clean)) return 'NOT_RUNNING';
+    const cleanLower = clean.toLowerCase();
+    const set = await NativeInput.checkProcesses([cleanLower]);
+    if (!set || !set.has(cleanLower)) return 'NOT_RUNNING';
     const fg = await NativeInput.getForegroundWindow();
-    if (fg && fg.processName && fg.processName.toLowerCase().replace(/\.exe$/i, '') === clean) {
+    if (fg && fg.processName && fg.processName.toLowerCase().replace(/\.exe$/i, '') === cleanLower) {
       return 'FOREGROUND';
     }
-    return 'BACKGROUND';
+    return 'VISIBLE_BACKGROUND';
+  },
+
+  queryWindowRadar: async (procName) => {
+    if (!procName) {
+      return { ok: true, state: 'NOT_RUNNING', pid: 0, hwnd: '0x0', className: '', exePath: '', title: '' };
+    }
+    const clean = String(procName).trim().replace(/\.exe$/i, '');
+    const res = await sendCmd(`win_radar ${clean}`, 1500);
+    if (res.startsWith('OK ')) {
+      const [state, pidStr, hwnd, className, exePath, ...titleParts] = res.slice(3).trim().split('|');
+      return {
+        ok: true,
+        state: state || 'NOT_RUNNING',
+        pid: parseInt(pidStr, 10) || 0,
+        hwnd: hwnd || '0x0',
+        className: className || '',
+        exePath: exePath || '',
+        title: titleParts.join('|') || '',
+      };
+    }
+    const fallbackState = await NativeInput.queryWindowState(clean);
+    return {
+      ok: true,
+      state: fallbackState,
+      pid: 0,
+      hwnd: '0x0',
+      className: '',
+      exePath: '',
+      title: '',
+    };
+  },
+
+  pickWindow: async () => {
+    const res = await sendCmd('pick_window', 32000);
+    if (res.startsWith('OK ')) {
+      const [processName, pidStr, hwnd, className, exePath, title, siblingCsv] = res.slice(3).trim().split('|');
+      const siblingProcs = (siblingCsv || '').split(',').map((s) => s.trim()).filter(Boolean);
+      return {
+        ok: true,
+        processName: processName || '',
+        pid: parseInt(pidStr, 10) || 0,
+        hwnd: hwnd || '0x0',
+        className: className || '',
+        exePath: exePath || '',
+        title: title || '',
+        siblingProcs,
+      };
+    }
+    return { ok: false, cancelled: res.includes('CANCELLED'), error: res };
+  },
+
+  pickPixel: async () => {
+    const res = await sendCmd('pick_pixel', 32000);
+    if (res.startsWith('OK ')) {
+      const [xStr, yStr, hex, rgb] = res.slice(3).trim().split('|');
+      return {
+        ok: true,
+        x: parseInt(xStr, 10) || 0,
+        y: parseInt(yStr, 10) || 0,
+        hex: hex || '#000000',
+        rgb: rgb || '0,0,0',
+      };
+    }
+    return { ok: false, cancelled: res.includes('CANCELLED'), error: res };
+  },
+
+  samplePixel: async (x, y) => {
+    const res = await sendCmd(`sample_pixel ${Math.round(Number(x) || 0)} ${Math.round(Number(y) || 0)}`, 1200);
+    if (res.startsWith('OK ')) {
+      const [hex, rgb] = res.slice(3).trim().split('|');
+      return { ok: true, hex: hex || '#000000', rgb: rgb || '0,0,0', x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0) };
+    }
+    return { ok: false, hex: '#000000', error: res };
   },
 
   closeWindowGracefully: async (procName) => {
@@ -634,39 +707,42 @@ const NativeInput = {
 
   parseAppAudioResp: (res) => {
     if (typeof res === 'string' && res.startsWith('OK ')) {
-      const parts = res.slice(3).trim().split(/\s+/);
-      const processName = parts[0] || '';
-      const level = Math.max(0, Math.min(100, parseInt(parts[1], 10) || 0));
-      const isMute = res.includes('MUTE:1');
-      const peakMatch = res.match(/PEAK:(\d+)/);
+      const body = res.slice(3).trim();
+      const isMute = body.includes('MUTE:1');
+      const peakMatch = body.match(/PEAK:(\d+)/);
       const peak = peakMatch ? Math.max(0, Math.min(100, parseInt(peakMatch[1], 10) || 0)) : 0;
+      const beforeMeta = body.replace(/\s*MUTE:\d+.*$/, '').trim();
+      const lastSpace = beforeMeta.lastIndexOf(' ');
+      const processName = lastSpace > 0 ? beforeMeta.slice(0, lastSpace).trim() : (beforeMeta.split(/\s+/)[0] || '');
+      const lvlStr = lastSpace > 0 ? beforeMeta.slice(lastSpace + 1) : (beforeMeta.split(/\s+/)[1] || '0');
+      const level = Math.max(0, Math.min(100, parseInt(lvlStr, 10) || 0));
       return { ok: true, processName, level, isMute, peak };
     }
     return { ok: false, processName: '', level: 0, isMute: false, peak: 0, error: String(res || '') };
   },
 
   getAppAudio: async (target = '@foreground') => {
-    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const clean = String(target || '@foreground').trim().replace(/\.exe$/i, '') || '@foreground';
     const res = await sendCmd(`app_audio_get ${clean}`, 1500);
     return NativeInput.parseAppAudioResp(res);
   },
 
   setAppAudioVolume: async (target = '@foreground', level = 50) => {
-    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const clean = String(target || '@foreground').trim().replace(/\.exe$/i, '') || '@foreground';
     const lvl = Math.max(0, Math.min(100, parseInt(level, 10) || 0));
     const res = await sendCmd(`app_audio_set ${clean} ${lvl}`, 1500);
     return NativeInput.parseAppAudioResp(res);
   },
 
   stepAppAudioVolume: async (target = '@foreground', delta = 5) => {
-    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const clean = String(target || '@foreground').trim().replace(/\.exe$/i, '') || '@foreground';
     const d = Math.max(-100, Math.min(100, parseInt(delta, 10) || 5));
     const res = await sendCmd(`app_audio_step ${clean} ${d}`, 1500);
     return NativeInput.parseAppAudioResp(res);
   },
 
   toggleAppAudioMute: async (target = '@foreground', mode = 'toggle') => {
-    const clean = String(target || '@foreground').trim().replace(/\s+/g, '') || '@foreground';
+    const clean = String(target || '@foreground').trim().replace(/\.exe$/i, '') || '@foreground';
     const m = mode === true || mode === 1 || mode === '1' ? '1'
       : mode === false || mode === 0 || mode === '0' ? '0'
       : 'toggle';
