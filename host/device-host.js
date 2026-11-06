@@ -107,7 +107,11 @@ class Device {
     this.animTimer = null;
     this._animBusy = false;
     this._abortDraw = false;
-    this.drawGen = 0;
+    // v0.11.1 整页批次世代：只有"更新的整页重绘"才能抢占正在进行的整页重绘。
+    // 旧实现用 drawGen 记录所有 batchDraw，导致一个 1~9 项的遥测小批次就能把
+    // 18 项整页重绘拦腰截断，且截断后不补画 —— 这就是"切页只刷新了一部分"的根因。
+    this.fullBatchSeq = 0;
+    this.fullBatchEpoch = 0;
     this._pktBuf = Buffer.alloc(PKT);
   }
 
@@ -476,8 +480,9 @@ class Device {
     const frameKey = `${row},${col}`;
     // 关键修复：当外部显式调用 draw 推送最新状态帧（如双态角标切换、静音切换）时，
     // 若该键存在非循环的按压回弹动画 (loop === false)，立即终止旧回弹动画，防止旧状态残影在 45ms 后反向覆盖新角标！
+    // v0.11.1：force 通道（整页重绘/强制刷新）连循环动效一并清掉，否则旧页 GIF 帧会把新画面盖回上一页。
     const existingAnim = this.animations.get(frameKey);
-    if (existingAnim && !existingAnim.loop) {
+    if (existingAnim && (force || !existingAnim.loop)) {
       this.animations.delete(frameKey);
     }
 
@@ -490,31 +495,67 @@ class Device {
     });
   }
 
-  async batchDraw(items) {
-    if (this.asleep) {
-      return { drawn: 0, skipped: Array.isArray(items) ? items.length : 0 };
-    }
+  /**
+   * 批量写图。
+   * @param {Array} items [{row,col,data,force}]
+   * @param {Object} opts  { full: 是否整页重绘, epoch: 渲染侧页面世代 }
+   *
+   * v0.11.1 关键修复：
+   * 1. 只有"更新的整页重绘"(full=true) 才能抢占正在进行的整页重绘；遥测/单键小批次
+   *    永远不能中断整页重绘，只能排在它后面（FIFO 队列保证顺序）。
+   * 2. 逐项 try/catch —— 单个按键写失败不再拖死整批，失败项通过 failed 回传。
+   * 3. 被抢占/失败/跳过的项通过 missing 回传，渲染侧据此补发。
+   * 4. 整页重绘且 force 时，清掉该键上残留的旧页动效帧，防止 45ms 定时器把旧画面盖回来。
+   */
+  async batchDraw(items, opts = {}) {
     const list = Array.isArray(items) ? items : [];
-    if (list.length === 0) return { drawn: 0, skipped: 0 };
-    const myGen = ++this.drawGen;
+    const full = !!opts.full && list.length > 1;
+    const epoch = Number(opts.epoch) || 0;
+    if (this.asleep) {
+      return { drawn: 0, skipped: list.length, failed: [], missing: [], aborted: true };
+    }
+    if (list.length === 0) return { drawn: 0, skipped: 0, failed: [], missing: [], aborted: false };
+
+    let mySeq = this.fullBatchSeq;
+    if (full) {
+      this.fullBatchSeq += 1;
+      mySeq = this.fullBatchSeq;
+      this.fullBatchEpoch = Math.max(this.fullBatchEpoch, epoch);
+    }
 
     return this.lock(async () => {
       let drawn = 0;
       let skipped = 0;
+      const failed = [];
+      const missing = [];
       let idx = 0;
       for (const it of list) {
-        if (!it || this.asleep || this._abortDraw || (list.length >= 15 && myGen !== this.drawGen)) {
-          skipped++;
+        // 只有"更晚开始的整页重绘"可以抢占当前整页重绘；小批次一律不抢占
+        const superseded = full && this.fullBatchSeq !== mySeq;
+        if (!it) { skipped++; continue; }
+        if (this.asleep || this._abortDraw || superseded) {
+          missing.push({ row: it.row, col: it.col });
           continue;
         }
         const frameKey = `${it.row},${it.col}`;
-        const existingAnim = this.animations.get(frameKey);
-        if (existingAnim && !existingAnim.loop) {
+        if (it.force) {
+          // 整页/强制重绘时，旧页的循环动效（GIF/WebP，loop=true）必须一并清掉，
+          // 否则它会在 45ms 后把上一页的画面重新画回来。
           this.animations.delete(frameKey);
+        } else {
+          const existingAnim = this.animations.get(frameKey);
+          if (existingAnim && !existingAnim.loop) {
+            this.animations.delete(frameKey);
+          }
         }
-        const r = this._drawUnlocked(it.row, it.col, it.data, !!it.force);
-        if (r && r.drawn) drawn++;
-        else skipped++;
+        try {
+          const r = this._drawUnlocked(it.row, it.col, it.data, !!it.force);
+          if (r && r.drawn) drawn++;
+          else skipped++;
+        } catch (err) {
+          failed.push({ row: it.row, col: it.col, error: (err && err.message) || String(err) });
+          missing.push({ row: it.row, col: it.col });
+        }
 
         idx++;
         // 每绘制 2 个按键通过 setImmediate 让出一次事件循环，使物理按键 hid.on('data') 不被全屏刷图阻塞
@@ -522,7 +563,7 @@ class Device {
           await new Promise((resolve) => setImmediate(resolve));
         }
       }
-      return { drawn, skipped };
+      return { drawn, skipped, failed, missing, aborted: missing.length > 0 };
     });
   }
 
@@ -722,8 +763,8 @@ async function handle(msg) {
     }
     case 'batchDraw': {
       if (!device.isOpen) return fail(id, 'NOT_OPEN');
-      const res = await device.batchDraw(msg.items);
-      return reply(id, res || { drawn: 0, skipped: 0 });
+      const res = await device.batchDraw(msg.items, { full: !!msg.full, epoch: msg.epoch });
+      return reply(id, res || { drawn: 0, skipped: 0, failed: [], missing: [] });
     }
     case 'clear':
       await device.clearScreen();

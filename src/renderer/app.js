@@ -846,6 +846,112 @@ function drawBase(ctx, size, spec) {
   ctx.fillRect(0, 0, size, size);
 }
 
+// v0.11.1 图标预处理：
+// 1) 历史配置里存的 SVG data URL 都没有 width/height（旧版 svgToDataUrl 不注入），
+//    直接当 <img> 用会被浏览器按 300×150 默认尺寸解释，导致 contain 数学算错。
+//    这里在加载时补回来，历史 config.json 无需改写。
+// 2) ICO/PNG 自带的透明留白会被原样等比保留，视觉上让图标"缩了一圈"。这里算出 alpha
+//    包围盒，绘制时只取这个区域内，等于自动裁边。
+const iconBoundsCache = new Map();
+const MAX_ICON_BOUNDS_CACHE = 400;
+
+// v0.11.1 文字图标工坊卡片改为「按配置实时渲染」。
+// 旧流程是把 renderTextIconCanvas 的结果烤成一张 192×192 PNG 存进 spec.icon，
+// 于是旧卡片的圆角（透明四角）和 1px 描边被永久写死在像素里 —— 改渲染器也修不好它们。
+// 现在只要 spec.textIconConfig 还在，就以它为准现场渲染，历史配置无需迁移即可变干净。
+const liveTextIconCache = new Map();
+const MAX_LIVE_TEXT_ICON_CACHE = 48;
+
+function getLiveTextIconCanvas(textCfg) {
+  if (!textCfg || typeof textCfg !== 'object') return null;
+  if (typeof renderTextIconCanvas !== 'function') return null;
+  let key;
+  try {
+    key = JSON.stringify(textCfg);
+  } catch (_) {
+    return null;
+  }
+  const hit = liveTextIconCache.get(key);
+  if (hit) {
+    liveTextIconCache.delete(key);
+    liveTextIconCache.set(key, hit);
+    return hit;
+  }
+  let cv = null;
+  try {
+    cv = renderTextIconCanvas(textCfg, 192);
+  } catch (_) {
+    cv = null;
+  }
+  if (cv) {
+    if (liveTextIconCache.size >= MAX_LIVE_TEXT_ICON_CACHE) {
+      const oldest = liveTextIconCache.keys().next().value;
+      if (oldest !== undefined) liveTextIconCache.delete(oldest);
+    }
+    liveTextIconCache.set(key, cv);
+  }
+  return cv;
+}
+
+function normalizeIconSrc(src) {
+  if (typeof src !== 'string' || !/^data:image\/svg\+xml/i.test(src)) return src;
+  const comma = src.indexOf(',');
+  if (comma < 0) return src;
+  let body;
+  try {
+    body = decodeURIComponent(src.slice(comma + 1));
+  } catch (_) {
+    return src;
+  }
+  if (!/<svg[\s>]/i.test(body)) return src;
+  if (typeof withIntrinsicSize !== 'function') return src;
+  const fixed = withIntrinsicSize(body);
+  if (fixed === body) return src;
+  return src.slice(0, comma + 1) + encodeURIComponent(fixed);
+}
+
+function computeIconBounds(img, src) {
+  const cached = iconBoundsCache.get(src);
+  if (cached) return cached;
+  const w = img.naturalWidth || img.width || 0;
+  const h = img.naturalHeight || img.height || 0;
+  let box = { x: 0, y: 0, w: Math.max(1, w), h: Math.max(1, h) };
+  try {
+    if (w > 0 && h > 0 && w <= 1024 && h <= 1024) {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      cx.clearRect(0, 0, w, h);
+      cx.drawImage(img, 0, 0, w, h);
+      const data = cx.getImageData(0, 0, w, h).data;
+      let minX = w, minY = h, maxX = -1, maxY = -1;
+      for (let y = 0; y < h; y++) {
+        const rowOff = y * w * 4;
+        for (let x = 0; x < w; x++) {
+          if (data[rowOff + x * 4 + 3] > 8) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX >= minX && maxY >= minY) {
+        box = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+      }
+    }
+  } catch (_) {
+    /* 跨源/解码失败时退回整图 */
+  }
+  if (iconBoundsCache.size >= MAX_ICON_BOUNDS_CACHE) {
+    const oldest = iconBoundsCache.keys().next().value;
+    if (oldest !== undefined) iconBoundsCache.delete(oldest);
+  }
+  iconBoundsCache.set(src, box);
+  return box;
+}
+
 async function loadImage(src) {
   if (iconCache.has(src)) {
     const cached = iconCache.get(src);
@@ -864,7 +970,7 @@ async function loadImage(src) {
       resolve(img);
     };
     img.onerror = () => resolve(null);
-    img.src = src;
+    img.src = normalizeIconSrc(src);
   });
 }
 
@@ -1204,7 +1310,7 @@ function computeRenderModel(spec, keyPos = null) {
       spec.customColor ? 1 : 0,
       spec.textColor || '',
       spec.fontSize || 17,
-      spec.iconScale || 62,
+      spec.iconScale || ((spec.icon || spec.textIconConfig) ? 100 : 62),
       spec.labelPos || 'bottom',
       iconSig,
       glyph,
@@ -1276,14 +1382,23 @@ async function paintKey(spec, size, keyPos) {
   }
 
   const label = String(spec.label || '').trim();
-  const fg = spec.textColor || sampledFg || contrast(spec.color);
   const pos = spec.labelPos || 'bottom';
   const fs = Math.max(8, Math.round((size * (Number(spec.fontSize) || 17)) / 100));
-  const rawScale = Number(spec.iconScale) || 62;
-  const isFullBleed = Boolean(
-    (spec.textIconConfig && spec.textIconConfig.fullBleed && !label && rawScale >= 96) ||
-    (!label && rawScale >= 99)
+
+  // v0.11.1 满格出血：
+  // · 有位图图标 / 工坊卡片的按键，默认 iconScale 由 62 提升到 100（没有位图可铺的纯符号键仍保留 62）
+  // · 文字标签不再取消满格资格，改为把文字叠在铺满的图标之上（底部渐变暗角保证可读）
+  const hasBitmap = !!spec.icon;
+  const hasCard = !!(spec.textIconConfig && spec.textIconConfig.fullBleed);
+  const defaultScale = (hasBitmap || spec.textIconConfig) ? 100 : 62;
+  const rawScale = Number(spec.iconScale) || defaultScale;
+  const isFullBleed = (hasBitmap || hasCard) && (
+    rawScale >= 99 || (!!spec.textIconConfig && spec.textIconConfig.fullBleed && rawScale >= 96)
   );
+  const labelOnImage = isFullBleed && !!label;
+  // 满格时文字压在图标上、下面还有一层压暗遮罩，自动对比色会算成深色反而不易读，
+  // 因此未显式指定 textColor 时统一用白色。
+  const fg = spec.textColor || (labelOnImage ? '#ffffff' : (sampledFg || contrast(spec.color)));
   const effectiveScale = isFullBleed ? 100 : Math.max(25, Math.min(115, rawScale));
   const iconBox = (size * effectiveScale) / 100;
 
@@ -1303,16 +1418,51 @@ async function paintKey(spec, size, keyPos) {
     iconTop = Math.max(size * 0.04, (availH - iconBox) / 2);
   }
 
-  if (spec.icon) {
+  // 解析实际要画的位图：优先按 textIconConfig 现场渲染（保证圆角/描边修复对历史卡片生效），
+  // 否则退回已存的 spec.icon 位图。
+  let iconSrc = null;
+  let iconSX = 0, iconSY = 0, iconSW = 0, iconSH = 0;
+  if (spec.textIconConfig) {
+    const liveCanvas = getLiveTextIconCanvas(spec.textIconConfig);
+    if (liveCanvas) {
+      iconSrc = liveCanvas;
+      iconSW = liveCanvas.width;
+      iconSH = liveCanvas.height;
+    }
+  }
+  if (!iconSrc && spec.icon) {
     const img = await loadImage(spec.icon);
     if (img) {
-      if (isFullBleed) {
-        ctx.drawImage(img, 0, 0, size, size);
-      } else {
-        const s = Math.min(iconBox / img.width, iconBox / img.height);
-        const w = img.width * s, h = img.height * s;
-        ctx.drawImage(img, (size - w) / 2, iconTop + (iconBox - h) / 2, w, h);
-      }
+      // 先裁掉源图自带的透明留白再算缩放：ICO / PNG 常见的透明边会让图标看起来"凭空缩了一圈"
+      const bounds = computeIconBounds(img, spec.icon);
+      iconSrc = img;
+      iconSX = bounds.x;
+      iconSY = bounds.y;
+      iconSW = bounds.w;
+      iconSH = bounds.h;
+    }
+  }
+
+  if (iconSrc) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    if (isFullBleed) {
+      // cover：等比放大到刚好覆盖整键再居中裁切 —— 真正铺满，且非正方形图不会变形
+      const cs = Math.max(size / iconSW, size / iconSH);
+      const cw = iconSW * cs;
+      const ch = iconSH * cs;
+      ctx.drawImage(
+        iconSrc, iconSX, iconSY, iconSW, iconSH,
+        (size - cw) / 2, (size - ch) / 2, cw, ch
+      );
+    } else {
+      const s = Math.min(iconBox / iconSW, iconBox / iconSH);
+      const w = iconSW * s;
+      const h = iconSH * s;
+      ctx.drawImage(
+        iconSrc, iconSX, iconSY, iconSW, iconSH,
+        (size - w) / 2, iconTop + (iconBox - h) / 2, w, h
+      );
     }
   } else if (spec.type && spec.type !== 'text') {
     const gl = computeDynamicGlyph(spec);
@@ -1322,6 +1472,26 @@ async function paintKey(spec, size, keyPos) {
     ctx.textBaseline = 'middle';
     // 修正 Unicode 符号基线视觉下沉偏移
     ctx.fillText(gl, size / 2, iconTop + iconBox / 2 + (label ? 0 : Math.round(size * 0.015)));
+  }
+
+  // 满格图标之上压文字时的可读性保障：只在文字所在的那一侧铺一层黑色渐变暗角，
+  // 不整体压暗，图标主体亮度与鲜艳度不受影响。
+  if (labelOnImage && (pos === 'bottom' || pos === 'top')) {
+    ctx.save();
+    if (pos === 'top') {
+      const g = ctx.createLinearGradient(0, 0, 0, size * 0.44);
+      g.addColorStop(0, 'rgba(0,0,0,0.62)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size * 0.44);
+    } else {
+      const g = ctx.createLinearGradient(0, size * 0.54, 0, size);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(1, 'rgba(0,0,0,0.62)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, size * 0.54, size, size * 0.46);
+    }
+    ctx.restore();
   }
 
   // 自定义角标徽章（静态徽章或动态双态 Toggle 徽章）
@@ -1415,17 +1585,32 @@ async function paintKey(spec, size, keyPos) {
     ctx.font = `${fittedFs}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
     const lh = fittedFs * 1.15;
+    // 满格时文字压在图片上：除渐变暗角外再加一圈细描边，
+    // 保证"白字压白图标"这类极端组合（居中式标签常见）也能读清。
+    const drawLabelLine = (text, x, y) => {
+      if (labelOnImage) {
+        ctx.save();
+        ctx.lineWidth = Math.max(2, fittedFs * 0.18);
+        ctx.strokeStyle = 'rgba(0,0,0,0.72)';
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 2;
+        ctx.strokeText(text, x, y);
+        ctx.restore();
+      }
+      ctx.fillText(text, x, y);
+    };
     if (pos === 'top') {
       ctx.textBaseline = 'top';
-      lines.forEach((ln, i) => ctx.fillText(ln, size / 2, size * 0.08 + i * lh));
+      lines.forEach((ln, i) => drawLabelLine(ln, size / 2, size * 0.08 + i * lh));
     } else if (pos === 'center') {
       ctx.textBaseline = 'middle';
       const total = lines.length * lh;
-      lines.forEach((ln, i) => ctx.fillText(ln, size / 2, (size - total) / 2 + lh / 2 + i * lh));
+      lines.forEach((ln, i) => drawLabelLine(ln, size / 2, (size - total) / 2 + lh / 2 + i * lh));
     } else {
-      // 底部基线边距提升至 size * 0.13，硬件物理透镜透光黄金区，彻底消灭底部裁切
+      // 底部基线边距 v0.11.1 由 13% 收到 11%：满格图标之后文字略微上移，
+      // 避开物理亚克力键帽的压边（README 记录的 13% 黄金区在满格时会被图标衬得更贴边）
       ctx.textBaseline = 'bottom';
-      lines.forEach((ln, i) => ctx.fillText(ln, size / 2, size - size * 0.13 - (lines.length - 1 - i) * lh));
+      lines.forEach((ln, i) => drawLabelLine(ln, size / 2, size - size * 0.11 - (lines.length - 1 - i) * lh));
     }
   }
   return c;
@@ -1475,22 +1660,31 @@ function ensureOffscreenWorker() {
   }
   try {
     const code = `
-      const pool = new Map();
-      function getCanvas(s) {
-        let e = pool.get(s);
-        if (!e) {
-          const c = new OffscreenCanvas(s, s);
-          e = { c, ctx: c.getContext('2d', { alpha: false }) };
-          pool.set(s, e);
+      // v0.11.1：旧实现按尺寸复用同一张 OffscreenCanvas，而 self.onmessage 是 async、
+      // 每帧都会 await convertToBlob()。一页 18 帧并发时，后一帧的 drawImage 会覆盖
+      // 前一帧还在编码中的画布，产生"两格显示同一张图 / 串帧"的现象。
+      // 改成按需占用 / 归还的空闲画布池，任何两帧都不会共享同一张画布。
+      const pools = new Map();
+      function acquire(s) {
+        let arr = pools.get(s);
+        if (!arr) { arr = []; pools.set(s, arr); }
+        for (const item of arr) {
+          if (!item.busy) { item.busy = true; return item; }
         }
-        return e;
+        const c = new OffscreenCanvas(s, s);
+        const item = { c, ctx: c.getContext('2d', { alpha: false }), busy: true };
+        arr.push(item);
+        return item;
       }
       self.onmessage = async (ev) => {
         const m = ev.data;
         if (!m || !m.id) return;
+        let slot = null;
         try {
           const s = m.size || 96;
-          const { c, ctx } = getCanvas(s);
+          slot = acquire(s);
+          const c = slot.c;
+          const ctx = slot.ctx;
           ctx.save();
           ctx.fillStyle = '#000';
           ctx.fillRect(0, 0, s, s);
@@ -1520,6 +1714,8 @@ function ensureOffscreenWorker() {
           self.postMessage({ id: m.id, ok: true, data: b64 });
         } catch (err) {
           self.postMessage({ id: m.id, ok: false });
+        } finally {
+          if (slot) slot.busy = false;
         }
       };
     `;
@@ -2905,8 +3101,85 @@ async function pushStrip(row, force = false, preStats = null) {
   await api.deviceDraw({ row, col: 5, data: b64, force: !!force });
 }
 
+// ---------------------------------------------------------------------------
+// v0.11.1 整页推流引擎
+// 设备侧 batchDraw 会返回 { drawn, skipped, failed, missing }。旧实现直接丢弃了返回值，
+// 于是"被抢占/写失败"的按键既不重画也不报错，用户看到的就是切页后一半新一半旧的画面。
+// 这里统一做：整页批次带上 pageEpoch + full 标记 → 校验 missing → 补发 2 次（40ms / 120ms）。
+// ---------------------------------------------------------------------------
+let devicePageEpoch = 0;
+
+/** 页面世代：切页时 +1，用于丢弃切页途中才返回的旧页遥测帧。 */
+function bumpDevicePageEpoch() {
+  devicePageEpoch += 1;
+  return devicePageEpoch;
+}
+
+const posKeyOf = (it) => `${it.row},${it.col}`;
+
+async function flushPageFrames(items, epoch, myGen, tag) {
+  if (!items || !items.length) return null;
+  // 面板休眠时整批都会被拒绝，没必要走补发流程
+  if (isDeviceAsleep) return null;
+  const byPos = new Map(items.map((it) => [posKeyOf(it), it]));
+  let pending = items.slice();
+  let last = null;
+
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    if (myGen !== repaintGen) return last;
+    if (attempt > 0) {
+      if (!pending.length) break;
+      await new Promise((r) => setTimeout(r, attempt === 1 ? 40 : 120));
+      if (myGen !== repaintGen) return last;
+    }
+    if (!api.deviceBatchDraw) {
+      for (const item of pending) {
+        if (myGen !== repaintGen) return last;
+        await api.deviceDraw(item).catch(() => {});
+      }
+      return last;
+    }
+    last = await api.deviceBatchDraw({ items: pending, full: true, epoch }).catch(() => null);
+    if (myGen !== repaintGen) return last;
+    if (isDeviceAsleep) break;
+    if (!last || last.ok === false) {
+      // 整批失败（HOST_NOT_READY / TIMEOUT）：保持 pending 不变，下一轮重试
+      continue;
+    }
+    const missing = Array.isArray(last.missing) ? last.missing : [];
+    if (!missing.length) break;
+    pending = missing
+      .map((m) => {
+        const src = byPos.get(`${m.row},${m.col}`);
+        return src ? Object.assign({}, src, { force: true }) : null;
+      })
+      .filter(Boolean);
+  }
+  if (pending.length) {
+    console.warn(`[repaint] ${tag}: ${pending.length} 个按键补发 2 次后仍未确认`, pending.map(posKeyOf));
+  }
+  return last;
+}
+
+/** 推送当前页配置为低功耗动态帧率 (8~12 FPS) 的按键动效。 */
+function schedulePageAnims(myGen, rotMode) {
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < KEY_COLS; col++) {
+      const sp = pageButtons()[`${row},${col}`];
+      if (sp && Number(sp.animFps) >= 4) {
+        paintKey(sp, 96, { row, col }).then((cnv) => {
+          if (cnv && myGen === repaintGen) {
+            scheduleKeyLowPowerAnim(row, col, sp, cnv, rotMode).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
 async function repaintAllKeys(force = false, gen = null) {
-  if (!cfg || DEMO) return;
+  // 休眠中用非强制重绘没有意义（主进程会整批拒绝）；force 仍放行，因为唤醒/重连后需要它。
+  if (!cfg || DEMO || (isDeviceAsleep && !force)) return;
   const myGen = gen !== null ? gen : ++repaintGen;
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const blank = { color: '#20262e', label: '' };
@@ -2928,34 +3201,27 @@ async function repaintAllKeys(force = false, gen = null) {
   if (api.deviceClearAnims) {
     await api.deviceClearAnims().catch(() => {});
   }
-  if (api.deviceBatchDraw) {
-    await api.deviceBatchDraw(items);
-  } else {
-    for (const item of items) {
-      if (myGen !== repaintGen) return;
-      await api.deviceDraw(item);
-    }
-  }
-  // 唤醒当前激活页上配置了低功耗动态帧率 (8~12 FPS) 的按键动效
-  for (let row = 0; row < ROWS; row++) {
-    for (let col = 0; col < KEY_COLS; col++) {
-      const sp = pageButtons()[`${row},${col}`];
-      if (sp && Number(sp.animFps) >= 4) {
-        paintKey(sp, 96, { row, col }).then((cnv) => {
-          if (cnv && myGen === repaintGen) {
-            scheduleKeyLowPowerAnim(row, col, sp, cnv, rotMode).catch(() => {});
-          }
-        }).catch(() => {});
-      }
-    }
-  }
+  if (myGen !== repaintGen) return;
+  await flushPageFrames(items, devicePageEpoch, myGen, 'repaintAllKeys');
+  if (myGen !== repaintGen) return;
+  schedulePageAnims(myGen, rotMode);
 }
 
 async function repaintAll(force = false) {
-  if (!cfg || DEMO) return;
+  // 休眠中用非强制重绘没有意义（主进程会整批拒绝）；force 仍放行，因为唤醒/重连后需要它。
+  if (!cfg || DEMO || (isDeviceAsleep && !force)) return;
   const myGen = ++repaintGen;
+  const epoch = devicePageEpoch;
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const blank = { color: '#20262e', label: '' };
+
+  if (force) {
+    // 整页强制重绘 = 屏幕内容将要被整体替换（切页 / 切模式 / 重连 / 旋转）。
+    // 必须先把设备侧残留的旧页动效和渲染侧跨页脏矩形缓存放倒，否则它们会把旧画面盖回来。
+    dirtyRectHashStore.clear();
+    if (api.deviceClearAnims) await api.deviceClearAnims().catch(() => {});
+    if (myGen !== repaintGen) return;
+  }
 
   let sharedStats = lastSysStats;
   const strips = pageStrips();
@@ -2993,16 +3259,18 @@ async function repaintAll(force = false) {
       })
     );
   }
-  const items = await Promise.all(jobs);
-  if (myGen !== repaintGen) return;
-  if (api.deviceBatchDraw) {
-    await api.deviceBatchDraw(items);
-  } else {
-    for (const item of items) {
-      if (myGen !== repaintGen) return;
-      await api.deviceDraw(item);
-    }
+  // 单帧渲染/编码抛错不应该让整页一帧都不发（旧实现的 Promise.all 就死在这里）
+  const items = [];
+  const results = await Promise.all(jobs.map((p) => p.then((v) => v).catch((e) => ({ error: e }))));
+  for (const r of results) {
+    if (r && !r.error) items.push(r);
+    else console.warn('[repaint] 单帧渲染失败，已跳过', r && r.error && r.error.message);
   }
+  if (myGen !== repaintGen) return;
+  if (!items.length) return;
+  await flushPageFrames(items, epoch, myGen, 'repaintAll');
+  if (myGen !== repaintGen) return;
+  schedulePageAnims(myGen, rotMode);
 }
 
 /** Pressing an unconfigured key: flash "未配置" on that key of the device. */
@@ -3547,9 +3815,12 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
   }
 
   const cleanLabelForClass = String(spec.label || '').trim();
+  // 与 paintKey 的满格判定保持一致：文字标签不再取消满格资格
   const isFullBleedCell = Boolean(
-    (spec.textIconConfig && spec.textIconConfig.fullBleed && !cleanLabelForClass && (Number(spec.iconScale) || 100) >= 96) ||
-    (!cleanLabelForClass && Number(spec.iconScale) >= 99)
+    (spec.icon || spec.textIconConfig) && (
+      (Number(spec.iconScale) || 100) >= 99 ||
+      (spec.textIconConfig && spec.textIconConfig.fullBleed && (Number(spec.iconScale) || 100) >= 96)
+    )
   );
   cell.classList.toggle('no-label', !cleanLabelForClass);
   cell.classList.toggle('full-bleed-cell', isFullBleedCell);
@@ -7341,6 +7612,8 @@ function renderInspector() {
       if (!spec.icon) return;
       openCropper(spec.icon, async (cropped, isFullBleed) => {
         spec.icon = cropped;
+        // 用户手动换图 = 放弃工坊卡片，否则 paintKey 会继续按 textIconConfig 现场重绘
+        delete spec.textIconConfig;
         if (isFullBleed) {
           spec.iconScale = 100;
           if (!String(spec.label || '').trim()) spec.label = '';
@@ -8365,6 +8638,8 @@ function renderInspector() {
     if (isImg) {
       openCropper(icon, async (cropped, isFullBleed) => {
         spec.icon = cropped;
+        // 用户手动换图 = 放弃工坊卡片，否则 paintKey 会继续按 textIconConfig 现场重绘
+        delete spec.textIconConfig;
         if (isFullBleed) {
           spec.iconScale = 100;
         }
@@ -10233,12 +10508,12 @@ function newPageId() {
 }
 
 /** Save + redraw tabs / grid / inspector / device in one go. */
-async function persistAll() {
+async function persistAll(forceRepaint = false) {
   if (!DEMO) await saveConfig();
   renderPageTabs();
   buildGrid();
   renderInspector();
-  if (!DEMO) await repaintAll();
+  if (!DEMO) await repaintAll(!!forceRepaint);
 }
 
 async function goToPage(id) {
@@ -10250,7 +10525,9 @@ async function goToPage(id) {
   if (!DEMO && typeof api !== 'undefined' && api.pageManualSwitch) {
     api.pageManualSwitch(id).catch(() => {});
   }
-  await persistAll();
+  // 切页 = 整屏内容整体替换：换代 + 强制整页重绘（清旧页动效 / 清跨页脏矩形 / 校验补发）
+  bumpDevicePageEpoch();
+  await persistAll(true);
   triggerGridTransition();
 }
 
@@ -10813,8 +11090,15 @@ function renderTextIconCanvas(rawCfg, size = 192) {
   const pad = fullBleed ? 0 : Math.round(10 * s);
   const boxW = size - pad * 2;
   const boxH = size - pad * 2;
-  const rawRad = Number(rawCfg && rawCfg.radius !== undefined ? rawCfg.radius : (fullBleed ? 22 : 36));
+  // v0.11.1 满格出血：圆角强制归零 + 关闭贴边装饰描边。
+  // 旧版 radius 默认 22（192 空间 ≈ 96 空间的 11px），四角是透明的，会透出按键底色
+  // 形成"四个角"；而 glass / split / terminal / aurora 在 pad + 2*s（≈1px）处画的
+  // 那圈 accent 描边，就是用户看到的那道"边线"。
+  const rawRad = fullBleed
+    ? 0
+    : Number(rawCfg && rawCfg.radius !== undefined ? rawCfg.radius : 36);
   const radius = Math.round(Math.max(0, Math.min(80, rawRad)) * s);
+  const edgeFrame = !fullBleed;
 
   ctx.clearRect(0, 0, size, size);
 
@@ -10881,12 +11165,14 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.fillRect(pad, pad, boxW, boxH);
     ctx.restore();
 
-    ctx.save();
-    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(0, radius - 2));
-    ctx.strokeStyle = accent + "88";
-    ctx.lineWidth = 2.5 * s;
-    ctx.stroke();
-    ctx.restore();
+    if (edgeFrame) {
+      ctx.save();
+      drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(0, radius - 2));
+      ctx.strokeStyle = accent + "88";
+      ctx.lineWidth = 2.5 * s;
+      ctx.stroke();
+      ctx.restore();
+    }
   } else if (style === "neon") {
     ctx.save();
     drawRoundedBox(pad + 4 * s, pad + 4 * s, boxW - 8 * s, boxH - 8 * s, Math.max(2, radius - 4));
@@ -11004,12 +11290,14 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     drawSpacedText(ctx, botStr, size / 2 + offsetX, pad + topH + (boxH - topH) / 2 + offsetY, letterSpacing);
     ctx.restore();
 
-    ctx.save();
-    drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, radius);
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2.5 * s;
-    ctx.stroke();
-    ctx.restore();
+    if (edgeFrame) {
+      ctx.save();
+      drawRoundedBox(pad + 1.5 * s, pad + 1.5 * s, boxW - 3 * s, boxH - 3 * s, radius);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2.5 * s;
+      ctx.stroke();
+      ctx.restore();
+    }
     drawBadgeOverlay();
     return c;
   } else if (style === "shortcut_cap") {
@@ -11107,12 +11395,14 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     ctx.fillRect(pad, pad, boxW, boxH);
     ctx.restore();
 
-    ctx.save();
-    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(2, radius - 2));
-    ctx.strokeStyle = "rgba(255,255,255,0.28)";
-    ctx.lineWidth = 2 * s;
-    ctx.stroke();
-    ctx.restore();
+    if (edgeFrame) {
+      ctx.save();
+      drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.max(2, radius - 2));
+      ctx.strokeStyle = "rgba(255,255,255,0.28)";
+      ctx.lineWidth = 2 * s;
+      ctx.stroke();
+      ctx.restore();
+    }
   } else if (style === "stamp") {
     ctx.save();
     ctx.translate(size / 2, size / 2);
@@ -11157,10 +11447,12 @@ function renderTextIconCanvas(rawCfg, size = 192) {
     return c;
   } else if (style === "terminal") {
     ctx.save();
-    drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.min(radius, 28 * s));
-    ctx.strokeStyle = accent + "77";
-    ctx.lineWidth = 2.2 * s;
-    ctx.stroke();
+    if (edgeFrame) {
+      drawRoundedBox(pad + 2 * s, pad + 2 * s, boxW - 4 * s, boxH - 4 * s, Math.min(radius, 28 * s));
+      ctx.strokeStyle = accent + "77";
+      ctx.lineWidth = 2.2 * s;
+      ctx.stroke();
+    }
 
     const dotY = pad + 18 * s;
     const dots = [["#ff5f56", pad + 20 * s], ["#ffbd2e", pad + 34 * s], ["#27c93f", pad + 48 * s]];
@@ -11615,6 +11907,7 @@ function openTextIconStudio(initialSpec, onApply) {
       wrap.querySelector("#tisCardScale").value = 100;
       wrap.querySelector("#tisCardScaleVal").textContent = "100%";
     }
+    syncFullBleedUI();
     updatePreview();
   };
   wrap.querySelector("#tisBgTransparent").onchange = (e) => { state.bgTransparent = e.target.checked; updatePreview(); };
@@ -11636,6 +11929,21 @@ function openTextIconStudio(initialSpec, onApply) {
   bindRange("#tisRadius", "#tisRadiusVal", "radius", "px");
   bindRange("#tisGradAngle", "#tisGradAngleVal", "gradAngle", "°");
   bindRange("#tisSpacing", "#tisSpacingVal", "letterSpacing", "px");
+
+  // 满格出血时圆角被强制归零（见 renderTextIconCanvas），滑块直接锁死，
+  // 避免"拉了没反应"的困惑。
+  const syncFullBleedUI = () => {
+    const rEl = wrap.querySelector("#tisRadius");
+    const rVal = wrap.querySelector("#tisRadiusVal");
+    const locked = state.fullBleed !== false;
+    if (rEl) {
+      rEl.disabled = locked;
+      rEl.style.opacity = locked ? "0.4" : "";
+      rEl.title = locked ? "满格全出血模式下四角必须是直角，否则会透出按键底色" : "";
+    }
+    if (rVal) rVal.textContent = locked ? "0px · 满格" : `${state.radius}px`;
+  };
+  syncFullBleedUI();
 
   wrap.querySelector("#tisSaveToLibBtn").onclick = async () => {
     const outCnv = renderTextIconCanvas(state, 192);
@@ -14002,10 +14310,10 @@ function bindDevice() {
     await api.setLogin(e.target.checked);
   });
 
-  $('reconnect').onclick = async () => { await api.deviceReconnect(); await repaintAll(true); };
+  $('reconnect').onclick = async () => { await api.deviceReconnect(); isDeviceAsleep = false; await repaintAll(true); };
   $('repaint').onclick = () => repaintAll(true);
   $('sleep').onclick = () => api.deviceSleep();
-  $('wake').onclick = async () => { await api.deviceWake(); await repaintAll(true); };
+  $('wake').onclick = async () => { await api.deviceWake(); isDeviceAsleep = false; await repaintAll(true); };
 
   api.on('device:sleep-state', (payload) => {
     isDeviceAsleep = !!(payload && payload.asleep);
@@ -14019,6 +14327,7 @@ function bindDevice() {
     lastTelemetry = Object.assign({}, lastTelemetry, data);
     if (data.media_now && !data.media) lastTelemetry.media = data.media_now;
     if (!cfg || isDeviceAsleep) return;
+    const epochAtStart = devicePageEpoch;
     const buttons = pageButtons();
     const strips = effectiveStrips();
     const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
@@ -14050,7 +14359,10 @@ function bindDevice() {
     }
     if (isWindowVisible) refreshGrid();
     if (!DEMO && batchJobs.length > 0 && api.deviceBatchDraw) {
-      Promise.all(batchJobs).then((items) => api.deviceBatchDraw(items)).catch(() => {});
+      Promise.all(batchJobs).then((items) => {
+        if (epochAtStart !== devicePageEpoch) return null; // 期间已切页，丢弃旧页帧
+        return api.deviceBatchDraw({ items, full: false, epoch: epochAtStart });
+      }).catch(() => {});
     }
   };
   api.on('telemetry:update', handleRealtimeTelemetryUpdate);
@@ -14125,6 +14437,7 @@ function bindDevice() {
   });
 
   api.on('profile:changed', async () => {
+    bumpDevicePageEpoch();
     cfg = await api.configLoad();
     syncRuntimeStoreToConfig(cfg);
     selected = null;
@@ -14137,6 +14450,7 @@ function bindDevice() {
   });
 
   api.on('page:changed', async (payload) => {
+    bumpDevicePageEpoch();
     cfg = await api.configLoad();
     if (payload && payload.runtimeStates && payload.pageId) {
       for (const [posKey, st] of Object.entries(payload.runtimeStates)) {
@@ -14154,6 +14468,7 @@ function bindDevice() {
   });
 
   api.on('config:external', async () => {
+    bumpDevicePageEpoch();
     cfg = await api.configLoad();
     syncRuntimeStoreToConfig(cfg);
     selected = null;
@@ -14347,6 +14662,7 @@ async function boot() {
     if (!page) return;
     const strips = pageStrips();
     const buttons = pageButtons();
+    const epochAtStart = devicePageEpoch;
     const neededTypes = new Set();
     const neededPluginIds = new Set();
     const dueWidgets = [];
@@ -14466,7 +14782,11 @@ async function boot() {
 
       if (batchJobs.length > 0 && api.deviceBatchDraw) {
         const items = await Promise.all(batchJobs);
-        await api.deviceBatchDraw(items);
+        // 若在 systemStats / 渲染期间已经切页，这批帧属于上一页，直接丢弃，
+        // 否则它们会把旧页的 widget 画面糊到新页的格子上（"一半新的、一半上一页的"）。
+        if (epochAtStart === devicePageEpoch) {
+          await api.deviceBatchDraw({ items, full: false, epoch: epochAtStart }).catch(() => {});
+        }
       }
     } catch (_) {
     } finally {

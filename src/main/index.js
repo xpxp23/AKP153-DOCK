@@ -238,7 +238,7 @@ function spawnHost() {
   tryNext();
 }
 
-function rpc(cmd, args) {
+function rpc(cmd, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     if (!host || !hostReady) return reject(new Error('HOST_NOT_READY'));
     const id = ++rpcId;
@@ -246,7 +246,7 @@ function rpc(cmd, args) {
     host.stdin.write(JSON.stringify(Object.assign({ id, cmd }, args || {})) + '\n');
     setTimeout(() => {
       if (pending.has(id)) { pending.delete(id); reject(new Error('TIMEOUT')); }
-    }, 8000);
+    }, Math.max(1000, Number(timeoutMs) || 8000));
   });
 }
 
@@ -261,8 +261,8 @@ function notify(msg) {
   broadcast('toast', { message: msg });
 }
 
-async function safeRpc(cmd, args) {
-  try { return await rpc(cmd, args); } catch (e) { return { ok: false, error: e.message }; }
+async function safeRpc(cmd, args, timeoutMs) {
+  try { return await rpc(cmd, args, timeoutMs); } catch (e) { return { ok: false, error: e.message }; }
 }
 
 function repaintSoon(force = false) {
@@ -1631,15 +1631,27 @@ ipcMain.handle('device:draw', async (e, a) => {
   return r;
 });
 
-ipcMain.handle('device:batchDraw', async (e, items) => {
-  if (deviceAsleep) return { ok: true, drawn: 0, skipped: (items && items.length) || 0 };
-  const r = await safeRpc('batchDraw', { items });
+ipcMain.handle('device:batchDraw', async (e, a) => {
+  const items = Array.isArray(a) ? a : ((a && a.items) || []);
+  const full = !Array.isArray(a) && !!(a && a.full);
+  const epoch = Array.isArray(a) ? 0 : (Number(a && a.epoch) || 0);
+  if (deviceAsleep) {
+    return { ok: true, drawn: 0, skipped: items.length, failed: [], missing: items.map((it) => ({ row: it.row, col: it.col })), aborted: true };
+  }
+  // 整页重绘最多 18 帧、最多 400+ 次同步 USB 写，给足超时余量，避免渲染侧误判失败后重复补发
+  const r = await safeRpc('batchDraw', { items, full, epoch }, full ? 20000 : 12000);
   if (r && r.ok === false) {
     drawStats.fail++;
     drawStats.lastError = r.error;
+    log(`batchDraw FAILED (${items.length} items, full=${full}): ${r.error}`);
   } else if (r) {
     drawStats.ok += Number(r.drawn) || 0;
     drawStats.skipped += Number(r.skipped) || 0;
+    if (Array.isArray(r.failed) && r.failed.length) {
+      drawStats.fail += r.failed.length;
+      drawStats.lastError = r.failed[0].error;
+      log(`batchDraw partial failure: ${JSON.stringify(r.failed.slice(0, 4))}`);
+    }
   }
   return r;
 });

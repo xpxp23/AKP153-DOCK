@@ -1,6 +1,6 @@
 {
   "name": "akp153-dock",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "private": true,
   "description": "黑爵 AJAZZ AKP153 液晶控制台 - 独立控制台（拖放式配置）",
   "main": "src/main/index.js",
@@ -18,6 +18,8 @@
     "shot": "electron tools/screenshot-ui.js",
     "cfg": "node tools/config-cli.js",
     "test:config": "node tools/test-config.js",
+    "test:refresh": "node tools/test-page-refresh.js",
+    "keys": "electron tools/render-keys.js",
     "test:sleep": "node tools/test-sleep.js",
     "build:portable": "node tools/build-portable.js",
     "release": "node tools/publish-release.js"

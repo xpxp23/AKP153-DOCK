@@ -455,6 +455,23 @@ const ICON_CATEGORIES = [
 ];
 
 /**
+ * 给只带 viewBox 的 SVG 补出显式 width/height。
+ *
+ * 仅有 viewBox、没有 width/height 的 SVG 作为 <img> 时没有固有像素尺寸，
+ * Chromium 会退化成 300×150 的默认对象尺寸（内容按 viewBox 比例居中缩放）。
+ * 这会让 paintKey 里的 contain 数学按 2:1 去算，内置 24×24 矢量图标实际只画到
+ * 键面的 ~30%，四周留一大片底色 —— 这正是"图标既没充满、又像缩了一圈"的元凶之一。
+ */
+function withIntrinsicSize(rawSvg) {
+  if (typeof rawSvg !== 'string' || !/<svg[\s>]/i.test(rawSvg)) return rawSvg;
+  if (/\swidth\s*=/.test(rawSvg) && /\sheight\s*=/.test(rawSvg)) return rawSvg;
+  const vb = rawSvg.match(/viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([-\d.]+)[\s,]+([-\d.]+)\s*["']/i);
+  const w = vb ? Math.max(1, Math.round(parseFloat(vb[1]))) : 24;
+  const h = vb ? Math.max(1, Math.round(parseFloat(vb[2]))) : 24;
+  return rawSvg.replace(/<svg/i, `<svg width="${w}" height="${h}"`);
+}
+
+/**
  * 将 SVG 包装为可以直接赋予 img.src 或持久化到 spec.icon 的 Data URL
  * @param {string} rawSvg 原始 SVG 字符串
  * @param {string} color 默认着色，若为空默认使用 #ffffff
@@ -464,11 +481,13 @@ function svgToDataUrl(rawSvg, color = '#ffffff') {
   if (!colored.includes('xmlns=')) {
     colored = colored.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
   }
+  // 先补固有尺寸，再替换 currentColor（顺序无关，但补尺寸必须发生在最终序列化之前）
+  colored = withIntrinsicSize(colored);
   // 如果 SVG 内部有 currentColor，替换为具体颜色
   colored = colored.replace(/currentColor/g, color);
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(colored);
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { BUILTIN_ICONS, ICON_CATEGORIES, svgToDataUrl };
+  module.exports = { BUILTIN_ICONS, ICON_CATEGORIES, svgToDataUrl, withIntrinsicSize };
 }

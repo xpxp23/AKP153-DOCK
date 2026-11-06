@@ -5016,6 +5016,28 @@ body[data-theme="dark"] .tis-foot {
   border-radius: 10.5px;
 }
 
+/* v0.11.1：满格按键不再排斥文字标签 —— 文字直接叠在铺满的图标之上，
+ * 底部压一层渐变暗角，与真机 paintKey 的渲染规则保持一致。 */
+.cell.full-bleed-cell .cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 4px 3px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.cell.full-bleed-cell.pos-top .cap {
+  bottom: auto;
+  top: 0;
+  padding: 3px 4px 10px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+}
+
 /* 文字图标工坊 2.0 升级布局 */
 .text-icon-modal-box {
   width: 780px !important;
