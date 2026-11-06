@@ -1918,10 +1918,78 @@ function toSafeDataUrl(nat, maxDim = 512) {
   return nat.toDataURL();
 }
 
+/** 读取 PNG data URL 的像素边长；非 PNG / 解析失败返回 0。 */
+function iconPixelSize(dataUrl) {
+  if (typeof dataUrl !== 'string') return 0;
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return 0;
+  try {
+    const buf = Buffer.from(dataUrl.slice(comma + 1), 'base64');
+    if (buf.length < 24) return 0;
+    if (buf.slice(0, 8).toString('hex') !== '89504e470d0a1a0a') return 0;
+    return Math.max(buf.readUInt32BE(16), buf.readUInt32BE(20));
+  } catch (_) {
+    return 0;
+  }
+}
+
+/** 两个候选图标里挑像素尺寸更大的那个（SVG 视为无限清晰，优先保留）。 */
+function pickBiggerIcon(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  if (/^data:image\/svg\+xml/i.test(a)) return a;
+  if (/^data:image\/svg\+xml/i.test(b)) return b;
+  return iconPixelSize(b) > iconPixelSize(a) ? b : a;
+}
+
+/**
+ * v0.11.2：走原生 256×256 提取（PrivateExtractIcons → SHIL_JUMBO → ExtractIconEx）。
+ * 96×96 的液晶键面此前一直吃 32×32 的源图，放大 3 倍必然糊。
+ */
+async function nativeHighResIcon(filePath, iconIndex = 0) {
+  if (process.platform !== 'win32') return null;
+  if (!filePath || typeof filePath !== 'string') return null;
+  if (!NativeInput || typeof NativeInput.extractIcon !== 'function') return null;
+  try {
+    if (!fs.existsSync(filePath)) return null;
+  } catch (_) {
+    return null;
+  }
+  try {
+    const url = await NativeInput.extractIcon(filePath, iconIndex);
+    return url || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fileIconDataUrl(filePath) {
+  // app.getFileIcon 对不存在的路径不会报错，而是返回一个 32×32 的"未知文件"通用图标 ——
+  // 一旦把它当成有效结果，就会把原本好好的 SVG 图标覆盖成灰方块。必须先确认路径真实存在。
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  try {
+    const img = await app.getFileIcon(filePath, { size: 'large' });
+    if (img && !img.isEmpty()) return img.toDataURL();
+  } catch (_) {}
+  return null;
+}
+
+function safeStat(p) {
+  try {
+    return fs.statSync(p);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function extractIcon(targetPath) {
   if (!targetPath || typeof targetPath !== 'string') return null;
   const p = path.resolve(targetPath);
   const ext = path.extname(p).toLowerCase();
+
+  // 只处理真实存在的本地路径。快捷方式动作（"Alt+Z"）、网址（"www.baidu.com"）、
+  // 设备名（"耳机 (Realtek ...)"）这类 target 都不是文件，交给它们只会拿到通用灰图标。
+  if (!fs.existsSync(p)) return null;
 
   if (ext === '.svg' && fs.existsSync(p)) {
     try {
@@ -1938,37 +2006,33 @@ async function extractIcon(targetPath) {
     } catch (_) {}
   }
 
+  // 候选池：所有分支都往里塞，最后统一挑像素尺寸最大的那张。
+  // v0.11.2 之前这里是"先命中先返回"，于是 32×32 的老路径总是抢先命中，
+  // 后面即便能拿到 256×256 也永远轮不到 —— 这是图标一直糊的结构性原因。
+  const candidates = [];
+
   if (ext === '.lnk') {
     try {
       const details = shell.readShortcutLink(p);
+      candidates.push(await nativeHighResIcon(p, 0));
       if (details.icon) {
         const iconPath = expandEnv(details.icon);
         if (fs.existsSync(iconPath)) {
           const iconExt = path.extname(iconPath).toLowerCase();
           if (['.ico', '.png', '.jpg', '.jpeg', '.webp'].includes(iconExt)) {
             try {
-              const nat = nativeImage.createFromPath(iconPath);
-              const url = toSafeDataUrl(nat, 512);
-              if (url) return url;
+              const url = toSafeDataUrl(nativeImage.createFromPath(iconPath), 512);
+              if (url) candidates.push(url);
             } catch (_) {}
           }
-          if (iconExt === '.dll' || details.iconIndex) {
-            const resIcon = await extractIconFromResource(iconPath, details.iconIndex || 0);
-            if (resIcon) return resIcon;
-          }
-          try {
-            const img = await app.getFileIcon(iconPath, { size: 'large' });
-            if (img && !img.isEmpty()) return img.toDataURL();
-          } catch (_) {}
+          candidates.push(await nativeHighResIcon(iconPath, details.iconIndex || 0));
         }
       }
       if (details.target) {
         const tgt = expandEnv(details.target);
         if (fs.existsSync(tgt)) {
-          try {
-            const img = await app.getFileIcon(tgt, { size: 'large' });
-            if (img && !img.isEmpty()) return img.toDataURL();
-          } catch (_) {}
+          candidates.push(await nativeHighResIcon(tgt, 0));
+          candidates.push(await fileIconDataUrl(tgt));
         }
       }
     } catch (e) {
@@ -1976,74 +2040,145 @@ async function extractIcon(targetPath) {
     }
   }
 
-  try {
-    const st = fs.statSync(p);
-    if (st.isDirectory()) {
-      const iniPath = path.join(p, 'desktop.ini');
-      if (fs.existsSync(iniPath)) {
-        try {
-          const rawBuf = fs.readFileSync(iniPath);
-          const content = decodeIni(rawBuf);
-          let iconPath = '';
-          let iconIndex = 0;
+  const st = safeStat(p);
+  if (st && st.isDirectory()) {
+    const iniPath = path.join(p, 'desktop.ini');
+    if (fs.existsSync(iniPath)) {
+      try {
+        const rawBuf = fs.readFileSync(iniPath);
+        const content = decodeIni(rawBuf);
+        let iconPath = '';
+        let iconIndex = 0;
 
-          const mRes = content.match(/IconResource\s*=\s*([^\r\n]+)/i);
-          if (mRes) {
-            const line = mRes[1].trim();
-            const commaIdx = line.lastIndexOf(',');
-            if (commaIdx > 0) {
-              iconPath = line.slice(0, commaIdx).trim().replace(/^["']|["']$/g, '');
-              iconIndex = parseInt(line.slice(commaIdx + 1).trim(), 10) || 0;
-            } else {
-              iconPath = line.replace(/^["']|["']$/g, '');
-            }
+        const mRes = content.match(/IconResource\s*=\s*([^\r\n]+)/i);
+        if (mRes) {
+          const line = mRes[1].trim();
+          const commaIdx = line.lastIndexOf(',');
+          if (commaIdx > 0) {
+            iconPath = line.slice(0, commaIdx).trim().replace(/^["']|["']$/g, '');
+            iconIndex = parseInt(line.slice(commaIdx + 1).trim(), 10) || 0;
           } else {
-            const mFile = content.match(/IconFile\s*=\s*([^\r\n]+)/i);
-            if (mFile) {
-              iconPath = mFile[1].trim().replace(/^["']|["']$/g, '');
-              const mIdx = content.match(/IconIndex\s*=\s*([-\d]+)/i);
-              if (mIdx) iconIndex = parseInt(mIdx[1], 10) || 0;
-            }
+            iconPath = line.replace(/^["']|["']$/g, '');
           }
+        } else {
+          const mFile = content.match(/IconFile\s*=\s*([^\r\n]+)/i);
+          if (mFile) {
+            iconPath = mFile[1].trim().replace(/^["']|["']$/g, '');
+            const mIdx = content.match(/IconIndex\s*=\s*([-\d]+)/i);
+            if (mIdx) iconIndex = parseInt(mIdx[1], 10) || 0;
+          }
+        }
 
-          if (iconPath) {
-            iconPath = expandEnv(iconPath);
-            if (!path.isAbsolute(iconPath)) {
-              iconPath = path.resolve(p, iconPath);
-            }
-            if (fs.existsSync(iconPath)) {
-              const iconExt = path.extname(iconPath).toLowerCase();
-              if (['.ico', '.png', '.jpg', '.jpeg', '.webp'].includes(iconExt)) {
-                try {
-                  const nat = nativeImage.createFromPath(iconPath);
-                  const url = toSafeDataUrl(nat, 512);
-                  if (url) return url;
-                } catch (_) {}
-              }
-              if (iconExt === '.dll' || iconIndex !== 0) {
-                const resIcon = await extractIconFromResource(iconPath, iconIndex);
-                if (resIcon) return resIcon;
-              }
+        if (iconPath) {
+          iconPath = expandEnv(iconPath);
+          if (!path.isAbsolute(iconPath)) {
+            iconPath = path.resolve(p, iconPath);
+          }
+          if (fs.existsSync(iconPath)) {
+            const iconExt = path.extname(iconPath).toLowerCase();
+            if (['.ico', '.png', '.jpg', '.jpeg', '.webp'].includes(iconExt)) {
               try {
-                const img = await app.getFileIcon(iconPath, { size: 'large' });
-                if (img && !img.isEmpty()) return img.toDataURL();
+                const url = toSafeDataUrl(nativeImage.createFromPath(iconPath), 512);
+                if (url) candidates.push(url);
               } catch (_) {}
             }
+            candidates.push(await nativeHighResIcon(iconPath, iconIndex));
           }
-        } catch (e) {
-          log('desktop.ini parse failed for', p, e && e.message);
         }
+      } catch (e) {
+        log('desktop.ini parse failed for', p, e && e.message);
       }
     }
-  } catch (_) {}
+  }
 
-  try {
-    const img = await app.getFileIcon(p, { size: 'large' });
-    if (img && !img.isEmpty()) return img.toDataURL();
-  } catch (err) {}
+  candidates.push(await nativeHighResIcon(p, 0));
+  candidates.push(await fileIconDataUrl(p));
 
-  return null;
+  let best = null;
+  for (const c of candidates) best = pickBiggerIcon(best, c);
+  return best;
 }
+
+// ------------------------------------------------------- icon hi-res migration
+// 存量配置里的 exe/lnk 图标是 32×32 时代烤进去的，不重新提取就永远是糊的。
+// 这里做一次性静默迁移：只替换"新图确实比旧图大"的条目，其它字段一概不动。
+const ICON_MIGRATION_FLAG = 'iconMigratedV2';
+let iconMigrationRunning = false;
+
+function collectIconSlots(cfg) {
+  const slots = [];
+  const push = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    // 只处理"本来就有图标"的按键：原本没有图标的不该被迁移凭空加上一个
+    if (typeof obj.icon === 'string' && obj.icon && obj.target) slots.push(obj);
+    if (obj.action2 && typeof obj.action2 === 'object' && obj.action2.icon && obj.action2.target) {
+      slots.push(obj.action2);
+    }
+  };
+  for (const page of cfg.pages || []) {
+    for (const b of Object.values(page.buttons || {})) push(b);
+  }
+  for (const prof of cfg.profiles || []) {
+    for (const page of prof.pages || []) {
+      for (const b of Object.values(page.buttons || {})) push(b);
+    }
+  }
+  return slots;
+}
+
+async function migrateIconResolution(opts = {}) {
+  const force = !!opts.force;
+  const notifyUser = !!opts.notifyUser;
+  if (iconMigrationRunning) return { ok: false, error: 'BUSY' };
+  iconMigrationRunning = true;
+  try {
+    const cfg = config.load();
+    if (!force && cfg[ICON_MIGRATION_FLAG]) return { ok: true, skipped: true, upgraded: 0 };
+    const slots = collectIconSlots(cfg);
+    let upgraded = 0;
+    let scanned = 0;
+    for (const obj of slots) {
+      scanned += 1;
+      const before = iconPixelSize(obj.icon);
+      // 矢量图标本身就是无限清晰，绝不能用位图去覆盖它
+      if (/^data:image\/svg\+xml/i.test(String(obj.icon || ''))) continue;
+      // 已经够清晰（工坊卡 192 / 裁剪图 192 / favicon 96）就跳过，避免无谓重采样
+      if (before >= 128) continue;
+      let fresh = null;
+      try {
+        fresh = await extractIcon(obj.target);
+      } catch (_) {
+        fresh = null;
+      }
+      if (!fresh) continue;
+      const after = iconPixelSize(fresh);
+      // 只有确实拿到高清图才替换：容忍 32→48 这种"看似变大但依然糊"的噪声升级，
+      // 否则会把用户精心挑选的图标换成一个稍大一点的糊图。
+      if (after >= 128 && after > before) {
+        obj.icon = fresh;
+        upgraded += 1;
+      }
+    }
+    cfg[ICON_MIGRATION_FLAG] = true;
+    config.save(cfg);
+    log(`icon migration: scanned=${scanned} upgraded=${upgraded} force=${force}`);
+    if (upgraded) {
+      broadcast('config:external', { pageId: config.load().currentPage, iconMigrated: true });
+      repaintSoon(true);
+    }
+    if (notifyUser) {
+      notify(upgraded > 0 ? `图标高清化完成：${upgraded} 个按键已升级为 256×256` : '图标已是最清晰状态，无需升级');
+    }
+    return { ok: true, scanned, upgraded };
+  } catch (e) {
+    log('icon migration failed:', e && e.message);
+    return { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    iconMigrationRunning = false;
+  }
+}
+
+ipcMain.handle('icon:migrate', () => migrateIconResolution({ force: true, notifyUser: true }));
 
 ipcMain.handle('icon:extract', async (e, p) => {
   try {
@@ -2630,6 +2765,11 @@ if (!gotLock) {
     }
     syncWatchedProcsToNative();
     setTimeout(() => pollForegroundAndProcessState(null, true).catch(() => {}), 350);
+
+    // 一次性图标高清化迁移（v0.11.2）：延后启动，避免和窗口首帧、HID 初始化抢资源。
+    setTimeout(() => {
+      migrateIconResolution({}).catch(() => {});
+    }, 4000);
 
     if (telemetry && typeof telemetry.setPluginStateListener === 'function') {
       telemetry.setPluginStateListener((pluginId, pluginState) => {

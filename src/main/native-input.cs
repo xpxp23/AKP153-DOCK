@@ -161,6 +161,46 @@ namespace AkpInput
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         static extern int ExtractIconEx(string szFileName, int nIconIndex, IntPtr[] phiconLarge, IntPtr[] phiconSmall, int nIcons);
 
+        // v0.11.2 高清图标提取：ExtractIconEx 的上限只有 32×32（SM_CXICON），
+        // 96×96 的液晶键面把 32px 图放大 3 倍必然糊。下面两个 API 才能拿到 256×256。
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint PrivateExtractIcons(string szFileName, int nIconIndex, int cxIcon, int cyIcon,
+            IntPtr[] phicon, uint[] piconid, uint nIcons, uint nFlags);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes,
+            ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct SHFILEINFO
+        {
+            public IntPtr hIcon;
+            public int iIcon;
+            public uint dwAttributes;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
+        }
+
+        const uint SHGFI_SYSICONINDEX = 0x000004000;
+        const int SHIL_JUMBO = 0x4;
+        const int ILD_TRANSPARENT = 0x1;
+
+        [DllImport("shell32.dll")]
+        static extern int SHGetImageList(int iImageList, ref Guid riid, out IImageList ppv);
+
+        [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IImageList
+        {
+            [PreserveSig] int Add(IntPtr hbmImage, IntPtr hbmMask, ref int pi);
+            [PreserveSig] int ReplaceIcon(int i, IntPtr hicon, ref int pi);
+            [PreserveSig] int SetOverlayImage(int iImage, int iOverlay);
+            [PreserveSig] int Replace(int i, IntPtr hbmImage, IntPtr hbmMask);
+            [PreserveSig] int AddMasked(IntPtr hbmImage, int crMask, ref int pi);
+            [PreserveSig] int Draw(IntPtr pimldp);
+            [PreserveSig] int Remove(int i);
+            [PreserveSig] int GetIcon(int i, int flags, out IntPtr picon);
+        }
+
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool DestroyIcon(IntPtr hIcon);
 
@@ -2169,45 +2209,121 @@ namespace AkpInput
 
         public static string ExtractIconDataUrl(string filePath, int iconIndex)
         {
-            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return "";
-            Bitmap bmp = null;
-            IntPtr hIcon = IntPtr.Zero;
+            if (string.IsNullOrWhiteSpace(filePath)) return "";
+
+            // v0.11.2 三级级联，越靠前越清晰：
+            //   ① PrivateExtractIcons(256) —— 直接抠 exe/dll 里 256×256 的 PNG 图标资源
+            //   ② SHGetImageList(SHIL_JUMBO) —— 走 Shell 的 256px 超大图标列表，
+            //      能覆盖 WindowsApps / ACL 受限 / 无图标资源但 Shell 有缓存的场景
+            //   ③ ExtractIconEx(large) —— 老路径，32×32，仅作最后兜底
+            Bitmap bmp = LoadIconAtSize(filePath, iconIndex, 256);
+            if (bmp == null) bmp = LoadShellJumboIcon(filePath);
+            if (bmp == null) bmp = LoadLegacyIcon(filePath, iconIndex);
+            if (bmp == null) return "";
+
+            try
+            {
+                using (var ms = new MemoryStream())
+                {
+                    bmp.Save(ms, ImageFormat.Png);
+                    return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                }
+            }
+            catch { return ""; }
+            finally
+            {
+                try { bmp.Dispose(); } catch { }
+            }
+        }
+
+        /// <summary>用 PrivateExtractIcons 按指定尺寸抠图标；文件没有对应尺寸时由系统按最接近的资源缩放。</summary>
+        static Bitmap LoadIconAtSize(string filePath, int iconIndex, int size)
+        {
+            if (!File.Exists(filePath)) return null;
+            IntPtr[] icons = new IntPtr[1];
+            try
+            {
+                uint got = PrivateExtractIcons(filePath, iconIndex, size, size, icons, null, 1, 0);
+                if (got == 0 || icons[0] == IntPtr.Zero) return null;
+                IntPtr h = icons[0];
+                try
+                {
+                    Bitmap src = null;
+                    using (Icon ico = Icon.FromHandle(h))
+                    {
+                        src = ico.ToBitmap();
+                    }
+                    if (src == null) return null;
+                    if (src.Width == size && src.Height == size) return src;
+                    Bitmap scaled = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+                    using (Graphics g = Graphics.FromImage(scaled))
+                    {
+                        g.Clear(Color.Transparent);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+                        g.DrawImage(src, new Rectangle(0, 0, size, size));
+                    }
+                    src.Dispose();
+                    return scaled;
+                }
+                finally { DestroyIcon(h); }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>走 Shell 的 SHIL_JUMBO（256px）图标列表，兜底 WindowsApps / 特殊路径。</summary>
+        static Bitmap LoadShellJumboIcon(string filePath)
+        {
+            try
+            {
+                SHFILEINFO info = new SHFILEINFO();
+                IntPtr hr = SHGetFileInfo(filePath, 0, ref info, (uint)Marshal.SizeOf(typeof(SHFILEINFO)), SHGFI_SYSICONINDEX);
+                if (hr == IntPtr.Zero) return null;
+
+                Guid iid = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+                IImageList list = null;
+                if (SHGetImageList(SHIL_JUMBO, ref iid, out list) != 0 || list == null) return null;
+
+                IntPtr hIcon = IntPtr.Zero;
+                if (list.GetIcon(info.iIcon, ILD_TRANSPARENT, out hIcon) != 0 || hIcon == IntPtr.Zero) return null;
+                try
+                {
+                    using (Icon ico = Icon.FromHandle(hIcon))
+                    {
+                        Bitmap b = ico.ToBitmap();
+                        return b;
+                    }
+                }
+                finally { DestroyIcon(hIcon); }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>老路径：ExtractIconEx 的 large 图标（32×32）。</summary>
+        static Bitmap LoadLegacyIcon(string filePath, int iconIndex)
+        {
+            if (!File.Exists(filePath)) return null;
             try
             {
                 IntPtr[] large = new IntPtr[1];
                 int count = ExtractIconEx(filePath, iconIndex, large, null, 1);
                 if (count > 0 && large[0] != IntPtr.Zero)
                 {
-                    hIcon = large[0];
-                    using (Icon ico = Icon.FromHandle(hIcon))
+                    IntPtr h = large[0];
+                    try
                     {
-                        bmp = ico.ToBitmap();
+                        using (Icon ico = Icon.FromHandle(h)) return ico.ToBitmap();
                     }
+                    finally { DestroyIcon(h); }
                 }
-                else
+                using (Icon assoc = Icon.ExtractAssociatedIcon(filePath))
                 {
-                    using (Icon assoc = Icon.ExtractAssociatedIcon(filePath))
-                    {
-                        if (assoc != null) bmp = assoc.ToBitmap();
-                    }
-                }
-
-                if (bmp != null)
-                {
-                    using (var ms = new MemoryStream())
-                    {
-                        bmp.Save(ms, ImageFormat.Png);
-                        return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
-                    }
+                    if (assoc != null) return assoc.ToBitmap();
                 }
             }
             catch { }
-            finally
-            {
-                if (bmp != null) try { bmp.Dispose(); } catch { }
-                if (hIcon != IntPtr.Zero) try { DestroyIcon(hIcon); } catch { }
-            }
-            return "";
+            return null;
         }
 
         public static string QueryAppPathRegistry(string exeName)

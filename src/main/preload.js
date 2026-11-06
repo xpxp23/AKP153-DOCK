@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   actionClassify: (p) => ipcRenderer.invoke('action:classify', p),
 
   iconExtract: (p) => ipcRenderer.invoke('icon:extract', p),
+  iconMigrate: () => ipcRenderer.invoke('icon:migrate'),
   readImage: async (p) => {
     const dataUrl = await ipcRenderer.invoke('icon:extract', p);
     return dataUrl ? { ok: true, dataUrl } : { ok: false, dataUrl: null };

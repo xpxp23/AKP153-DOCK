@@ -68,15 +68,28 @@ function ensureCompiledBinary() {
       `/out:${tmpOut}`, CS_PATH,
     ], {
       windowsHide: true,
-      timeout: 10000,
+      timeout: 30000,
     });
     if (r.status === 0 && fs.existsSync(tmpOut)) {
       try {
         fs.renameSync(tmpOut, BIN_PATH);
         fs.writeFileSync(SHA_PATH, csHash, 'utf8');
-      } catch (_) {
-        try { fs.unlinkSync(tmpOut); } catch (e) {}
+      } catch (e) {
+        // 最常见的失败原因：旧 daemon 还占着 akp-input.exe，Windows 不允许覆盖运行中的 exe。
+        // 静默吞掉会让原生模块一直跑旧二进制，所以这里必须留下痕迹。
+        try {
+          const logPath = path.join(path.dirname(BIN_PATH), '..', 'logs', 'native-build.log');
+          fs.appendFileSync(logPath, `[${new Date().toISOString()}] rename failed: ${(e && e.message) || e}\n`);
+        } catch (_) {}
+        try { fs.unlinkSync(tmpOut); } catch (e2) {}
       }
+    } else {
+      // 编译失败时把原因落盘，否则原生模块会静默地一直跑旧二进制（图标提取退化成 32×32 而无人知晓）
+      try {
+        const logPath = path.join(path.dirname(BIN_PATH), '..', 'logs', 'native-build.log');
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] build failed status=${r.status} signal=${r.signal}\n${(r.stderr && r.stderr.toString()) || ''}\n`);
+        try { fs.unlinkSync(tmpOut); } catch (e) {}
+      } catch (_) {}
     }
   } catch (_) {}
 }

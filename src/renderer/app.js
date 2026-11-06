@@ -910,6 +910,19 @@ function normalizeIconSrc(src) {
   return src.slice(0, comma + 1) + encodeURIComponent(fixed);
 }
 
+/** 按键图标的默认填充比例（百分比），按图标来源分流。详见 paintKey 内注释。 */
+function defaultIconScale(spec) {
+  if (!spec) return 62;
+  if (spec.textIconConfig && spec.textIconConfig.fullBleed) return 100;
+  if (!spec.icon) return 62;
+  return /^data:image\/svg\+xml/i.test(spec.icon) ? 72 : 84;
+}
+
+/** 是否为矢量 SVG 图标（矢量不需要 alpha 裁边，留白是设计的一部分） */
+function isVectorIcon(src) {
+  return typeof src === 'string' && /^data:image\/svg\+xml/i.test(src);
+}
+
 function computeIconBounds(img, src) {
   const cached = iconBoundsCache.get(src);
   if (cached) return cached;
@@ -1310,7 +1323,7 @@ function computeRenderModel(spec, keyPos = null) {
       spec.customColor ? 1 : 0,
       spec.textColor || '',
       spec.fontSize || 17,
-      spec.iconScale || ((spec.icon || spec.textIconConfig) ? 100 : 62),
+      spec.iconScale || defaultIconScale(spec),
       spec.labelPos || 'bottom',
       iconSig,
       glyph,
@@ -1385,15 +1398,18 @@ async function paintKey(spec, size, keyPos) {
   const pos = spec.labelPos || 'bottom';
   const fs = Math.max(8, Math.round((size * (Number(spec.fontSize) || 17)) / 100));
 
-  // v0.11.1 满格出血：
-  // · 有位图图标 / 工坊卡片的按键，默认 iconScale 由 62 提升到 100（没有位图可铺的纯符号键仍保留 62）
-  // · 文字标签不再取消满格资格，改为把文字叠在铺满的图标之上（底部渐变暗角保证可读）
+  // v0.11.2 按来源分流（0.11.1 把所有图标一刀切满格是一次过度修正，
+  // 32px 的 exe 图标和 24 网格的矢量图标被放大 3~7 倍，观感直接崩了）：
+  //   · 工坊卡片 (textIconConfig.fullBleed) → 100%，满格 cover，这是它的设计意图
+  //   · 位图图标 (exe/lnk/favicon)          → 84%，contain，接近手机桌面图标比例
+  //   · 矢量线条图标 (内置图标库)            → 72%，线条视觉重量本来就比位图重
+  // 显式写过 iconScale 的键永远尊重原值；≥99 才切到 cover 满格。
   const hasBitmap = !!spec.icon;
   const hasCard = !!(spec.textIconConfig && spec.textIconConfig.fullBleed);
-  const defaultScale = (hasBitmap || spec.textIconConfig) ? 100 : 62;
+  const defaultScale = defaultIconScale(spec);
   const rawScale = Number(spec.iconScale) || defaultScale;
   const isFullBleed = (hasBitmap || hasCard) && (
-    rawScale >= 99 || (!!spec.textIconConfig && spec.textIconConfig.fullBleed && rawScale >= 96)
+    rawScale >= 99 || (hasCard && rawScale >= 96)
   );
   const labelOnImage = isFullBleed && !!label;
   // 满格时文字压在图标上、下面还有一层压暗遮罩，自动对比色会算成深色反而不易读，
@@ -1402,20 +1418,34 @@ async function paintKey(spec, size, keyPos) {
   const effectiveScale = isFullBleed ? 100 : Math.max(25, Math.min(115, rawScale));
   const iconBox = (size * effectiveScale) / 100;
 
+  // 先把文字折行算出来，再排布局。旧实现用"标签里有几个换行符"估计行数，
+  // 但长标签会被 wrapAndFitText 自动折成 2 行 —— 估算 1 行、实际 2 行，图标就必然被压。
+  const labelMaxW = size * 0.86;
+  const labelMaxLines = (pos === 'center' || !spec.icon) ? 4 : 2;
+  const wrappedLabel = label
+    ? wrapAndFitText(ctx, label, labelMaxW, labelMaxLines, fs, '"Microsoft YaHei", sans-serif')
+    : null;
+  const labelLines = wrappedLabel ? wrappedLabel.lines.length : 0;
+  const labelFont = wrappedLabel ? wrappedLabel.fontSize : fs;
+
+  // v0.11.2 上下分区：非满格且带文字的按键，图标与文字各占一块，绝不重叠。
+  // 旧公式 `availH = Math.max(iconBox, size - textBlockH)` 在 iconBox 较大时等于
+  // 直接放弃避让，于是 84%/100% 的图标会被两行文字压掉下半截。
+  let boxSize = iconBox;
   let iconTop;
   if (isFullBleed) {
     iconTop = 0;
   } else if (!label || pos === 'center') {
-    // 修复 Bug 3：无文字或文字居中叠加模式下，图标严格置于画布几何正中心
+    // 无文字或文字居中叠加模式下，图标严格置于画布几何正中心
     iconTop = (size - iconBox) / 2;
-  } else if (pos === 'top') {
-    iconTop = Math.min(size - iconBox - size * 0.06, size * 0.14 + fs * 1.35);
   } else {
-    // pos === 'bottom'：根据文字实际行数计算上半区可用空间并居中图标
-    const linesCount = Math.min(2, label.split(/\r?\n/).filter(Boolean).length || 1);
-    const textBlockH = linesCount * (fs * 1.18) + size * 0.11;
-    const availH = Math.max(iconBox, size - textBlockH);
-    iconTop = Math.max(size * 0.04, (availH - iconBox) / 2);
+    const textBlockH = (pos === 'top' ? size * 0.08 : 0) + labelLines * (labelFont * 1.18) + size * 0.11;
+    // 至少留 30% 给图标，避免超长标签把图标压成一个小点
+    const availH = Math.max(size * 0.30, size - textBlockH);
+    boxSize = Math.min(iconBox, availH);
+    iconTop = pos === 'top'
+      ? textBlockH + (availH - boxSize) / 2
+      : Math.max(size * 0.02, (availH - boxSize) / 2);
   }
 
   // 解析实际要画的位图：优先按 textIconConfig 现场渲染（保证圆角/描边修复对历史卡片生效），
@@ -1433,13 +1463,23 @@ async function paintKey(spec, size, keyPos) {
   if (!iconSrc && spec.icon) {
     const img = await loadImage(spec.icon);
     if (img) {
-      // 先裁掉源图自带的透明留白再算缩放：ICO / PNG 常见的透明边会让图标看起来"凭空缩了一圈"
-      const bounds = computeIconBounds(img, spec.icon);
-      iconSrc = img;
-      iconSX = bounds.x;
-      iconSY = bounds.y;
-      iconSW = bounds.w;
-      iconSH = bounds.h;
+      if (isVectorIcon(spec.icon)) {
+        // 矢量图标不裁边：24 网格里的那圈留白本身就是设计的一部分，
+        // 裁掉会让线条顶到按键边缘，看起来又粗又挤。
+        const vw = img.naturalWidth || img.width || 24;
+        const vh = img.naturalHeight || img.height || 24;
+        iconSrc = img;
+        iconSW = vw;
+        iconSH = vh;
+      } else {
+        // 位图先裁掉源图自带的透明留白：ICO / PNG 常见的透明边会让图标看起来"凭空缩了一圈"
+        const bounds = computeIconBounds(img, spec.icon);
+        iconSrc = img;
+        iconSX = bounds.x;
+        iconSY = bounds.y;
+        iconSW = bounds.w;
+        iconSH = bounds.h;
+      }
     }
   }
 
@@ -1456,22 +1496,22 @@ async function paintKey(spec, size, keyPos) {
         (size - cw) / 2, (size - ch) / 2, cw, ch
       );
     } else {
-      const s = Math.min(iconBox / iconSW, iconBox / iconSH);
+      const s = Math.min(boxSize / iconSW, boxSize / iconSH);
       const w = iconSW * s;
       const h = iconSH * s;
       ctx.drawImage(
         iconSrc, iconSX, iconSY, iconSW, iconSH,
-        (size - w) / 2, iconTop + (iconBox - h) / 2, w, h
+        (size - w) / 2, iconTop + (boxSize - h) / 2, w, h
       );
     }
   } else if (spec.type && spec.type !== 'text') {
     const gl = computeDynamicGlyph(spec);
     ctx.fillStyle = fg;
-    ctx.font = `${Math.round(iconBox * 0.72)}px "Microsoft YaHei", "Segoe UI Emoji", sans-serif`;
+    ctx.font = `${Math.round(boxSize * 0.72)}px "Microsoft YaHei", "Segoe UI Emoji", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     // 修正 Unicode 符号基线视觉下沉偏移
-    ctx.fillText(gl, size / 2, iconTop + iconBox / 2 + (label ? 0 : Math.round(size * 0.015)));
+    ctx.fillText(gl, size / 2, iconTop + boxSize / 2 + (label ? 0 : Math.round(size * 0.015)));
   }
 
   // 满格图标之上压文字时的可读性保障：只在文字所在的那一侧铺一层黑色渐变暗角，
@@ -1570,17 +1610,9 @@ async function paintKey(spec, size, keyPos) {
     ctx.restore();
   }
 
-  if (label) {
-    const maxW = size * 0.86;
-    const maxLines = (pos === 'center' || !spec.icon) ? 4 : 2;
-    const { lines, fontSize: fittedFs } = wrapAndFitText(
-      ctx,
-      label,
-      maxW,
-      maxLines,
-      fs,
-      '"Microsoft YaHei", sans-serif'
-    );
+  if (label && wrappedLabel) {
+    const lines = wrappedLabel.lines;
+    const fittedFs = wrappedLabel.fontSize;
     ctx.fillStyle = fg;
     ctx.font = `${fittedFs}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'center';
@@ -3768,7 +3800,7 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
     }).catch(() => {});
   } else {
     cell.classList.remove('hw-mirror-cell');
-    const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || 62));
+    const iconScalePct = Math.max(25, Math.min(100, Number(spec.iconScale) || defaultIconScale(spec)));
     const fontSizePct = Math.max(8, Math.min(45, Number(spec.fontSize) || 17));
 
     if (spec.icon) {
@@ -3815,11 +3847,12 @@ function renderSingleCellDOM(cell, row, col, page, grad) {
   }
 
   const cleanLabelForClass = String(spec.label || '').trim();
-  // 与 paintKey 的满格判定保持一致：文字标签不再取消满格资格
+  // 与 paintKey 的满格判定保持一致（v0.11.2 起按来源分流，不再一刀切）
+  const previewScale = Number(spec.iconScale) || defaultIconScale(spec);
   const isFullBleedCell = Boolean(
     (spec.icon || spec.textIconConfig) && (
-      (Number(spec.iconScale) || 100) >= 99 ||
-      (spec.textIconConfig && spec.textIconConfig.fullBleed && (Number(spec.iconScale) || 100) >= 96)
+      previewScale >= 99 ||
+      (spec.textIconConfig && spec.textIconConfig.fullBleed && previewScale >= 96)
     )
   );
   cell.classList.toggle('no-label', !cleanLabelForClass);
@@ -14314,6 +14347,30 @@ function bindDevice() {
   $('repaint').onclick = () => repaintAll(true);
   $('sleep').onclick = () => api.deviceSleep();
   $('wake').onclick = async () => { await api.deviceWake(); isDeviceAsleep = false; await repaintAll(true); };
+  // v0.11.2 图标高清化：把全部按键图标按原路径重新提取为 256×256
+  const iconRemigrateBtn = $('iconRemigrate');
+  if (iconRemigrateBtn) {
+    iconRemigrateBtn.onclick = async () => {
+      const hint = $('iconResHint');
+      const prev = iconRemigrateBtn.innerHTML;
+      iconRemigrateBtn.disabled = true;
+      iconRemigrateBtn.innerHTML = '<span class="maint-icon">⏳</span> 正在重新提取…';
+      if (hint) hint.textContent = '正在逐个按键重新提取图标，按键较多时可能需要十几秒…';
+      try {
+        const res = await api.iconMigrate();
+        if (hint) {
+          hint.textContent = res && res.ok && !res.error
+            ? `✅ 扫描 ${res.scanned} 个按键，升级 ${res.upgraded} 个图标为 256×256`
+            : `⚠️ 重提取失败：${(res && res.error) || '未知错误'}`;
+        }
+      } catch (e) {
+        if (hint) hint.textContent = `⚠️ 重提取失败：${e.message}`;
+      } finally {
+        iconRemigrateBtn.disabled = false;
+        iconRemigrateBtn.innerHTML = prev;
+      }
+    };
+  }
 
   api.on('device:sleep-state', (payload) => {
     isDeviceAsleep = !!(payload && payload.asleep);
