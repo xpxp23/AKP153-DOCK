@@ -16,6 +16,7 @@ const iconCache = new Map();
 const MAX_ICON_CACHE = 200;
 const activeLoopKeyIds = new Set();
 let isDeviceAsleep = false;
+let lastVolumeChangeAt = 0;   // 最近一次音量变化时间（隐藏态电平表降频用）
 let repaintGen = 0;
 let lastSysStats = { cpu: 0, mem: 0, memUsedGb: '' };
 
@@ -1150,6 +1151,7 @@ function normalizeAudioState(state) {
 async function updateVolumeState(state) {
   if (!state) return;
   lastAudioState = normalizeAudioState(state);
+  lastVolumeChangeAt = Date.now();
 
   if (cfg) {
     const strips = effectiveStrips();
@@ -1679,6 +1681,27 @@ let offscreenWorker = null;
 let offscreenSeq = 1;
 const offscreenPending = new Map();
 let isWindowVisible = true;
+// ---- 设备链路状态与失败退避 ----------------------------------------------
+// 主进程通过 host:status 告知设备是否真的打开成功；离线时把推图节奏指数拉长，
+// 恢复后立刻回到正常频率。
+let deviceOnline = true;
+let deviceFailStreak = 0;
+let deviceRetryAt = 0;
+const DEVICE_BACKOFF_STEPS = [5000, 15000, 60000];
+
+function noteDevicePushFailure() {
+  deviceFailStreak += 1;
+  const step = DEVICE_BACKOFF_STEPS[Math.min(deviceFailStreak - 1, DEVICE_BACKOFF_STEPS.length - 1)];
+  deviceRetryAt = Date.now() + step;
+}
+
+function devicePushBlocked() {
+  if (deviceOnline && !deviceRetryAt) return false;
+  if (deviceRetryAt && Date.now() < deviceRetryAt) return true;
+  // 退避到期：放行一次探测。成功会由 host:status 或推图结果清除退避。
+  return false;
+}
+
 // 阶段一 2：默认全局启用 1:1 硬件级高清 Canvas 渲染管线，彻底消除 DOM 预览与真机 LCD 的偏差
 let hwMirrorEnabled = true;
 const _hwMirrorCanvasCache = new Map();
@@ -1797,6 +1820,20 @@ async function encodeCanvasToJpegB64(canvas, rotMode) {
 // Preview mode: when opened as a plain HTML file (no Electron preload) we
 // render a sample layout so the UI can be inspected without the device.
 const DEMO = typeof api === 'undefined';
+
+// 渲染进程长任务观测：>120ms 的主线程占用会直接表现成"窗口出来了但内容空白"。
+// 只写一条日志（主进程侧节流 5s），用来验证首帧优化到底有没有生效。
+try {
+  if (!DEMO && typeof PerformanceObserver !== 'undefined' && api && api.reportPerf) {
+    const obs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.duration < 120) continue;
+        try { api.reportPerf('longtask', Math.round(entry.duration)); } catch (_) {}
+      }
+    });
+    obs.observe({ entryTypes: ['longtask'] });
+  }
+} catch (_) {}
 
 async function pushKey(row, col, force = false) {
   if (!cfg || DEMO) return;
@@ -3151,8 +3188,10 @@ const posKeyOf = (it) => `${it.row},${it.col}`;
 
 async function flushPageFrames(items, epoch, myGen, tag) {
   if (!items || !items.length) return null;
-  // 面板休眠时整批都会被拒绝，没必要走补发流程
-  if (isDeviceAsleep) return null;
+  const isForced = items.some((it) => it && it.force);
+  // 面板休眠且非强制重绘时整批都会被拒绝，没必要走补发流程；但强制重绘 (force) 必须放行送达设备
+  if (isDeviceAsleep && !isForced) return null;
+  if (isForced) isDeviceAsleep = false;
   const byPos = new Map(items.map((it) => [posKeyOf(it), it]));
   let pending = items.slice();
   let last = null;
@@ -3387,6 +3426,7 @@ async function flashKeyResult(row, col, success, text) {
 }
 
 async function repaintStrips() {
+  if (devicePushBlocked()) return;
   for (let row = 0; row < ROWS; row++) await pushStrip(row);
 }
 
@@ -4225,12 +4265,177 @@ async function repaintSelected() {
   else await pushKey(selected.row, selected.col);
 }
 
+// ------------------------------------------------------------ 保存脱水 (perf)
+// 配置里 60 个图标的 base64 实体合计 1.44MB，而每次敲字/拖滑块都会把整份 cfg
+// 结构化克隆过 IPC 交给主进程。这里把 data URL 换成 '@icon:<sha1前16>' 引用，
+// 并且只把主进程还没有的图标实体发过去 —— 单次保存体积从 1.65MB 掉到 ~200KB。
+// 任何一步不满足（无 crypto.subtle / 引用对不上）都自动退回"全量发送"，保证不出错。
+let iconRefCache = new Map();      // dataUrl -> ref
+let knownIconRefs = null;          // 主进程已持有的 ref 集合；null = 未知，走全量
+let iconHashOk = null;
+let iconForceFullSend = false;
+
+function iconHashAvailable() {
+  if (iconHashOk === null) {
+    iconHashOk = !!(typeof crypto !== 'undefined' && crypto.subtle
+      && typeof TextEncoder !== 'undefined' && typeof crypto.subtle.digest === 'function');
+  }
+  return iconHashOk;
+}
+
+async function sha1HexUtf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest('SHA-1', bytes);
+  const view = new Uint8Array(digest);
+  let out = '';
+  for (let i = 0; i < view.length; i++) out += view[i].toString(16).padStart(2, '0');
+  return out;
+}
+
+async function iconRefForSave(dataUrl) {
+  const hit = iconRefCache.get(dataUrl);
+  if (hit) return hit;
+  const ref = 'ico_' + (await sha1HexUtf8(dataUrl)).slice(0, 16);
+  iconRefCache.set(dataUrl, ref);
+  return ref;
+}
+
+function mapSpecForSave(spec, iconOut) {
+  if (!spec || typeof spec !== 'object') return spec;
+  const out = Object.assign({}, spec);
+  for (const key of ['icon', 'icon2']) {
+    const v = out[key];
+    if (typeof v === 'string' && v.startsWith('data:image/')) {
+      const ref = iconRefCache.get(v);
+      if (ref) {
+        if (!knownIconRefs || !knownIconRefs.has(ref)) iconOut[ref] = v;
+        out[key] = '@icon:' + ref;
+      }
+    }
+  }
+  if (out.action2 && typeof out.action2 === 'object') {
+    out.action2 = mapSpecForSave(out.action2, iconOut);
+  }
+  return out;
+}
+
+function mapButtonsForSave(buttons, iconOut) {
+  const out = {};
+  for (const [k, v] of Object.entries(buttons || {})) out[k] = mapSpecForSave(v, iconOut);
+  return out;
+}
+
+function mapStripsForSave(strips, iconOut) {
+  const out = {};
+  for (const [k, v] of Object.entries(strips || {})) out[k] = mapSpecForSave(v, iconOut);
+  return out;
+}
+
+function mapPagesForSave(pages, iconOut) {
+  if (!Array.isArray(pages)) return pages;
+  return pages.map((pg) => (pg && typeof pg === 'object')
+    ? Object.assign({}, pg, {
+      buttons: mapButtonsForSave(pg.buttons, iconOut),
+      strips: mapStripsForSave(pg.strips, iconOut),
+    })
+    : pg);
+}
+
+async function buildDehydratedConfig(src) {
+  if (iconForceFullSend || !src || !iconHashAvailable() || !knownIconRefs) return null;
+
+  // 先把没见过的图标 hash 掉（同一张图只算一次）
+  const needHash = new Set();
+  const scan = (spec) => {
+    if (!spec || typeof spec !== 'object') return;
+    for (const key of ['icon', 'icon2']) {
+      const v = spec[key];
+      if (typeof v === 'string' && v.startsWith('data:image/') && !iconRefCache.has(v)) needHash.add(v);
+    }
+    if (spec.action2 && typeof spec.action2 === 'object') scan(spec.action2);
+  };
+  const scanPages = (pages) => {
+    for (const pg of pages || []) {
+      if (!pg || typeof pg !== 'object') continue;
+      for (const b of Object.values(pg.buttons || {})) scan(b);
+      for (const st of Object.values(pg.strips || {})) scan(st);
+    }
+  };
+  scanPages(src.pages);
+  if (Array.isArray(src.profiles)) for (const pf of src.profiles) scanPages(pf && pf.pages);
+  if (Array.isArray(src.library)) for (const it of src.library) if (it && it.spec) scan(it.spec);
+  if (Array.isArray(src.pageSnapshots)) for (const sn of src.pageSnapshots) if (sn && sn.page) scanPages([sn.page]);
+  if (needHash.size) await Promise.all(Array.from(needHash).map((v) => iconRefForSave(v)));
+
+  const iconOut = {};
+  const out = Object.assign({}, src, { iconStore: iconOut });
+  out.pages = mapPagesForSave(src.pages, iconOut);
+  if (Array.isArray(src.profiles)) {
+    out.profiles = src.profiles.map((pf) => (pf && typeof pf === 'object')
+      ? Object.assign({}, pf, { pages: mapPagesForSave(pf.pages, iconOut) })
+      : pf);
+  }
+  if (Array.isArray(src.library)) {
+    out.library = src.library.map((it) => (it && it.spec)
+      ? Object.assign({}, it, { spec: mapSpecForSave(it.spec, iconOut) })
+      : it);
+  }
+  if (Array.isArray(src.pageSnapshots)) {
+    out.pageSnapshots = src.pageSnapshots.map((sn) => (sn && sn.page)
+      ? Object.assign({}, sn, {
+        page: Object.assign({}, sn.page, {
+          buttons: mapButtonsForSave(sn.page.buttons, iconOut),
+          strips: mapStripsForSave(sn.page.strips, iconOut),
+        }),
+      })
+      : sn);
+  }
+  return out;
+}
+
+let _saveRetryGuard = false;
+
+/** 同步主进程当前持有的图标引用集合（外部改配置后可能被裁剪，需要重取） */
+async function refreshKnownIconRefs() {
+  if (DEMO || !api.iconRefs) { knownIconRefs = null; return; }
+  try {
+    const refs = await api.iconRefs();
+    if (Array.isArray(refs)) knownIconRefs = new Set(refs);
+  } catch (_) { knownIconRefs = null; }
+}
+
 /** Preview mode (no preload) has no main process to talk to. Everything that
  *  would persist must go through here, otherwise a plain edit in preview throws
  *  and the panel silently stops re-rendering. */
 function saveConfig() {
   if (DEMO) return Promise.resolve(true);
-  return api.configSave(cfg);
+  return (async () => {
+    let payload = cfg;
+    try {
+      const dehydrated = await buildDehydratedConfig(cfg);
+      if (dehydrated) payload = dehydrated;
+    } catch (_) {
+      payload = cfg;
+    }
+    const res = await api.configSave(payload);
+    try {
+      if (res && Array.isArray(res.iconRefs)) knownIconRefs = new Set(res.iconRefs);
+      if (res && res.unresolved > 0 && !_saveRetryGuard) {
+        // 引用解析不出来：清缓存，用完整图标重发一次（自愈，不丢编辑内容）
+        _saveRetryGuard = true;
+        try {
+          iconRefCache = new Map();
+          iconForceFullSend = true;
+          await api.configSave(cfg);
+        } finally {
+          iconForceFullSend = false;
+          _saveRetryGuard = false;
+          try { knownIconRefs = new Set(await api.iconRefs()); } catch (_) { knownIconRefs = null; }
+        }
+      }
+    } catch (_) {}
+    return res;
+  })();
 }
 
 function syncSelectedToggleBadge() {
@@ -14344,7 +14549,11 @@ function bindDevice() {
   });
 
   $('reconnect').onclick = async () => { await api.deviceReconnect(); isDeviceAsleep = false; await repaintAll(true); };
-  $('repaint').onclick = () => repaintAll(true);
+  $('repaint').onclick = async () => {
+    try { await api.deviceWake(); } catch (_) {}
+    isDeviceAsleep = false;
+    await repaintAll(true);
+  };
   $('sleep').onclick = () => api.deviceSleep();
   $('wake').onclick = async () => { await api.deviceWake(); isDeviceAsleep = false; await repaintAll(true); };
   // v0.11.2 图标高清化：把全部按键图标按原路径重新提取为 256×256
@@ -14375,7 +14584,22 @@ function bindDevice() {
   api.on('device:sleep-state', (payload) => {
     isDeviceAsleep = !!(payload && payload.asleep);
   });
-  api.on('host:status', (s) => setStatus(s));
+  api.on('host:status', (s) => {
+    setStatus(s);
+    // 设备链路状态：主进程只在"在线/离线"跳变时推一次。
+    // 离线时进入指数退避，别再无意义地编码 JPEG 推图（日志里每 2.5s 一条 NOT_OPEN 就是它）。
+    if (!s || typeof s !== 'object') return;
+    if (s.device === true) {
+      if (!deviceOnline) {
+        deviceOnline = true;
+        deviceFailStreak = 0;
+        deviceRetryAt = 0;
+      }
+    } else if (s.device === false) {
+      deviceOnline = false;
+      if (!deviceRetryAt) noteDevicePushFailure();
+    }
+  });
   api.on('device:repaint', (opts) => { isDeviceAsleep = false; repaintAll(opts && opts.force); });
   api.on('device:repaint-strips', () => { if (!isDeviceAsleep) repaintStrips(); });
   api.on('audio:state', (data) => updateVolumeState(data));
@@ -14490,12 +14714,21 @@ function bindDevice() {
 
   api.on('window:visibility', (st) => {
     isWindowVisible = !!(st && st.visible);
-    if (isWindowVisible) refreshGrid();
+    if (!isWindowVisible) return;
+    // 首帧优先：窗口已经出现时，先把现有 DOM 直接呈现（布局早已算好），
+    // 把 30 个格子的同步重写推到"首帧之后"再做，
+    // 否则用户看到的就是"窗口壳 + 空白几秒，然后内容啪地一下全出来"。
+    const afterPaint = (fn) => {
+      if (typeof requestAnimationFrame !== 'function') return setTimeout(fn, 0);
+      requestAnimationFrame(() => requestAnimationFrame(fn));
+    };
+    afterPaint(() => { if (isWindowVisible && cfg) refreshGrid(); });
   });
 
   api.on('profile:changed', async () => {
     bumpDevicePageEpoch();
     cfg = await api.configLoad();
+    refreshKnownIconRefs();
     syncRuntimeStoreToConfig(cfg);
     selected = null;
     renderProfileSwitcherBar();
@@ -14527,6 +14760,7 @@ function bindDevice() {
   api.on('config:external', async () => {
     bumpDevicePageEpoch();
     cfg = await api.configLoad();
+    refreshKnownIconRefs();
     syncRuntimeStoreToConfig(cfg);
     selected = null;
     applyTheme();
@@ -14646,6 +14880,8 @@ async function boot() {
   } else {
     cfg = await api.configLoad();
     if (!cfg.library) cfg.library = [];
+    // 主进程当前持有的图标引用集合：拿到之后保存才能只发"新增图标"
+    await refreshKnownIconRefs();
     bindDevice();
   }
 
@@ -14700,6 +14936,12 @@ async function boot() {
   renderPageTabs();
   renderInspector();
 
+  // 首屏 DOM 已经完整：通知主进程趁窗口还藏着把首帧合成出来。
+  // 放在这里而不是 boot() 末尾 —— 后面的设备推图/音量查询失败不该拖累预热。
+  if (!DEMO && api.uiReady) {
+    try { api.uiReady(); } catch (_) {}
+  }
+
   // 启动即时获取系统物理音量并初始化状态
   if (!DEMO && window.api && api.audioGetVolume) {
     api.audioGetVolume().then((res) => {
@@ -14709,12 +14951,17 @@ async function boot() {
     }).catch(() => {});
   }
 
-  // v0.11.0 多频自适应遥测调度器 + Dirty-Rect 批量硬件推流引擎 (支持 180ms 高帧率电平与 60s 低频天气)
+  // v0.11.3 隐藏态降频 + 设备离线退避
+  // 窗口收进托盘时没人看细节，把推图节奏整体拉长；设备离线时干脆不推。
   let _telemetryTickBusy = false;
   let _lastFullStatsFetchAt = 0;
+  const _lastClockMinute = { 0: -1, 1: -1, 2: -1 };
   setInterval(async () => {
     if (DEMO || !cfg || isDeviceAsleep || _telemetryTickBusy) return;
+    // 设备离线且仍在退避窗口内：一次 canvas 绘制、一次 JPEG 编码都不做
+    if (devicePushBlocked()) return;
     const now = Date.now();
+    const hidden = !isWindowVisible;
     const page = curPage();
     if (!page) return;
     const strips = pageStrips();
@@ -14729,7 +14976,12 @@ async function boot() {
         const sp = buttons[`${r},${c}`];
         if (sp && sp.type === 'widget') {
           const wk = sp.widgetKind || 'gpu';
-          const intervalMs = Math.max(180, Number(sp.refreshIntervalMs) || (wk === 'plugin' && sp.pluginId === 'audio_fader_meter' ? 200 : 2500));
+          const isMeter = wk === 'plugin' && sp.pluginId === 'audio_fader_meter';
+          const visibleMs = Math.max(180, Number(sp.refreshIntervalMs) || (isMeter ? 200 : 2500));
+          // 隐藏态：电平表降到 1s（只在音量变化后 3s 内仍需高频），其余小组件 10s
+          const intervalMs = hidden
+            ? (isMeter && (now - lastVolumeChangeAt < 3000) ? 1000 : 10000)
+            : visibleMs;
           const cellKey = `${page.id}:${r},${c}`;
           const lastTick = widgetLastTickMap.get(cellKey) || 0;
           if (now - lastTick >= intervalMs) {
@@ -14747,12 +14999,14 @@ async function boot() {
 
     const dueStripRows = [];
     const panoOn = isPageStripPanoramaActive(page);
-    if (panoOn && now - _lastFullStatsFetchAt >= 480) {
+    const panoPeriod = hidden ? 5000 : 480;
+    const stripPeriod = hidden ? 5000 : 2400;
+    if (panoOn && now - _lastFullStatsFetchAt >= panoPeriod) {
       _lastFullStatsFetchAt = now;
       dueStripRows.push(0, 1, 2);
       neededTypes.add('gpu');
       neededTypes.add('media_now');
-    } else if (now - _lastFullStatsFetchAt >= 2400) {
+    } else if (now - _lastFullStatsFetchAt >= stripPeriod) {
       _lastFullStatsFetchAt = now;
       for (const row of [0, 1, 2]) {
         const s = strips[String(row)];
@@ -14763,6 +15017,12 @@ async function boot() {
           if (wk === 'plugin') neededPluginIds.add(s.pluginId || 'uptime_greeting');
           dueStripRows.push(row);
         } else if (['cpu', 'mem', 'sys', 'volume', 'clock'].includes(s.type)) {
+          // 时钟只显示 HH:mm：隐藏时按"分钟变化"触发，不必每 5s 重推同一张图
+          if (hidden && s.type === 'clock') {
+            const minute = Math.floor(now / 60000);
+            if (_lastClockMinute[row] === minute) continue;
+            _lastClockMinute[row] = minute;
+          }
           dueStripRows.push(row);
         }
       }
@@ -14842,7 +15102,16 @@ async function boot() {
         // 若在 systemStats / 渲染期间已经切页，这批帧属于上一页，直接丢弃，
         // 否则它们会把旧页的 widget 画面糊到新页的格子上（"一半新的、一半上一页的"）。
         if (epochAtStart === devicePageEpoch) {
-          await api.deviceBatchDraw({ items, full: false, epoch: epochAtStart }).catch(() => {});
+          const pushRes = await api.deviceBatchDraw({ items, full: false, epoch: epochAtStart }).catch(() => null);
+          if (!pushRes) {
+            // IPC 层直接失败：也计入退避，避免每 2.5s 重来一次
+            noteDevicePushFailure();
+          } else if (pushRes.ok === false) {
+            noteDevicePushFailure();
+          } else {
+            deviceFailStreak = 0;
+            deviceRetryAt = 0;
+          }
         }
       }
     } catch (_) {
@@ -14869,6 +15138,12 @@ function setStatus(s) {
   } else if (s.error === 'DEVICE_LOST') {
     el.className = 'pill pill-warn';
     el.textContent = '设备已断开 · 自动重连中…';
+  } else if (s.error === 'DEVICE_OPEN_FAILED') {
+    el.className = 'pill pill-warn';
+    el.textContent = '设备未就绪 · 后台重试中…';
+  } else if (s.device === false) {
+    el.className = 'pill pill-warn';
+    el.textContent = '设备未就绪 · 后台重试中…';
   } else if (s.error) {
     el.className = 'pill pill-err';
     el.textContent = '设备异常：' + s.error;

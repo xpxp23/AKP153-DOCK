@@ -7,6 +7,11 @@ const FILE = process.env.AKP153_CONFIG
   ? path.resolve(process.env.AKP153_CONFIG)
   : path.join(__dirname, '..', '..', 'config.json');
 
+// 图标哈希池外置文件（v0.11.3+）。原先 1.44MB 的 base64 全塞在 config.json 里，
+// 导致每次保存要搬 1.65MB 过 IPC、每次外部改配置要整读 1.65MB、打开配置文件也是一坨乱码。
+// 现在 config.json 只留 @icon:<ref> 引用，真实图像放这里。
+const ICONS_FILE = path.join(path.dirname(FILE), 'icons.json');
+
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
 const DEFAULT_STRIPS = {
@@ -230,6 +235,112 @@ function readRaw() {
   return null;
 }
 
+// ------------------------------------------------------------ 图标池 (icons.json)
+// 内容寻址：ref = 'ico_' + sha1(dataUrl).slice(0,16)，天然去重。
+let iconStoreDisk = {};       // ref -> dataUrl，磁盘上的权威副本
+let iconStoreLoaded = false;
+let iconStoreNeedsRewrite = false;
+let iconStoreDirty = false;   // 本轮是否有新图标需要落盘（没有就别白写 1.44MB）
+
+function loadIconStore() {
+  if (iconStoreLoaded) return iconStoreDisk;
+  iconStoreLoaded = true;
+  try {
+    if (fs.existsSync(ICONS_FILE)) {
+      const obj = JSON.parse(fs.readFileSync(ICONS_FILE, 'utf8'));
+      const map = (obj && typeof obj.icons === 'object' && obj.icons) ? obj.icons : obj;
+      if (map && typeof map === 'object') {
+        iconStoreDisk = {};
+        for (const [k, v] of Object.entries(map)) {
+          if (typeof v === 'string' && v.startsWith('data:image/')) iconStoreDisk[k] = v;
+        }
+      }
+    }
+  } catch (_) {
+    iconStoreDisk = {};
+    iconStoreNeedsRewrite = true;
+  }
+  return iconStoreDisk;
+}
+
+function invalidateIconStore() {
+  iconStoreLoaded = false;
+  iconStoreDisk = {};
+}
+
+/** 收进一个图标，返回它的 ref（已存在则复用） */
+function internIconValue(dataUrl) {
+  let ref = iconHashMemo.get(dataUrl);
+  if (!ref) {
+    ref = 'ico_' + crypto.createHash('sha1').update(dataUrl).digest('hex').slice(0, 16);
+    if (iconHashMemo.size > 500) iconHashMemo.clear();
+    iconHashMemo.set(dataUrl, ref);
+  }
+  if (!iconStoreDisk[ref]) {
+    iconStoreDisk[ref] = dataUrl;
+    iconStoreDirty = true;
+  }
+  return ref;
+}
+
+/**
+ * 深遍历任意 JSON 结构，收集所有 '@icon:ref' 引用。
+ * 必须在 normalize() 之前对"原始解析结果"调用 —— normalize 会把引用就地 hydrate 成
+ * data URL，之后再找就找不到了。
+ */
+function collectReferencedIconRefs(obj) {
+  const refs = new Set();
+  const walk = (node, depth) => {
+    if (depth > 12 || node == null) return;
+    if (typeof node === 'string') {
+      if (node.startsWith('@icon:')) refs.add(node.slice(6));
+      return;
+    }
+    if (Array.isArray(node)) { for (const v of node) walk(v, depth + 1); return; }
+    if (typeof node === 'object') { for (const v of Object.values(node)) walk(v, depth + 1); }
+  };
+  walk(obj, 0);
+  return refs;
+}
+
+function iconsPayloadText() {
+  const keys = Object.keys(iconStoreDisk).sort();
+  const icons = {};
+  for (const k of keys) icons[k] = iconStoreDisk[k];
+  return JSON.stringify({ version: 1, icons }, null, 0);
+}
+
+/** 全量重写 icons.json（只在启动初期做一次瘦身 + 每次保存做并集写） */
+function writeIconStoreSync() {
+  try {
+    const tmp = ICONS_FILE + '.tmp';
+    fs.writeFileSync(tmp, iconsPayloadText(), 'utf8');
+    fs.renameSync(tmp, ICONS_FILE);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 启动瘦身：只保留被引用的图标。
+ * 传入的是"原始解析结果里收集到的 ref 集合"，因此绝不会误删（引用集合是精确的）。
+ * 时机放在 load() 里、任何保存之前，避开"保存中途被裁剪"的竞态。
+ */
+function pruneIconStore(refs) {
+  if (!refs) return 0;
+  let removed = 0;
+  for (const k of Object.keys(iconStoreDisk)) {
+    if (!refs.has(k)) { delete iconStoreDisk[k]; removed += 1; }
+  }
+  if (removed > 0 || iconStoreNeedsRewrite || !fs.existsSync(ICONS_FILE)) {
+    writeIconStoreSync();
+    iconStoreNeedsRewrite = false;
+    iconStoreDirty = false;
+  }
+  return removed;
+}
+
 function newPageId() {
   return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 }
@@ -438,20 +549,28 @@ function normalize(rawObj) {
   if (!Array.isArray(target.contextBars) || !target.contextBars.length) {
     target.contextBars = buildDefaultContextBars();
   }
-  if (!target.iconStore || typeof target.iconStore !== 'object') {
-    target.iconStore = {};
+  // ---- 图标池：磁盘副本 + 本次传入的增量（渲染端只发新增图标）----
+  const incomingIconStore = (target.iconStore && typeof target.iconStore === 'object') ? target.iconStore : {};
+  const mergedIconStore = Object.assign({}, loadIconStore(), incomingIconStore);
+  for (const [k, v] of Object.entries(incomingIconStore)) {
+    if (typeof v === 'string' && v.startsWith('data:image/')) {
+      if (!iconStoreDisk[k]) { iconStoreDisk[k] = v; iconStoreDirty = true; }
+    }
   }
 
   // Hydrate @icon: refs from iconStore into memory so renderer & host work transparently
+  let unresolvedIcons = 0;
   const hydrateIconObj = (obj) => {
     if (!obj || typeof obj !== 'object') return;
     for (const k of ['icon', 'icon2']) {
       if (typeof obj[k] === 'string' && obj[k].startsWith('@icon:')) {
         const ref = obj[k].slice(6);
-        if (target.iconStore[ref]) {
-          const dataUrl = target.iconStore[ref];
+        if (mergedIconStore[ref]) {
+          const dataUrl = mergedIconStore[ref];
           iconHashMemo.set(dataUrl, ref);
           obj[k] = dataUrl;
+        } else {
+          unresolvedIcons += 1;
         }
       }
     }
@@ -507,6 +626,10 @@ function normalize(rawObj) {
     activeProf.currentPage = target.currentPage;
   }
 
+  // 内存态不再携带 1.44MB 的图标池：图标已经 hydrate 进各按键 spec 里了，
+  // 再带一份只会让 config:load 的 IPC 体积翻倍、每次保存多克隆一遍。
+  target.iconStore = {};
+  target._unresolvedIcons = unresolvedIcons;
   target.version = DEFAULTS.version;
   return target;
 }
@@ -568,13 +691,35 @@ function load() {
     }
   }
 
+  // ---- 图标池准备：读 icons.json + 兼容旧格式内嵌 iconStore ----
+  loadIconStore();
+  const legacyStore = (saved && typeof saved.iconStore === 'object' && saved.iconStore) ? saved.iconStore : null;
+  if (legacyStore) {
+    for (const [k, v] of Object.entries(legacyStore)) {
+      if (typeof v === 'string' && v.startsWith('data:image/') && !iconStoreDisk[k]) {
+        iconStoreDisk[k] = v;
+        iconStoreDirty = true;
+      }
+    }
+  }
+  // 注意：必须在 normalize 之前收集引用 —— normalize 会把 @icon: 就地替换成 data URL
+  const rawRefs = collectReferencedIconRefs(saved);
+
   cache = normalize(saved);
+
+  // icons.json 瘦身（只保留仍被引用的图标；旧格式的实体也顺带在这里落盘）
+  try {
+    if (raw && rawRefs.size > 0) pruneIconStore(rawRefs);
+    else if (!fs.existsSync(ICONS_FILE)) pruneIconStore(new Set());
+  } catch (_) {}
+  iconStoreDirty = false;
   return cache;
 }
 
 /** Drop the in-memory copy so the next load() re-reads the file. */
 function invalidate() {
   cache = null;
+  invalidateIconStore();
 }
 
 /**
@@ -627,17 +772,9 @@ const iconHashMemo = new Map();
 
 function dehydrateIconsForDisk(normalized) {
   const diskCopy = clone(normalized);
-  const store = {};
   const internIcon = (val) => {
     if (typeof val === 'string' && val.startsWith('data:image/') && val.length > 256) {
-      let ref = iconHashMemo.get(val);
-      if (!ref) {
-        ref = 'ico_' + crypto.createHash('sha1').update(val).digest('hex').slice(0, 16);
-        if (iconHashMemo.size > 500) iconHashMemo.clear();
-        iconHashMemo.set(val, ref);
-      }
-      store[ref] = val;
-      return '@icon:' + ref;
+      return '@icon:' + internIconValue(val);
     }
     return val;
   };
@@ -669,8 +806,23 @@ function dehydrateIconsForDisk(normalized) {
       if (snap && snap.page) visitPages([snap.page]);
     }
   }
-  diskCopy.iconStore = store;
+  // 图标实体统一写 icons.json，config.json 里只留 @icon: 引用
+  delete diskCopy.iconStore;
+  delete diskCopy._unresolvedIcons;
   return diskCopy;
+}
+
+let p2BackupChecked = false;
+/** 第一次把图标池搬出 config.json 之前，留一份旧格式完整备份 */
+function ensureLegacyIconBackup() {
+  if (p2BackupChecked) return;
+  p2BackupChecked = true;
+  try {
+    const bak = FILE + '.pre-p2.bak';
+    if (fs.existsSync(bak) || !fs.existsSync(FILE)) return;
+    const raw = fs.readFileSync(FILE, 'utf8');
+    if (raw.includes('"iconStore"')) fs.writeFileSync(bak, raw, 'utf8');
+  } catch (_) {}
 }
 
 function save(cfg) {
@@ -682,6 +834,11 @@ function save(cfg) {
   }
   cache = normalized;
   const diskObj = dehydrateIconsForDisk(normalized);
+  ensureLegacyIconBackup();
+  if (iconStoreDirty) {
+    writeIconStoreSync();
+    iconStoreDirty = false;
+  }
   const text = JSON.stringify(diskObj, (key, value) => key.startsWith('_') ? undefined : value, 2);
   if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
     return true;
@@ -711,6 +868,11 @@ function saveAsync(cfg) {
   }
   cache = normalized;
   const diskObj = dehydrateIconsForDisk(normalized);
+  ensureLegacyIconBackup();
+  if (iconStoreDirty) {
+    writeIconStoreSync();
+    iconStoreDirty = false;
+  }
   const text = JSON.stringify(diskObj, (key, value) => key.startsWith('_') ? undefined : value, 2);
   if (lastRaw !== null && text === lastRaw && fs.existsSync(FILE)) {
     return Promise.resolve(true);
@@ -821,6 +983,21 @@ function deleteProfile(profileId, customCfg) {
   return true;
 }
 
+/**
+ * 生成"自包含"的配置文本：config.json 的引用 + icons.json 的图标实体。
+ * 导出的备份文件拿去别的机器/别的版本也能直接还原（导入时 normalize 会重新水合）。
+ */
+function exportText() {
+  let obj = {};
+  try {
+    const raw = readRaw();
+    if (raw) obj = JSON.parse(raw);
+  } catch (_) { obj = {}; }
+  if (!obj || typeof obj !== 'object') obj = {};
+  obj.iconStore = Object.assign({}, loadIconStore());
+  return JSON.stringify(obj, null, 2);
+}
+
 function get(key) {
   const cfg = load();
   return key ? cfg[key] : cfg;
@@ -834,8 +1011,9 @@ function set(key, value) {
 }
 
 module.exports = {
-  load, save, saveAsync, get, set, normalize, normalizeKeySpec, DEFAULTS, FILE,
+  load, save, saveAsync, get, set, normalize, normalizeKeySpec, DEFAULTS, FILE, ICONS_FILE,
   currentPage, childPages, pageTree, newPageId, DEFAULT_STRIPS, DEFAULT_GRADIENT,
-  invalidate, changedOnDisk, normalizeTags, readRaw,
+  invalidate, changedOnDisk, normalizeTags, readRaw, exportText,
   switchProfile, createProfile, renameProfile, deleteProfile, buildPresetProfilePages, buildDefaultContextBars,
+  listIconRefs: () => Object.keys(loadIconStore()),
 };

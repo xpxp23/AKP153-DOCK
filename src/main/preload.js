@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('api', {
 
   configLoad: () => ipcRenderer.invoke('config:load'),
   configSave: (cfg) => ipcRenderer.invoke('config:save', cfg),
+  iconRefs: () => ipcRenderer.invoke('icon:refs'),
   configGet: (k) => ipcRenderer.invoke('config:get', k),
   configExport: () => ipcRenderer.invoke('config:export'),
   configImport: () => ipcRenderer.invoke('config:import'),
@@ -50,6 +51,10 @@ contextBridge.exposeInMainWorld('api', {
   fetchFavicon: (url) => ipcRenderer.invoke('app:fetchFavicon', url),
 
   windowHide: () => ipcRenderer.invoke('window:hide'),
+  // 首屏渲染完成通知（主进程据此在隐藏状态下预热首帧）
+  uiReady: () => ipcRenderer.send('app:ui-ready'),
+  // 渲染进程长任务回报（只用于 perf 日志，节流由主进程做）
+  reportPerf: (kind, ms) => ipcRenderer.send('app:perf', { kind, ms }),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),

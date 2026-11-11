@@ -694,7 +694,13 @@ switch (CMD) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const dst = path.join(dir, `config-${stamp}.json`);
     fs.copyFileSync(config.FILE, dst);
-    say('已备份到 ' + dst);
+    // 图标实体已外置，备份必须一起带上，否则恢复出来图标全是空的
+    try {
+      if (fs.existsSync(config.ICONS_FILE)) {
+        fs.copyFileSync(config.ICONS_FILE, path.join(dir, `icons-${stamp}.json`));
+      }
+    } catch (_) {}
+    say('已备份到 ' + dst + '（图标池 icons-' + stamp + '.json）');
     done({ path: dst });
     break;
   }

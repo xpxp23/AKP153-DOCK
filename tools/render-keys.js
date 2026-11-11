@@ -33,7 +33,13 @@ app.whenReady().then(async () => {
   const raw = JSON.parse(fs.readFileSync(CFG, 'utf8'));
 
   // 复刻 src/main/config.js 的 @icon: 水合逻辑 —— 少了这一步所有图标都会是空的
-  const store = raw.iconStore || {};
+  // v0.11.3 起图标实体已搬到同目录的 icons.json，旧版内嵌 iconStore 仍兼容
+  let iconFileStore = {};
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(path.dirname(CFG), 'icons.json'), 'utf8'));
+    iconFileStore = (j && j.icons && typeof j.icons === 'object') ? j.icons : (j || {});
+  } catch (_) {}
+  const store = Object.assign({}, iconFileStore, raw.iconStore || {});
   const hydrate = (obj) => {
     if (!obj || typeof obj !== 'object') return;
     for (const k of ['icon', 'icon2']) {

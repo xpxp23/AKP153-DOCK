@@ -46,13 +46,10 @@ const PKT = PACKET + 1;
 
 const CMD = {
   DIS: [68, 73, 83],                       // wake panel
-  WAKE: [119, 97, 107, 101],
   STP: [83, 84, 80],                       // commit / refresh
-  HAN: [72, 65, 78],
-  SLEEP: [115, 108, 101, 101, 112],
+  HAN: [72, 65, 78],                       // screen sleep
   CONNECT: [67, 79, 78, 78, 69, 67, 84],   // heartbeat
   CLEAR_ALL: [67, 76, 69, 0, 0, 0, 255],   // "CLE" \0 \0 \0 0xff
-  DEVICE_CLOSE: [67, 76, 69, 0, 0, 68, 67],
 };
 
 const RECONNECT_MS = 2000;
@@ -512,7 +509,13 @@ class Device {
     const full = !!opts.full && list.length > 1;
     const epoch = Number(opts.epoch) || 0;
     if (this.asleep) {
-      return { drawn: 0, skipped: list.length, failed: [], missing: [], aborted: true };
+      return {
+        drawn: 0,
+        skipped: list.length,
+        failed: [],
+        missing: list.filter(Boolean).map((it) => ({ row: it.row, col: it.col })),
+        aborted: true,
+      };
     }
     if (list.length === 0) return { drawn: 0, skipped: 0, failed: [], missing: [], aborted: false };
 
@@ -609,29 +612,24 @@ class Device {
     if (m === 'blackout') {
       if (!wasAlreadyAsleep) {
         await step('CLEAR_ALL', () => this.clearScreen());
-        await waitHw(45);
+        await waitHw(30);
       }
       await step('LBLIG0', () => this.setLedBrightness(0));
-      await waitHw(20);
+      await waitHw(15);
       await step('LIG0', () => this.setBrightness(0));
-      await waitHw(20);
+      await waitHw(15);
       await step('HAN', () => this.cmd(CMD.HAN));
       await waitHw(20);
-      await step('sleep', () => this.cmd(CMD.SLEEP));
-      await waitHw(35);
     } else if (m === 'zeros-last') {
       await step('LBLIG0', () => this.setLedBrightness(0));
       await step('LIG0', () => this.setBrightness(0));
       await step('HAN', () => this.cmd(CMD.HAN));
-      await step('sleep', () => this.cmd(CMD.SLEEP));
     } else if (m === 'vendor') {
-      await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
-      await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
       await step('LBLIG0[76,66,76,73,71,0]', () => this.setLedBrightness(0));
       await step(`LIG0[76,73,71,0,0,${gamma(0)}]`, () => this.setBrightness(0));
+      await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
     } else if (m === 'nobright') {
       await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
-      await step('sleep[115,108,101,101,112]', () => this.cmd(CMD.SLEEP));
     } else {
       await step('LIG0', () => this.setBrightness(0));
       await step('LBLIG0', () => this.setLedBrightness(0));
@@ -651,7 +649,6 @@ class Device {
     this.brightness = b;
     this.savedBrightness = b;
     await this.cmd(CMD.DIS).catch(() => {});
-    await this.cmd(CMD.WAKE).catch(() => {});
     await this.setBrightness(b).catch(() => {});
     await this.setLedBrightness(b).catch(() => {});
     return true;
@@ -662,12 +659,9 @@ class Device {
     this.lastFrames.clear();
     const b = brightness == null ? this.brightness : brightness;
     await this.cmd(CMD.DIS).catch(() => {});
-    await this.cmd(CMD.WAKE).catch(() => {});
     await this.cmd(CMD.HAN).catch(() => {});
-    await this.cmd(CMD.SLEEP).catch(() => {});
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 200));
     await this.cmd(CMD.DIS).catch(() => {});
-    await this.cmd(CMD.WAKE).catch(() => {});
     await this.setBrightness(b).catch(() => {});
     await this.setLedBrightness(b).catch(() => {});
     return true;
@@ -682,6 +676,7 @@ class Device {
       const wasAsleep = this.asleep;
       try {
         this.open();
+        this.openFailReported = false;
         if (wasAsleep) {
           await this.sleep(this.lastSleepMode, true);
         } else {
@@ -695,7 +690,12 @@ class Device {
           asleep: !!wasAsleep,
         });
       } catch (e) {
-        /* still missing / busy - keep trying */
+        // 每次"离线周期"只上报一次，主进程据此让渲染侧进入指数退避；
+        // 不这样报的话，渲染进程永远不知道设备没打开，会一直空转编码+推图。
+        if (!this.openFailReported) {
+          this.openFailReported = true;
+          emit({ event: 'open-failed', message: String((e && e.message) || e) });
+        }
       }
     }, RECONNECT_MS);
   }
@@ -724,6 +724,7 @@ async function handle(msg) {
         if (msg.debounceMs !== undefined) device.setDebounce(msg.debounceMs);
         if (msg.profileId) device.setHardwareProfile(msg.profileId);
         const info = device.open();
+        device.openFailReported = false;
         return reply(id, {
           info: {
             path: info.path,

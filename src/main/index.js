@@ -72,6 +72,34 @@ function log(...args) {
 process.on('uncaughtException', (e) => { log('UNCAUGHT', e); flushLogsSync(); });
 process.on('unhandledRejection', (e) => { log('UNHANDLED', e); });
 
+// --------------------------------------------- 主进程事件循环卡顿看门狗 (perf)
+// 托盘右键菜单、窗口 show 都必须等主线程回到消息循环才能响应。
+// 这里只观测"定时器漂移"，正常情况下零额外开销（一个 500ms 的空定时器），
+// 只有真的卡了才写一条日志，用来验证"去阻塞"是否生效。
+let loopWatchdogTimer = null;
+let loopLagSuppressed = 0;
+function startLoopWatchdog() {
+  if (loopWatchdogTimer) return;
+  const TICK = 500;
+  let last = Date.now();
+  loopWatchdogTimer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - TICK;
+    last = now;
+    if (lag < 120) return;
+    // 同一波卡顿只记一条，避免刷爆日志本身又变成新的卡顿源
+    if (loopLagSuppressed > 0) { loopLagSuppressed += 1; return; }
+    loopLagSuppressed = 1;
+    log(`[perf] 主进程事件循环阻塞 ${lag}ms`);
+    setTimeout(() => {
+      if (loopLagSuppressed > 1) log(`[perf] 同批卡顿合并 ${loopLagSuppressed - 1} 次`);
+      loopLagSuppressed = 0;
+    }, 3000).unref();
+  }, TICK);
+  if (loopWatchdogTimer.unref) loopWatchdogTimer.unref();
+}
+
+
 const STARTUP = process.argv.includes('--startup');
 
 let tray = null;
@@ -181,6 +209,7 @@ function spawnHost() {
     child.on('error', () => { tryNext(); });
     child.on('exit', () => {
       hostReady = false;
+      deviceLinkUp = null;
       if (host === child) {
         host = null;
         broadcast('host:status', { ready: false, error: 'HOST_EXITED' });
@@ -217,13 +246,17 @@ function spawnHost() {
         } else if (msg.event === 'lost') {
           log('device lost:', msg.message);
           hostError = 'DEVICE_LOST';
-          broadcast('host:status', { ready: true, device: false, error: 'DEVICE_LOST' });
+          publishDeviceLink(false, 'DEVICE_LOST');
+        } else if (msg.event === 'open-failed') {
+          // host 每 2s 会重试一次 open，这里靠状态去重，只在"在线->离线"跳变时通知渲染进程
+          hostError = 'DEVICE_OPEN_FAILED';
+          publishDeviceLink(false, 'DEVICE_OPEN_FAILED');
         } else if (msg.event === 'opened') {
           log('device reopened by watchdog:', msg.path, 'asleep=' + !!msg.asleep);
           if (msg.path) NativeInput.setDevicePath(msg.path);
           hostError = null;
           deviceAsleep = !!msg.asleep;
-          broadcast('host:status', { ready: true, device: true, error: null });
+          publishDeviceLink(true);
           if (!deviceAsleep) repaintSoon(true);
         } else if (msg.event === 'error') {
           broadcast('host:status', { ready: hostReady, error: msg.message });
@@ -254,6 +287,16 @@ function broadcast(channel, payload) {
   if (win && !win.isDestroyed() && win.webContents) {
     win.webContents.send(channel, payload);
   }
+}
+
+// 设备链路状态（null=未知）。只在跳变时广播，避免 host 每 2s 重试把渲染进程刷爆。
+let deviceLinkUp = null;
+function publishDeviceLink(up, error) {
+  if (deviceLinkUp === up) return false;
+  deviceLinkUp = up;
+  log(`[perf] 设备链路 -> ${up ? '在线' : '离线'}${up ? '' : ' (' + (error || '') + ')'}`);
+  broadcast('host:status', { ready: hostReady, device: up, error: up ? null : (error || null) });
+  return true;
 }
 
 function notify(msg) {
@@ -489,21 +532,14 @@ async function prepareExitAndSleep() {
   if (isQuitting) return;
   isQuitting = true;
   runner.stopAllMacros();
-  log('prepareExitAndSleep: 正在关闭并休眠 AKP153 控制台硬件...');
+  log('prepareExitAndSleep: 正在关闭控制台并清理资源...');
   flushLogsSync();
   try {
-    let hostBlackoutOk = false;
     if (host && hostReady) {
-      // 优先通过已持有 HID 句柄的 device-host 下发 blackout 并关闭句柄，避免双进程并发争抢同一 USB 端点
-      const res = await safeRpc('sleep', { mode: 'blackout', force: true });
-      await safeRpc('close', {});
-      hostBlackoutOk = !!(res && res.ok);
-      if (hostBlackoutOk && NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
-        try { await NativeInput.ackHostBlackout(); } catch (_) {}
-      }
+      try { await safeRpc('close', {}, 500); } catch (_) {}
     }
-
-    if (process.platform === 'win32' && !hostBlackoutOk) {
+    // 若属于用户主动退出控制台（非系统关机触发），通过 C# 原生保底执行全套灭屏
+    if (process.platform === 'win32') {
       try {
         await NativeInput.blackoutHardware();
       } catch (e) {
@@ -511,7 +547,7 @@ async function prepareExitAndSleep() {
       }
     }
   } catch (err) {
-    log('prepareExitAndSleep 硬件休眠失败:', err);
+    log('prepareExitAndSleep 关闭异常:', err);
   } finally {
     flushLogsSync();
     if (process.platform === 'win32') {
@@ -1416,6 +1452,27 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
 const WIN_DEFAULT = { width: 1180, height: 820 };
 const WIN_MIN = { width: 1000, height: 660 };
 
+let boundsTimer = null;
+let pendingBounds = null;
+
+/** 把窗口尺寸/位置异步落盘（绝不在拖拽路径上同步写 1.65MB） */
+function flushWindowBounds() {
+  if (boundsTimer) { clearTimeout(boundsTimer); boundsTimer = null; }
+  if (win && !win.isDestroyed()) {
+    try {
+      if (!win.isMinimized() && !win.isMaximized()) pendingBounds = win.getBounds();
+    } catch (_) {}
+  }
+  if (!pendingBounds) return;
+  const b = pendingBounds;
+  pendingBounds = null;
+  try {
+    const cfg = config.load();
+    cfg.window = b;
+    config.saveAsync(cfg).catch(() => {});
+  } catch (_) {}
+}
+
 function restoreBounds() {
   const saved = config.load().window;
   const b = Object.assign({}, WIN_DEFAULT);
@@ -1456,16 +1513,18 @@ function createWindow() {
   win.on('maximize', () => broadcast('window:max-changed', { maximized: true }));
   win.on('unmaximize', () => broadcast('window:max-changed', { maximized: false }));
 
-  let boundsTimer = null;
+  // ---- 窗口尺寸/位置持久化 ----------------------------------------------
+  // 原实现每 700ms 就 config.set('window')，而 config.set 会在主线程同步
+  // normalize + dehydrate + stringify + 写盘 1.65MB（约 40~80ms）。
+  // 拖动窗口期间反复触发，正好是"右键托盘菜单要等好几秒"的贡献者之一。
+  // 现在只在内存里记一下，等手停下 2.5s（或窗口隐藏/退出时）再异步落盘。
   const rememberBounds = () => {
     clearTimeout(boundsTimer);
-    boundsTimer = setTimeout(() => {
-      if (!win || win.isDestroyed() || win.isMinimized() || win.isMaximized()) return;
-      config.set('window', win.getBounds());
-    }, 700);
+    boundsTimer = setTimeout(flushWindowBounds, 2500);
   };
   win.on('resize', rememberBounds);
   win.on('move', rememberBounds);
+  win.on('hide', flushWindowBounds);
 
   win.on('close', (e) => {
     if (isQuitting) return;
@@ -1508,7 +1567,10 @@ function createWindow() {
   });
 }
 
-function rebuildTrayMenu() {
+let trayRebuildTimer = null;
+
+/** 真正的原生菜单构建（只有这一步会碰原生 API，开销亚毫秒级） */
+function buildAndSetTrayMenu() {
   if (!tray) return;
   const cfg = config.load();
   const profileSubmenu = (cfg.profiles || []).map((prof) => ({
@@ -1526,7 +1588,7 @@ function rebuildTrayMenu() {
     {
       label: '开机自启',
       type: 'checkbox',
-      checked: !!config.load().openAtLogin,
+      checked: !!cfg.openAtLogin,
       click: (item) => {
         config.set('openAtLogin', item.checked);
         setStartupRegistry(item.checked);
@@ -1541,19 +1603,105 @@ function rebuildTrayMenu() {
   tray.setContextMenu(menu);
 }
 
+/**
+ * 重建托盘菜单。
+ * 自动跟随切页（Auto-Profile）在后台会频繁切换 profile，而每次切换都会重建
+ * 一次原生菜单。加 800ms 合并：连续切换只重建最后一次，右键时永远不会正好
+ * 撞上"正在重建菜单"。
+ */
+function rebuildTrayMenu(immediate) {
+  if (!tray) return;
+  if (immediate) {
+    if (trayRebuildTimer) { clearTimeout(trayRebuildTimer); trayRebuildTimer = null; }
+    buildAndSetTrayMenu();
+    return;
+  }
+  if (trayRebuildTimer) return;
+  trayRebuildTimer = setTimeout(() => {
+    trayRebuildTimer = null;
+    buildAndSetTrayMenu();
+  }, 800);
+}
+
 function createTray() {
   const iconPath = path.join(__dirname, '..', '..', 'assets', 'tray.png');
   tray = new Tray(nativeImage.createFromPath(iconPath));
   tray.setToolTip('AKP153 控制台');
-  rebuildTrayMenu();
+  rebuildTrayMenu(true);
+  // 左键单击直接打开主界面（原来左键完全没反应，只能双击或右键找菜单）
+  tray.on('click', () => showWindow());
   tray.on('double-click', () => showWindow());
+}
+
+let pendingShow = false;
+
+function flushPendingShow() {
+  if (!pendingShow) return;
+  pendingShow = false;
+  if (win && !win.isDestroyed()) { win.show(); win.focus(); }
 }
 
 function showWindow() {
   if (!win || win.isDestroyed()) createWindow();
+  // 冷启动时窗口还在加载：此刻 show() 只会弹出一个空白壳。
+  // 等"首屏 DOM 就绪"(app:ui-ready) 或 HTML 加载完成再显示，实在不行 6 秒后兜底。
+  if (win.webContents && win.webContents.isLoading()) {
+    if (pendingShow) return;
+    pendingShow = true;
+    win.webContents.once('did-finish-load', flushPendingShow);
+    setTimeout(flushPendingShow, 6000).unref();
+    return;
+  }
   win.show();
   win.focus();
 }
+
+// ------------------------------------------------------- 首帧预热 (perf)
+// 症状：双击后窗口壳立刻出现，内容空白好几秒才"啪"地整块出现。
+// 原因：--startup 模式下窗口从启动到被点开一次都没显示过，首次样式计算、
+// 布局、1.44MB base64 图标解码全压在那一下。
+// 方案：启动后趁没人看，主动强制合成一帧（方案 B），不行再用"透明映射"兜底（方案 A）。
+let windowWarmed = false;
+let warmInFlight = false;
+
+async function prewarmFirstFrame() {
+  if (windowWarmed || warmInFlight) return;
+  if (!win || win.isDestroyed()) return;
+  const wc = win.webContents;
+  if (!wc || wc.isLoading()) return;
+  warmInFlight = true;
+  const t0 = Date.now();
+  try {
+    // 方案 B：隐藏态强制合成一帧，零闪现
+    try {
+      const img = await wc.capturePage();
+      if (img && !img.isEmpty()) {
+        windowWarmed = true;
+        log(`[perf] 首帧预热完成 (capturePage, ${Date.now() - t0}ms)`);
+        return;
+      }
+    } catch (_) {}
+
+    // 方案 A 兜底：透明地映射一次窗口，让合成器真正产出首帧，然后立刻藏回去
+    const wasVisible = win.isVisible();
+    try {
+      win.setOpacity(0);
+      win.showInactive();
+      await new Promise((r) => setTimeout(r, 320));
+      await wc.capturePage().catch(() => {});
+      if (!wasVisible && win && !win.isDestroyed()) win.hide();
+      win.setOpacity(1);
+      windowWarmed = true;
+      log(`[perf] 首帧预热完成 (透明映射兜底, ${Date.now() - t0}ms)`);
+    } catch (e) {
+      try { win.setOpacity(1); } catch (_) {}
+      log('[perf] 首帧预热失败:', e && e.message);
+    }
+  } finally {
+    warmInFlight = false;
+  }
+}
+
 
 // --------------------------------------------------------------------- ipc
 
@@ -1564,6 +1712,25 @@ ipcMain.handle('config:load', () => {
   }
   return cfg;
 });
+
+// 渲染进程首屏渲染完成 -> 立刻趁没人看把首帧合成出来（见 prewarmFirstFrame）
+ipcMain.on('app:ui-ready', () => {
+  // 用户冷启动时等着开窗：DOM 一就绪马上显示，不再等 HTML 加载完成
+  flushPendingShow();
+  if (win && !win.isDestroyed() && win.isVisible()) { windowWarmed = true; return; }
+  setTimeout(() => { prewarmFirstFrame().catch(() => {}); }, 200).unref();
+});
+
+// 渲染进程长任务（>120ms）回报：和主进程的卡顿看门狗配对，用来验证首帧修复是否生效
+let lastRendererPerfLogAt = 0;
+ipcMain.on('app:perf', (e, payload) => {
+  const ms = Math.round(Number(payload && payload.ms) || 0);
+  if (ms < 120) return;
+  const now = Date.now();
+  if (now - lastRendererPerfLogAt < 5000) return;
+  lastRendererPerfLogAt = now;
+  log(`[perf] 渲染进程长任务 ${ms}ms`);
+});
 ipcMain.handle('config:save', async (e, cfg) => {
   const res = await config.saveAsync(cfg);
   const loaded = config.load();
@@ -1572,8 +1739,20 @@ ipcMain.handle('config:save', async (e, cfg) => {
   }
   resetIdleTimer();
   syncWatchedProcsToNative();
-  return res;
+  // 保存后校验：渲染端只发 @icon: 引用 + 新增图标，如果引用解析不出来，
+  // 说明图标池和渲染端脱节了 —— 告诉它一声，让它用完整数据重发一次。
+  const unresolved = Number((loaded && loaded._unresolvedIcons) || 0);
+  if (unresolved > 0) {
+    log(`[perf] 保存校验：${unresolved} 个图标引用未解析，已请求渲染端用完整图标重发`);
+  }
+  return {
+    ok: res !== false,
+    iconRefs: config.listIconRefs(),
+    unresolved,
+  };
 });
+
+ipcMain.handle('icon:refs', () => config.listIconRefs());
 ipcMain.handle('runtime:getSnapshot', (e, pageId) => {
   const pid = pageId || (config.currentPage() && config.currentPage().id) || 'p1';
   return {
@@ -2603,7 +2782,8 @@ ipcMain.handle('config:export', async () => {
   });
   if (res.canceled || !res.filePath) return { ok: false, canceled: true };
   try {
-    const raw = fs.readFileSync(config.FILE, 'utf8');
+    // 图标实体已外置到 icons.json，导出时把它内嵌回去，保证备份是自包含的
+    const raw = config.exportText();
     fs.writeFileSync(res.filePath, raw, 'utf8');
     log('config backup exported ->', res.filePath);
     return { ok: true, path: res.filePath };
@@ -2754,6 +2934,7 @@ if (!gotLock) {
     Menu.setApplicationMenu(null);
 
     log('app ready, startup=' + STARTUP);
+    startLoopWatchdog();
     createTray();
     createWindow();
     if (!STARTUP) showWindow();
@@ -2800,11 +2981,9 @@ if (!gotLock) {
       });
       NativeInput.on('shutdown', (payload) => {
         if (payload && payload.mode === 'suspend') {
-          doSleep(true, 'blackout').then(() => {
-            if (NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
-              NativeInput.ackHostBlackout().catch(() => {});
-            }
-          });
+          doSleep(true, 'blackout').catch(() => {});
+        } else if (payload && payload.mode === 'resume') {
+          doWake().catch(() => {});
         } else {
           prepareExitAndSleep();
         }
@@ -2812,7 +2991,8 @@ if (!gotLock) {
     }
 
     setInterval(() => {
-      if (!deviceAsleep) broadcast('device:repaint-strips', {});
+      // 设备离线时别再往渲染进程发"重画副屏"，那边会白编码 3 张 JPEG 再撞 NOT_OPEN
+      if (!deviceAsleep && deviceLinkUp !== false) broadcast('device:repaint-strips', {});
     }, 30000);
 
     // 降频兜底巡检（前台切换与进程变更已由 WinEventHook 与原生监控实时推送）

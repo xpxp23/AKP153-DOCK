@@ -206,8 +206,15 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
   mod.save(c);
   const rawDisk = fs.readFileSync(mod.FILE, "utf8");
   const parsedDisk = JSON.parse(rawDisk);
-  const storeKeys = Object.keys(parsedDisk.iconStore || {});
-  check("磁盘落盘自动生成 iconStore 哈希去重池", storeKeys.length === 1);
+  // v0.11.3：图标实体外置到 icons.json，config.json 只保留 @icon: 引用
+  let diskIcons = {};
+  try {
+    const j = JSON.parse(fs.readFileSync(mod.ICONS_FILE, "utf8"));
+    diskIcons = (j && j.icons) ? j.icons : (j || {});
+  } catch (_) {}
+  const storeKeys = Object.keys(diskIcons);
+  check("磁盘落盘自动生成图标哈希去重池 (icons.json)", storeKeys.length === 1);
+  check("config.json 不再内嵌 1.44MB 图标池", parsedDisk.iconStore === undefined);
   check("磁盘按钮 icon 字段转为轻量 @icon: 引用", String(parsedDisk.pages[0].buttons["0,0"].icon).startsWith("@icon:"));
   check("v0.10.6 自动剥离存量长按副动作字段 (longPressEnabled / longAction)",
     parsedDisk.pages[0].buttons["0,0"].longPressEnabled === undefined &&

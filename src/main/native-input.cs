@@ -627,38 +627,26 @@ namespace AkpInput
                     int wp = m.WParam.ToInt32();
                     if (wp == PBT_APMSUSPEND)
                     {
-                        _hostBlackoutAcked = false;
+                        _hostBlackoutAcked = true;
+                        try { DirectHardwareBlackout(); } catch { }
                         EmitEvent("shutdown", "suspend");
-                        for (int w = 0; w < 20 && !_hostBlackoutAcked; w++)
-                        {
-                            Thread.Sleep(45);
-                        }
-                        if (!_hostBlackoutAcked)
-                        {
-                            try { DirectHardwareBlackout(); } catch { }
-                            _hostBlackoutAcked = true;
-                        }
                     }
                     else if (wp == PBT_APMRESUMEAUTOMATIC)
                     {
                         _hostBlackoutAcked = false;
                         _deviceKnownAsleep = false;
+                        EmitEvent("shutdown", "resume");
                     }
                 }
                 if (m.Msg == WM_QUERYENDSESSION || (m.Msg == WM_ENDSESSION && m.WParam != IntPtr.Zero))
                 {
+                    // 1. 同步执行底层硬件灭屏直发（耗时 < 30ms，绝不等待 Node.js 异步回调）
+                    _hostBlackoutAcked = true;
+                    try { DirectHardwareBlackout(); } catch { }
+
+                    // 2. 异步通知 Node.js 执行上层业务逻辑退出（停止宏、保存配置等）
                     EmitEvent("shutdown", "1");
-                    // 等待主进程/device-host.js 优先通过既有 HID 句柄优雅完成 blackout（最多 1100ms），
-                    // 仅当主进程已先退出或超时未确认时才由 C# 守护窗执行底层 DirectHardwareBlackout，彻底消除双进程并发写 HID 冲突。
-                    for (int w = 0; w < 22 && !_hostBlackoutAcked; w++)
-                    {
-                        Thread.Sleep(50);
-                    }
-                    if (!_hostBlackoutAcked)
-                    {
-                        try { DirectHardwareBlackout(); } catch { }
-                        _hostBlackoutAcked = true;
-                    }
+
                     if (m.Msg == WM_QUERYENDSESSION)
                     {
                         try { ShutdownBlockReasonDestroy(this.Handle); } catch { }
@@ -667,6 +655,8 @@ namespace AkpInput
                     }
                     else
                     {
+                        // WM_ENDSESSION: 最后一瞬保底检测，随后安全退出 C# 表单
+                        try { DirectHardwareBlackout(); } catch { }
                         Application.Exit();
                         m.Result = IntPtr.Zero;
                         return;
@@ -915,17 +905,15 @@ namespace AkpInput
                 var delayList = new List<int>();
                 if (!_deviceKnownAsleep)
                 {
-                    seqList.Add(new byte[] { 67, 76, 69, 0, 0, 0, 255 }); // CLEAR_ALL
-                    delayList.Add(45);
+                    seqList.Add(new byte[] { 67, 76, 69, 0, 0, 0, 255 }); // CLEAR_ALL (刷黑按键像素)
+                    delayList.Add(10);
                 }
-                seqList.Add(new byte[] { 76, 66, 76, 73, 71, 0 });       // LBLIG 0
-                delayList.Add(20);
-                seqList.Add(new byte[] { 76, 73, 71, 0, 0, 0 });         // LIG 0
-                delayList.Add(20);
-                seqList.Add(new byte[] { 72, 65, 78 });                  // HAN
-                delayList.Add(20);
-                seqList.Add(new byte[] { 115, 108, 101, 101, 112 });      // sleep
-                delayList.Add(35);
+                seqList.Add(new byte[] { 76, 66, 76, 73, 71, 0 });       // LBLIG 0 (侧边指示灯背光清零)
+                delayList.Add(5);
+                seqList.Add(new byte[] { 76, 73, 71, 0, 0, 0 });         // LIG 0 (主 LCD 屏幕背光清零)
+                delayList.Add(5);
+                seqList.Add(new byte[] { 72, 65, 78 });                  // HAN (原厂屏幕休眠低功耗)
+                delayList.Add(5);
 
                 bool anySuccess = false;
                 foreach (var path in candidatePaths)

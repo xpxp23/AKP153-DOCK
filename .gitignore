@@ -22,3 +22,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 外置图标池 (v0.11.3+)
+icons.json
+icons.json.tmp
+
+# 本地工作区工具与缓存
+.workbuddy/

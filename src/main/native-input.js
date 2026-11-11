@@ -6,10 +6,10 @@
  * 具备：
  * 1. 自动按需编译更新：若检测到 native-input.cs 比 bin/akp-input.exe 更新，自动调用系统 .NET csc.exe 重编译；
  * 2. 异步流水号 + FIFO 双模守卫：支持 @id 异步乱序回调（耗时鼠标平滑移动或宏录制绝不阻塞音量/窗口查询），同时向下兼容旧版二进制；
- * 3. 安全参数隔离与多行清洗：降级模式采用 spawnSync 参数数组传递，彻底杜绝 cmd 命令行注入。
+ * 3. 安全参数隔离与多行清洗：降级模式采用 execFile 参数数组传递（异步，绝不阻塞主进程事件循环），彻底杜绝 cmd 命令行注入。
  * 4. HWND 级窗口状态探测与一键唤醒/最小化切换支持。
  */
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -27,6 +27,8 @@ let pendingQueue = []; // [{ id, resolve, timer }]
 let reqSeq = 0;
 let supportsIdPrefix = true;
 let compileChecked = false;
+// 降级分支的串行队列：确保同一时刻只有一个 akp-input.exe 进程，且永不阻塞主线程
+let fallbackChain = Promise.resolve();
 
 /**
  * 若在 Windows 环境下发现 native-input.cs 源码哈希或时间戳发生变更，自动调用内置 .NET Framework csc.exe 重编译
@@ -232,20 +234,24 @@ function sendCmd(cmdStr, timeoutMs = 4000) {
         resolve('ERR WRITE_FAILED');
       }
     } else {
-      try {
-        const r = spawnSync(BIN_PATH, [sanitized], {
+      // 降级分支：daemon 不可用时单次调用 akp-input.exe。
+      // 曾经这里用 spawnSync —— 每次调用会把 Electron 主进程事件循环整整卡住
+      // 最多 2000ms（托盘右键菜单要等它、窗口 show 也要等它）。改成异步 execFile，
+      // 语义完全一致（同样返回一个 Promise），但主线程不再被占用。
+      fallbackChain = fallbackChain.then(() => new Promise((done) => {
+        execFile(BIN_PATH, [sanitized], {
           encoding: 'utf8',
           windowsHide: true,
           timeout: 2000,
+          maxBuffer: 4 * 1024 * 1024,
+        }, (err, stdout) => {
+          if (err) {
+            done('ERR ' + (err.message || String(err)));
+          } else {
+            done(String(stdout || '').trim() || 'OK');
+          }
         });
-        if (r.error) {
-          resolve('ERR ' + r.error.message);
-        } else {
-          resolve(String(r.stdout || '').trim() || 'OK');
-        }
-      } catch (e) {
-        resolve('ERR ' + e.message);
-      }
+      })).then(resolve, (e) => resolve('ERR ' + (e && e.message ? e.message : String(e))));
     }
   });
 }
