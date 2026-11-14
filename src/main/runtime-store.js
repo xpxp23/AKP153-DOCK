@@ -315,7 +315,7 @@ function computeRenderModel(spec, keyRuntime = {}, globalState = {}) {
     labelPos: spec.labelPos || spec.titlePos || 'bottom',
     titlePos: spec.labelPos || spec.titlePos || 'bottom',
     hideTitle: !!spec.hideTitle,
-    iconScale: Number(spec.iconScale) || 62,
+    iconScale: Number(spec.iconScale) || ((spec.textIconConfig && spec.textIconConfig.fullBleed) ? 100 : (spec.icon ? (/^data:image\/svg\+xml/i.test(spec.icon) ? 72 : 84) : 62)),
     offsetX: Number(spec.offsetX) || 0,
     offsetY: Number(spec.offsetY) || 0,
     bgGradient: spec.bgGradient || '',
@@ -372,20 +372,23 @@ function computeStripRenderModel(stripSpec, row, globalState = {}, pageLabel = '
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
-  const dateStr = `${now.getMonth() + 1}月${now.getDate()}日`;
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const da = String(now.getDate()).padStart(2, '0');
+  const wd = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
+  const dateStr = `${mo}-${da} 周${wd}`;
 
   let topText = s.label || '';
   let mainText = '';
   let subText = '';
-  let accent = '#38bdf8';
+  let accent = '#80deea';
   let progressPct = -1;
   let history = null;
 
   if (t === 'clock') {
     topText = dateStr;
     mainText = `${hh}:${mm}`;
-    subText = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
-    accent = '#38bdf8';
+    subText = '';
+    accent = '#80deea';
   } else if (t === 'cpu') {
     topText = 'CPU 负载';
     mainText = `${Math.round(Number(sys.cpu) || 0)}%`;

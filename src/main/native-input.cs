@@ -3781,9 +3781,10 @@ namespace AkpInput
                             using (var ms = new MemoryStream(imgBytes))
                             using (var iconImg = Image.FromStream(ms))
                             {
-                                int dim = Math.Max(20, Math.Min(size - 8, (size * iconScale) / 100));
-                                int ix = (size - dim) / 2;
-                                int iy = string.IsNullOrEmpty(title) ? ((size - dim) / 2) : Math.Max(4, (size - dim) / 2 - 7);
+                                bool fullBleed = iconScale >= 96;
+                                int dim = fullBleed ? size : Math.Max(20, Math.Min(size - 6, (size * iconScale) / 100));
+                                int ix = fullBleed ? 0 : (size - dim) / 2;
+                                int iy = fullBleed ? 0 : (string.IsNullOrEmpty(title) ? ((size - dim) / 2) : Math.Max(2, (size - dim) / 2 - 7));
                                 g.DrawImage(iconImg, new Rectangle(ix, iy, dim, dim));
                             }
                         }

@@ -360,12 +360,26 @@ async function safeRpc(cmd, args, timeoutMs) {
   try { return await rpc(cmd, args, timeoutMs); } catch (e) { return { ok: false, error: e.message }; }
 }
 
+function hasLiveRenderer() {
+  return Boolean(win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed() && !win.webContents.isCrashed());
+}
+
 async function triggerHeadlessPushIfNeeded(force = false) {
   try {
     const cfg = config.load();
     const isHidden = !win || win.isDestroyed() || !win.isVisible();
     runtimeStore.globalState.headlessStats.active = Boolean(isHidden && cfg.headlessTrayMode !== false);
-    if (!isHidden || cfg.headlessTrayMode === false || deviceAsleep || deviceLinkUp === false) return;
+    if (cfg.headlessTrayMode === false || deviceAsleep || deviceLinkUp === false) return;
+
+    // 关键修复：只要渲染进程 (win.webContents) 存活（即使窗口 win.hide() 隐藏在托盘），
+    // 必须始终由渲染进程的 HTML5 Canvas 管线 (paintKey / paintClockStrip) 统一负责像素绘制，
+    // 绝不允许主进程的 GDI+ 简版无头光栅化器在后台把时钟副屏（11-14 周六 -> 11月14日）
+    // 或软件/文件夹/文字工坊图标覆盖成简版样式！
+    // 仅当 win 真正被销毁的无窗口守护模式下，才启用 GDI+/软件无头兜底渲染。
+    if (hasLiveRenderer()) {
+      return;
+    }
+
     const page = config.currentPage();
     if (!page) return;
     const strips = (activeContextBar && activeContextBar.strips) ? activeContextBar.strips : page.strips;
@@ -383,11 +397,13 @@ async function triggerHeadlessPushIfNeeded(force = false) {
 }
 
 function repaintSoon(force = false) {
-  broadcast('device:repaint', { force: !!force });
-  if (!win || win.isDestroyed() || !win.isVisible()) {
+  if (hasLiveRenderer()) {
+    broadcast('device:repaint', { force: !!force });
+    if (win.webContents.isLoading()) {
+      setTimeout(() => broadcast('device:repaint', { force: !!force }), 900);
+    }
+  } else {
     triggerHeadlessPushIfNeeded(force).catch(() => {});
-  } else if (win.webContents && win.webContents.isLoading()) {
-    setTimeout(() => broadcast('device:repaint', { force: !!force }), 900);
   }
 }
 
@@ -2017,6 +2033,8 @@ const drawStats = { ok: 0, fail: 0, skipped: 0, lastError: null };
 
 ipcMain.handle('device:draw', async (e, a) => {
   if (deviceAsleep) return { ok: true, drawn: false, skipped: true };
+  const isTrayHidden = !win || win.isDestroyed() || !win.isVisible();
+  runtimeStore.globalState.headlessStats.active = isTrayHidden;
   const r = await safeRpc('draw', a);
   if (r && r.ok === false) {
     drawStats.fail++;
@@ -2024,8 +2042,13 @@ ipcMain.handle('device:draw', async (e, a) => {
     log(`draw FAILED r${a.row}c${a.col}: ${r.error}`);
   } else if (r && r.skipped) {
     drawStats.skipped++;
+    if (isTrayHidden) runtimeStore.globalState.headlessStats.savedIpcCount += 1;
   } else {
     drawStats.ok++;
+    if (isTrayHidden) {
+      runtimeStore.globalState.headlessStats.framesRendered += 1;
+      runtimeStore.globalState.headlessStats.lastRenderAt = Date.now();
+    }
   }
   return r;
 });
@@ -2044,6 +2067,13 @@ ipcMain.handle('device:batchDraw', async (e, a) => {
     drawStats.lastError = r.error;
     log(`batchDraw FAILED (${items.length} items, full=${full}): ${r.error}`);
   } else if (r) {
+    const isTrayHidden = !win || win.isDestroyed() || !win.isVisible();
+    runtimeStore.globalState.headlessStats.active = isTrayHidden;
+    if (isTrayHidden) {
+      runtimeStore.globalState.headlessStats.framesRendered += Number(r.drawn) || 0;
+      runtimeStore.globalState.headlessStats.savedIpcCount += Number(r.skipped) || 0;
+      runtimeStore.globalState.headlessStats.lastRenderAt = Date.now();
+    }
     drawStats.ok += Number(r.drawn) || 0;
     drawStats.skipped += Number(r.skipped) || 0;
     if (Array.isArray(r.failed) && r.failed.length) {
@@ -2341,16 +2371,24 @@ function toSafeDataUrl(nat, maxDim = 512) {
   return nat.toDataURL();
 }
 
-/** 读取 PNG data URL 的像素边长；非 PNG / 解析失败返回 0。 */
+/** 读取 data URL 图标的像素边长；支持 PNG 头部快速解析及 JPEG/WebP nativeImage 兜底解析。 */
 function iconPixelSize(dataUrl) {
   if (typeof dataUrl !== 'string') return 0;
   const comma = dataUrl.indexOf(',');
   if (comma < 0) return 0;
   try {
     const buf = Buffer.from(dataUrl.slice(comma + 1), 'base64');
-    if (buf.length < 24) return 0;
-    if (buf.slice(0, 8).toString('hex') !== '89504e470d0a1a0a') return 0;
-    return Math.max(buf.readUInt32BE(16), buf.readUInt32BE(20));
+    if (buf.length >= 24 && buf.slice(0, 8).toString('hex') === '89504e470d0a1a0a') {
+      return Math.max(buf.readUInt32BE(16), buf.readUInt32BE(20));
+    }
+    if (nativeImage && typeof nativeImage.createFromDataURL === 'function') {
+      const img = nativeImage.createFromDataURL(dataUrl);
+      if (img && !img.isEmpty()) {
+        const sz = img.getSize();
+        return Math.max(sz.width || 0, sz.height || 0);
+      }
+    }
+    return 0;
   } catch (_) {
     return 0;
   }
@@ -2562,11 +2600,14 @@ async function migrateIconResolution(opts = {}) {
     let scanned = 0;
     for (const obj of slots) {
       scanned += 1;
+      // 关键保护：凡是配置了文字图标工坊 (textIconConfig)、矢量 SVG、JPEG 裁剪图、
+      // 或文件夹类型 (folder) 的自定义图标，一律禁止后台静默迁移覆盖！
+      if (obj.textIconConfig) continue;
+      if (obj.type === 'folder') continue;
+      if (/^data:image\/(svg\+xml|jpeg|jpg|webp)/i.test(String(obj.icon || ''))) continue;
       const before = iconPixelSize(obj.icon);
-      // 矢量图标本身就是无限清晰，绝不能用位图去覆盖它
-      if (/^data:image\/svg\+xml/i.test(String(obj.icon || ''))) continue;
       // 已经够清晰（工坊卡 192 / 裁剪图 192 / favicon 96）就跳过，避免无谓重采样
-      if (before >= 128) continue;
+      if (before >= 96) continue;
       let fresh = null;
       try {
         fresh = await extractIcon(obj.target);
@@ -3263,10 +3304,10 @@ if (!gotLock) {
 
     setInterval(() => {
       if (!deviceAsleep && deviceLinkUp !== false) {
-        if (!win || win.isDestroyed() || !win.isVisible()) {
-          triggerHeadlessPushIfNeeded(false).catch(() => {});
-        } else {
+        if (hasLiveRenderer()) {
           broadcast('device:repaint-strips', {});
+        } else {
+          triggerHeadlessPushIfNeeded(false).catch(() => {});
         }
       }
     }, 30000);
