@@ -41,7 +41,10 @@ const DEFAULTS = {
   // 交互偏好与系统行为
   // 'smart': 智能单键任务栏模式(启动/置顶/最小化切换+真实状态监控) | 'graceful': 优雅关闭双态(WM_CLOSE) | 'dual': 强退双态(taskkill) | 'single': 普通单动作
   appDropMode: 'dual',
-  keyDebounceMs: 100,        // 物理按键连击防抖与冷却时间 (ms)
+  keyDebounceMs: 80,         // 物理按键连击防抖与冷却时间 (ms，默认优化至 80ms 极速响应)
+  wakePassThrough: true,     // 休眠唤醒首按直通：黑屏休眠时按一下既点亮屏幕又立即触发该键动作，无需按两次
+  hidEngine: 'auto',         // 硬件通信引擎 ('auto' | 'native-cs' | 'node-hid')
+  headlessTrayMode: true,    // 窗口最小化至托盘时启用 runtime-store 同构无头增量渲染引擎
   keyPressAnim: true,        // 按键按下时启用硬件动效帧缓冲微缩回弹反馈
   closeToTray: true,         // 点击窗口关闭按钮时最小化到托盘
   autoSwitchPage: true,      // 按前台活动应用或窗口标题正则自动切换关联页面 (Auto-Profile Switching)
@@ -50,7 +53,8 @@ const DEFAULTS = {
   weatherCity: 'Auto',       // 动态天气组件默认城市
   pomodoroMinutes: 25,       // 番茄钟默认专注分钟数
   hudEnabled: true,          // 全屏游戏/后台切页、调音量、启停宏时桌面悬浮毛玻璃 OSD 灵动岛胶囊提示
-  osdPosition: 'bottom',     // 桌面悬浮 OSD 胶囊位置 ('bottom' | 'top')
+  osdPosition: 'bottom',     // 桌面悬浮 OSD 胶囊位置 ('bottom' | 'top' | 'top-right')
+  osdDurationMs: 1400,       // 桌面悬浮 OSD 胶囊显示时长 (ms)
   currentProfile: 'office',  // 当前激活的顶层 Profile ID
   profiles: [],              // 多套顶层配置文件 (办公/直播/剪辑/游戏模式)
   pages: [],
@@ -544,6 +548,11 @@ function normalize(rawObj) {
   }
   target.library = cleanLib;
   if (typeof target.hudEnabled !== 'boolean') target.hudEnabled = true;
+  if (typeof target.wakePassThrough !== 'boolean') target.wakePassThrough = true;
+  if (typeof target.headlessTrayMode !== 'boolean') target.headlessTrayMode = true;
+  if (!['auto', 'native-cs', 'node-hid'].includes(target.hidEngine)) target.hidEngine = 'auto';
+  if (!['bottom', 'top', 'top-right'].includes(target.osdPosition)) target.osdPosition = 'bottom';
+  target.osdDurationMs = Math.max(600, Math.min(5000, Number(target.osdDurationMs) || 1400));
   if (typeof target.contextBarEnabled !== 'boolean') target.contextBarEnabled = true;
   if (typeof target.keyPressAnim !== 'boolean') target.keyPressAnim = true;
   if (!Array.isArray(target.contextBars) || !target.contextBars.length) {
@@ -825,6 +834,8 @@ function ensureLegacyIconBackup() {
   } catch (_) {}
 }
 
+let tmpWriteSeq = 0;
+
 function save(cfg) {
   const prevCache = cache;
   syncActiveProfile(cfg);
@@ -844,9 +855,14 @@ function save(cfg) {
     return true;
   }
   lastRaw = text;
-  const tmp = FILE + '.tmp';
-  fs.writeFileSync(tmp, text, 'utf8');
-  fs.renameSync(tmp, FILE);
+  const tmp = `${FILE}.${process.pid}.${++tmpWriteSeq}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text, 'utf8');
+    fs.renameSync(tmp, FILE);
+  } catch (_) {
+    try { fs.unlinkSync(tmp); } catch (__) {}
+    fs.writeFileSync(FILE, text, 'utf8');
+  }
   const now = Date.now();
   if (now - lastBakWriteTs > 25000 || !fs.existsSync(FILE + '.bak')) {
     lastBakWriteTs = now;
@@ -856,7 +872,7 @@ function save(cfg) {
 }
 
 /**
- * 异步非阻塞原子保存（供 Electron 主进程高频 IPC config:save 调用，彻底消除主线程同步写盘卡顿）
+ * 异步非阻塞原子保存（供 Electron 主进程高频 IPC config:save 调用，彻底消除主线程同步写盘卡顿与 .tmp 命名碰撞）
  */
 let asyncWritePromise = Promise.resolve();
 function saveAsync(cfg) {
@@ -878,18 +894,18 @@ function saveAsync(cfg) {
     return Promise.resolve(true);
   }
   lastRaw = text;
-  const tmp = FILE + '.tmp';
+  const myTmp = `${FILE}.${process.pid}.${++tmpWriteSeq}.tmp`;
   asyncWritePromise = asyncWritePromise.then(async () => {
     try {
-      await fs.promises.writeFile(tmp, text, 'utf8');
-      await fs.promises.rename(tmp, FILE);
+      await fs.promises.writeFile(myTmp, text, 'utf8');
+      await fs.promises.rename(myTmp, FILE);
       const now = Date.now();
       if (now - lastBakWriteTs > 25000 || !fs.existsSync(FILE + '.bak')) {
         lastBakWriteTs = now;
         await fs.promises.writeFile(FILE + '.bak', text, 'utf8').catch(() => {});
       }
     } catch (_) {
-      // Fallback if concurrent rename collides
+      try { await fs.promises.unlink(myTmp); } catch (__) {}
       try {
         fs.writeFileSync(FILE, text, 'utf8');
       } catch (__) {}

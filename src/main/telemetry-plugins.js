@@ -574,21 +574,21 @@ function formatMmSs(sec) {
 let mediaObsCache = {
   obs: { running: false, streaming: false, recording: false, statusText: 'OBS 未启动', scene: '待机' },
   media: {
-    active: true,
-    playing: true,
-    app: '网易云音乐',
-    track: '晴天',
-    title: '晴天',
-    artist: '周杰伦',
-    album: '叶惠美',
-    lyric: '故事的小黄花 从出生那年就飘着',
-    subLyric: '童年的荡秋千 随记忆一直晃到现在',
-    displayLine: '晴天 - 周杰伦',
-    positionSec: 42,
-    durationSec: 269,
-    progressPct: 16,
-    timeText: '00:42 / 04:29',
-    coverColor: '#7c3aed',
+    active: false,
+    playing: false,
+    app: '未在播放',
+    track: '暂无媒体播放',
+    title: '暂无媒体播放',
+    artist: '等待音频源…',
+    album: '',
+    lyric: '当前无活动媒体会话',
+    subLyric: '支持系统 SMTC · 网易云 · QQ音乐 · Spotify',
+    displayLine: '暂无媒体播放',
+    positionSec: 0,
+    durationSec: 0,
+    progressPct: 0,
+    timeText: '00:00 / 00:00',
+    coverColor: '#334155',
   },
   ts: 0,
 };
@@ -716,27 +716,24 @@ async function sampleMediaAndObs() {
     };
   }
 
-  // 4. 优雅默认态（支持实时滚动演示歌词与进度）
+  // 4. 真实空闲待机态（当无任何音乐软件运行且系统 SMTC 无活动会话时，如实显示待机而非伪造播放态）
   if (!foundMedia) {
-    const dur = 269;
-    const pos = Math.floor((now - trackPlaybackTracker.startedAtMs) / 1000) % dur;
-    const lyr = resolveCurrentLyrics('晴天', '周杰伦', pos, dur);
     foundMedia = {
-      active: true,
-      playing: true,
-      app: '网易云音乐',
-      track: '晴天',
-      title: '晴天',
-      artist: '周杰伦',
-      album: '叶惠美',
-      lyric: lyr.lyric,
-      subLyric: lyr.subLyric,
-      displayLine: '晴天 - 周杰伦',
-      positionSec: pos,
-      durationSec: dur,
-      progressPct: Math.min(100, Math.round((pos / dur) * 100)),
-      timeText: `${formatMmSs(pos)} / ${formatMmSs(dur)}`,
-      coverColor: '#7c3aed',
+      active: false,
+      playing: false,
+      app: '未在播放',
+      track: '暂无媒体播放',
+      title: '暂无媒体播放',
+      artist: '等待音频源…',
+      album: '',
+      lyric: '当前无活动媒体会话',
+      subLyric: '支持系统 SMTC · 网易云 · QQ音乐 · Spotify',
+      displayLine: '暂无媒体播放',
+      positionSec: 0,
+      durationSec: 0,
+      progressPct: 0,
+      timeText: '00:00 / 00:00',
+      coverColor: '#334155',
     };
   }
 
@@ -846,6 +843,28 @@ const MARKETPLACE_CATALOG = [
     features: ['bars', 'badge'],
     color: '#0f172a',
   },
+  {
+    id: 'disk_storage_monitor',
+    file: 'disk-storage-monitor.plugin.js',
+    name: '磁盘空间与 I/O 健康看板',
+    category: '系统监控',
+    author: 'AKP153 Official',
+    version: '0.12.0',
+    description: '实时监控系统盘与工作盘剩余容量百分比、告警角标与多盘符柱状对比，按击轮换目标盘符',
+    features: ['bars', 'progress', 'badge', 'bidirectional'],
+    color: '#0c243c',
+  },
+  {
+    id: 'countdown_event',
+    file: 'countdown-event.plugin.js',
+    name: '重要日程 / 下班倒计时看板',
+    category: '开发者工具',
+    author: 'AKP153 Official',
+    version: '0.12.0',
+    description: '支持自定义下班时间或里程碑目标倒计时、进度条与鼓励标语，按击切换「今日下班 / 周末 / 自定义目标」',
+    features: ['progress', 'badge', 'bidirectional'],
+    color: '#1e1b4b',
+  },
 ];
 
 function normalizePluginId(pid) {
@@ -886,14 +905,19 @@ function loadExternalPlugins(force = false) {
           module: sandboxModule,
           exports: sandboxModule.exports,
           require: (id) => {
-            // 受控白名单模块注入，防止恶意插件破坏宿主环境
-            if (['os', 'path', 'url', 'crypto', 'http', 'https', 'events', 'buffer'].includes(id)) {
-              return require(id);
+            // 严格受控白名单模块注入，彻底封堵任意原生模块/子进程逃逸
+            const ALLOWED_CORE = ['os', 'path', 'url', 'util', 'crypto', 'http', 'https', 'events', 'buffer', 'querystring', 'stream', 'string_decoder'];
+            const cleanId = String(id || '').replace(/^node:/, '');
+            if (ALLOWED_CORE.includes(cleanId)) {
+              return require(cleanId);
             }
-            if (id.startsWith('./') || id.startsWith('../')) {
-              return require(path.resolve(path.dirname(fullPath), id));
+            if (cleanId.startsWith('./') || cleanId.startsWith('../')) {
+              const resolved = path.resolve(path.dirname(fullPath), cleanId);
+              if (resolved.startsWith(path.resolve(PLUGINS_DIR))) {
+                return require(resolved);
+              }
             }
-            return require(id);
+            throw new Error(`Plugin sandbox blocked unauthorized module: ${id}`);
           },
           __filename: fullPath,
           __dirname: path.dirname(fullPath),
@@ -1139,6 +1163,89 @@ async function gatherTelemetry(options = {}) {
   return out;
 }
 
+function createCustomPluginTemplate(opts = {}) {
+  const rawName = String(opts.name || '自定义监控插件').trim();
+  const rawId = String(opts.id || ('custom_' + Date.now().toString(36))).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const category = String(opts.category || '扩展插件').trim();
+  const color = String(opts.color || '#0f172a').trim();
+  const visualType = String(opts.visualType || 'sparkline').trim();
+  const fileName = rawId.replace(/_/g, '-') + '.plugin.js';
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    fs.mkdirSync(PLUGINS_DIR, { recursive: true });
+  }
+  const fullPath = path.join(PLUGINS_DIR, fileName);
+  const templateCode = `'use strict';
+/**
+ * ${rawName} (${fileName})
+ * Generated by AKP153 Plugin Studio v0.12.0
+ */
+const history = [28, 34, 31, 42, 38, 49, 45, 52, 48, 56];
+
+module.exports = {
+  id: '${rawId}',
+  name: ${JSON.stringify(rawName)},
+  category: ${JSON.stringify(category)},
+  author: 'Custom Studio',
+  version: '0.12.0',
+  description: ${JSON.stringify(opts.description || (rawName + ' - 由插件工坊一键生成的可视化画布组件'))},
+  color: ${JSON.stringify(color)},
+  defaultIntervalMs: 2000,
+  configSchema: [
+    { key: 'prefix', label: '自定义标题前缀', type: 'text', default: ${JSON.stringify(rawName.slice(0, 6))} },
+    { key: 'threshold', label: '高亮告警阈值 (%)', type: 'number', default: 80 }
+  ],
+  render({ os, now, config, state }) {
+    const freemem = os.freemem();
+    const totalmem = os.totalmem() || 1;
+    const memPct = Math.round(((totalmem - freemem) / totalmem) * 100);
+    history.push(memPct);
+    while (history.length > 20) history.shift();
+    const mode = (state && state.mode) || 0;
+    const isWarn = memPct >= (Number(config.threshold) || 80);
+    return {
+      title: (config && config.prefix) || ${JSON.stringify(rawName.slice(0, 6))},
+      value: mode === 0 ? (memPct + '%') : (now.toTimeString().slice(0, 5)),
+      sub: mode === 0 ? 'RAM 实时负载' : '点击切换维度',
+      color: isWarn ? '#7f1d1d' : ${JSON.stringify(color)},
+      badge: { text: isWarn ? 'HIGH' : (mode === 0 ? 'LIVE' : 'TIME'), color: isWarn ? '#ef4444' : '#10b981' },
+      ${visualType === 'bars' ? "bars: [{ label: 'MEM', value: memPct, color: '#38bdf8' }, { label: 'FREE', value: 100 - memPct, color: '#10b981' }]," : "sparkline: history.slice(),"}
+      progress: memPct,
+    };
+  },
+  onPress({ state, emitState }) {
+    const nextMode = ((state && state.mode) || 0) === 0 ? 1 : 0;
+    emitState({ mode: nextMode });
+    return { ok: true, mode: nextMode };
+  }
+};
+`;
+  fs.writeFileSync(fullPath, templateCode, 'utf8');
+  const plugins = listAvailablePlugins(true);
+  return { ok: true, pluginId: rawId, installedPath: fullPath, plugins };
+}
+
+function uninstallPlugin(pluginId) {
+  const normId = normalizePluginId(pluginId);
+  const catalogEntry = MARKETPLACE_CATALOG.find((x) => x.id === normId);
+  const candidates = [
+    catalogEntry && catalogEntry.file,
+    `${normId}.plugin.js`,
+    `${normId.replace(/_/g, '-')}.plugin.js`,
+  ].filter(Boolean);
+  let removed = false;
+  for (const f of candidates) {
+    const p = path.join(PLUGINS_DIR, f);
+    if (fs.existsSync(p)) {
+      try {
+        fs.unlinkSync(p);
+        removed = true;
+      } catch (_) {}
+    }
+  }
+  const plugins = listAvailablePlugins(true);
+  return { ok: removed, plugins };
+}
+
 module.exports = {
   gatherTelemetry,
   controlPomodoro,
@@ -1151,6 +1258,8 @@ module.exports = {
   evaluatePlugin,
   triggerPluginPress,
   installPluginFile,
+  createCustomPluginTemplate,
+  uninstallPlugin,
   resolvePluginConfig,
   PLUGINS_DIR,
 };

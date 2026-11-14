@@ -11,6 +11,7 @@ const NativeInput = require('./native-input.js');
 const telemetry = require('./telemetry-plugins.js');
 const { RuntimeStateStore } = require('./runtime-store.js');
 const { getHardwareProfile, listHardwareProfiles } = require('./hardware-profiles.js');
+const headlessRenderer = require('./headless-renderer.js');
 
 const runtimeStore = new RuntimeStateStore();
 
@@ -242,7 +243,7 @@ function spawnHost() {
         } else if (msg.event === 'encoder') {
           onHardwareEncoderEvent(msg);
         } else if (msg.event === 'wake') {
-          onWakeByKey(msg.row, msg.col);
+          onWakeByKey(msg.row, msg.col, msg);
         } else if (msg.event === 'lost') {
           log('device lost:', msg.message);
           hostError = 'DEVICE_LOST';
@@ -304,13 +305,88 @@ function notify(msg) {
   broadcast('toast', { message: msg });
 }
 
+let activeHidEngine = 'node-hid'; // 'node-hid' | 'native-cs'
+
 async function safeRpc(cmd, args, timeoutMs) {
+  const cfg = config.load();
+  const preferNativeCs = (cfg && cfg.hidEngine === 'native-cs') || activeHidEngine === 'native-cs';
+  if (preferNativeCs && process.platform === 'win32' && NativeInput) {
+    try {
+      if (cmd === 'open') {
+        const res = await NativeInput.hidOpen((args && args.profileId) || 'akp153', (args && args.debounceMs) || 80);
+        if (res && res.ok) {
+          activeHidEngine = 'native-cs';
+          hostReady = true;
+          publishDeviceLink(true);
+          return { ok: true, info: { path: res.path, product: 'AKP153 (C# Native Overlapped HID)', profileId: (args && args.profileId) || 'akp153' } };
+        }
+        if (cfg && cfg.hidEngine === 'native-cs') {
+          // 若用户显式选了 C# 引擎但当前句柄被 node-hid 持有，先释放 node-hid 再试一次
+          if (host && hostReady) {
+            try { await rpc('close', {}, 800); } catch (_) {}
+          }
+          const retry = await NativeInput.hidOpen((args && args.profileId) || 'akp153', (args && args.debounceMs) || 80);
+          if (retry && retry.ok) {
+            activeHidEngine = 'native-cs';
+            hostReady = true;
+            publishDeviceLink(true);
+            return { ok: true, info: { path: retry.path, product: 'AKP153 (C# Native Overlapped HID)', profileId: (args && args.profileId) || 'akp153' } };
+          }
+        }
+        activeHidEngine = 'node-hid';
+      } else if (activeHidEngine === 'native-cs') {
+        if (cmd === 'close') return await NativeInput.hidClose();
+        if (cmd === 'brightness') return await NativeInput.hidBrightness(args && args.value);
+        if (cmd === 'wake') return await NativeInput.hidWake(args && args.brightness);
+        if (cmd === 'sleep') return await NativeInput.hidSleep(args && args.mode);
+        if (cmd === 'clear') return await NativeInput.hidClear();
+        if (cmd === 'draw') return await NativeInput.hidDraw(args.row, args.col, args.data, !!args.force);
+        if (cmd === 'batchDraw') {
+          const list = (args && Array.isArray(args.items)) ? args.items : [];
+          let drawn = 0;
+          for (const it of list) {
+            if (!it || deviceAsleep) break;
+            const r = await NativeInput.hidDraw(it.row, it.col, it.data, !!it.force);
+            if (r && r.ok) drawn++;
+          }
+          return { ok: true, drawn, skipped: list.length - drawn, failed: [], missing: [] };
+        }
+        if (cmd === 'setDebounce' || cmd === 'setWakePassThrough' || cmd === 'setHardwareProfile' || cmd === 'clearAnims' || cmd === 'stopAnim' || cmd === 'startAnim') {
+          return { ok: true };
+        }
+      }
+    } catch (_) {}
+  }
   try { return await rpc(cmd, args, timeoutMs); } catch (e) { return { ok: false, error: e.message }; }
+}
+
+async function triggerHeadlessPushIfNeeded(force = false) {
+  try {
+    const cfg = config.load();
+    const isHidden = !win || win.isDestroyed() || !win.isVisible();
+    runtimeStore.globalState.headlessStats.active = Boolean(isHidden && cfg.headlessTrayMode !== false);
+    if (!isHidden || cfg.headlessTrayMode === false || deviceAsleep || deviceLinkUp === false) return;
+    const page = config.currentPage();
+    if (!page) return;
+    const strips = (activeContextBar && activeContextBar.strips) ? activeContextBar.strips : page.strips;
+    await headlessRenderer.pushHeadlessDirtyFrames({
+      page,
+      strips,
+      runtimeStore,
+      rotMode: cfg.rotate || 'ccw',
+      NativeInput,
+      sendDraw: (item) => safeRpc('draw', item),
+      sendBatchDraw: (batch) => safeRpc('batchDraw', batch, 12000),
+      force,
+    });
+  } catch (_) {}
 }
 
 function repaintSoon(force = false) {
   broadcast('device:repaint', { force: !!force });
-  if (win && !win.isDestroyed() && win.webContents && win.webContents.isLoading()) {
+  if (!win || win.isDestroyed() || !win.isVisible()) {
+    triggerHeadlessPushIfNeeded(force).catch(() => {});
+  } else if (win.webContents && win.webContents.isLoading()) {
     setTimeout(() => broadcast('device:repaint', { force: !!force }), 900);
   }
 }
@@ -355,20 +431,27 @@ const HUD_OVERLAY_HTML = `<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0;user-select:none}
 html,body{width:100%;height:100%;overflow:hidden;background:transparent;font-family:"Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif}
 .hud-wrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:6px 10px}
-.hud-capsule{display:flex;align-items:center;gap:12px;min-width:240px;max-width:320px;padding:10px 16px;border-radius:999px;background:rgba(11,15,25,0.88);backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid rgba(255,255,255,0.15);box-shadow:0 12px 32px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,255,255,0.12);transform:translateY(-10px) scale(0.95);opacity:0;transition:transform 0.2s cubic-bezier(0.16,1,0.3,1),opacity 0.18s ease}
+.hud-capsule{display:flex;align-items:center;gap:12px;min-width:268px;max-width:368px;padding:10px 16px;border-radius:999px;background:rgba(10,14,24,0.90);backdrop-filter:blur(22px) saturate(190%);-webkit-backdrop-filter:blur(22px) saturate(190%);border:1px solid rgba(255,255,255,0.16);box-shadow:0 14px 36px rgba(0,0,0,0.60),0 0 20px var(--hud-glow,rgba(59,130,246,0.22)),inset 0 1px 0 rgba(255,255,255,0.14);transform:translateY(8px) scale(0.95);opacity:0;transition:transform 0.22s cubic-bezier(0.16,1,0.3,1),opacity 0.18s ease}
 .hud-capsule.visible{transform:translateY(0) scale(1);opacity:1}
-.hud-icon-box{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--hud-accent,#3b82f6),rgba(30,64,175,0.85));display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0;box-shadow:0 0 14px rgba(59,130,246,0.45)}
-.hud-icon-box svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.hud-icon-box{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--hud-accent,#3b82f6),rgba(15,23,42,0.9));border:1px solid rgba(255,255,255,0.22);display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0;box-shadow:0 0 16px var(--hud-glow,rgba(59,130,246,0.48))}
+.hud-icon-box svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.1;fill:none;stroke-linecap:round;stroke-linejoin:round}
 .hud-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-.hud-title{font-size:13px;font-weight:700;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-top-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.hud-title{font-size:13px;font-weight:600;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0.1px}
+.hud-tag{font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,0.12);color:#e2e8f0;border:1px solid rgba(255,255,255,0.14);flex-shrink:0;display:none}
 .hud-sub{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hud-progress-track{margin-top:4px;height:4px;width:100%;background:rgba(255,255,255,0.12);border-radius:99px;overflow:hidden;display:none}
-.hud-progress-fill{height:100%;width:50%;background:linear-gradient(90deg,#3b82f6,#38bdf8);border-radius:99px;transition:width 0.12s ease}
+.hud-progress-track{margin-top:4px;height:4px;width:100%;background:rgba(255,255,255,0.12);border-radius:99px;overflow:hidden;display:none;position:relative}
+.hud-progress-fill{height:100%;width:50%;background:linear-gradient(90deg,var(--hud-accent,#3b82f6),#38bdf8);border-radius:99px;transition:width 0.12s ease}
+@keyframes hudIndeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
+.hud-progress-fill.indeterminate{width:42%!important;animation:hudIndeterminate 1.05s cubic-bezier(0.4,0,0.2,1) infinite}
 </style></head><body>
 <div class="hud-wrap"><div id="capsule" class="hud-capsule">
   <div id="iconBox" class="hud-icon-box"></div>
   <div class="hud-body">
-    <div id="hudTitle" class="hud-title">AKP153 控制台</div>
+    <div class="hud-top-row">
+      <div id="hudTitle" class="hud-title">AKP153 控制台</div>
+      <span id="hudTag" class="hud-tag">状态</span>
+    </div>
     <div id="hudSub" class="hud-sub">Ready</div>
     <div id="progTrack" class="hud-progress-track"><div id="progFill" class="hud-progress-fill"></div></div>
   </div>
@@ -384,7 +467,8 @@ const ICONS = {
   clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
   zap: '<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
   play: '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
-  square: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>'
+  square: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>',
+  sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/></svg>'
 };
 let hideTimer = null;
 window.__updateHud = function(payload) {
@@ -392,18 +476,34 @@ window.__updateHud = function(payload) {
   const capsule = document.getElementById('capsule');
   const iconBox = document.getElementById('iconBox');
   const hudTitle = document.getElementById('hudTitle');
+  const hudTag = document.getElementById('hudTag');
   const hudSub = document.getElementById('hudSub');
   const progTrack = document.getElementById('progTrack');
   const progFill = document.getElementById('progFill');
+  const accent = payload.accent || '#3b82f6';
   hudTitle.textContent = payload.title || 'AKP153 控制台';
+  if (payload.tag) {
+    hudTag.textContent = payload.tag;
+    hudTag.style.display = 'inline-block';
+    hudTag.style.borderColor = accent + '66';
+  } else {
+    hudTag.style.display = 'none';
+  }
   hudSub.textContent = payload.subtitle || '';
   hudSub.style.display = payload.subtitle ? 'block' : 'none';
-  iconBox.style.setProperty('--hud-accent', payload.accent || '#3b82f6');
+  capsule.style.setProperty('--hud-accent', accent);
+  capsule.style.setProperty('--hud-glow', accent + '55');
+  iconBox.style.setProperty('--hud-accent', accent);
   iconBox.innerHTML = ICONS[payload.icon] || ICONS.sparkles;
-  if (typeof payload.progress === 'number') {
+  if (payload.progress === 'indeterminate') {
     progTrack.style.display = 'block';
+    progFill.classList.add('indeterminate');
+  } else if (typeof payload.progress === 'number') {
+    progTrack.style.display = 'block';
+    progFill.classList.remove('indeterminate');
     progFill.style.width = Math.max(0, Math.min(100, payload.progress)) + '%';
   } else {
+    progFill.classList.remove('indeterminate');
     progTrack.style.display = 'none';
   }
   capsule.classList.add('visible');
@@ -415,8 +515,8 @@ function ensureHudWindow() {
   if (hudWin && !hudWin.isDestroyed()) return hudWin;
   const primary = screen.getPrimaryDisplay();
   const wa = (primary && primary.workArea) || { x: 0, y: 0, width: 1920, height: 1080 };
-  const width = 340;
-  const height = 78;
+  const width = 388;
+  const height = 88;
   const x = Math.round(wa.x + (wa.width - width) / 2);
   const y = Math.round(wa.y + 24);
 
@@ -451,19 +551,27 @@ function ensureHudWindow() {
 function showHudOverlay(payload = {}, forceShow = false) {
   try {
     const cfg = config.load();
-    if (cfg.hudEnabled === false) return;
+    if (cfg.hudEnabled === false && !forceShow) return;
 
     const hWin = ensureHudWindow();
-    const primary = screen.getPrimaryDisplay();
-    if (primary && primary.workArea) {
+    const cursorPt = screen.getCursorScreenPoint ? screen.getCursorScreenPoint() : null;
+    const display = (cursorPt && screen.getDisplayNearestPoint)
+      ? screen.getDisplayNearestPoint(cursorPt)
+      : screen.getPrimaryDisplay();
+    if (display && display.workArea) {
       const posMode = cfg.osdPosition || 'bottom';
-      const x = Math.round(primary.workArea.x + (primary.workArea.width - 340) / 2);
-      const y = posMode === 'top'
-        ? Math.round(primary.workArea.y + 24)
-        : Math.round(primary.workArea.y + primary.workArea.height - 96);
+      const w = 388;
+      let x = Math.round(display.workArea.x + (display.workArea.width - w) / 2);
+      let y = Math.round(display.workArea.y + display.workArea.height - 102);
+      if (posMode === 'top') {
+        y = Math.round(display.workArea.y + 24);
+      } else if (posMode === 'top-right') {
+        x = Math.round(display.workArea.x + display.workArea.width - w - 24);
+        y = Math.round(display.workArea.y + 24);
+      }
       hWin.setPosition(x, y, false);
     }
-    const duration = payload.duration || 1200;
+    const duration = Number(payload.duration) || Number(cfg.osdDurationMs) || 1400;
     const fullPayload = Object.assign({ duration }, payload);
     const pushHud = () => {
       if (!hWin || hWin.isDestroyed()) return;
@@ -564,7 +672,11 @@ async function prepareExitAndSleep() {
 
 async function openDevice(hard) {
   const cfg = config.load();
-  const r = await safeRpc('open', { debounceMs: cfg.keyDebounceMs || 100, profileId: cfg.hardwareModel || 'akp153' });
+  const r = await safeRpc('open', {
+    debounceMs: cfg.keyDebounceMs || 80,
+    wakePassThrough: cfg.wakePassThrough !== false,
+    profileId: cfg.hardwareModel || 'akp153',
+  });
   if (r && r.ok === false) {
     if (r.error === 'DEVICE_BUSY') {
       hostError = 'DEVICE_BUSY';
@@ -652,16 +764,31 @@ async function goToPage(id, why, isAutoSwitch = false) {
   return true;
 }
 
-async function onWakeByKey(row, col) {
+async function onWakeByKey(row, col, msg = {}) {
   deviceAsleep = false;
   lastWakeTime = Date.now();
   lastActivity = Date.now();
+  if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+    NativeInput.setSleepState(false).catch(() => {});
+  }
   broadcast('device:sleep-state', { asleep: false });
-  broadcast('key:flash', { row, col });
+  if (row !== undefined && col !== undefined) {
+    broadcast('key:flash', { row, col });
+  }
   const cfg = config.load();
-  await safeRpc('wake', { brightness: cfg.brightness, force: true });
+  // device-host 已在底层高优通道立即执行了 this.wake()，此处仅在不属于底层自动唤醒时补发
+  if (activeHidEngine === 'native-cs') {
+    await safeRpc('wake', { brightness: cfg.brightness, force: true });
+  }
   repaintSoon(true);
-  log(`device woke up by key r${row}c${col} (wake only, restored brightness=${cfg.brightness})`);
+  showHudOverlay({
+    icon: 'sun',
+    tag: msg && msg.passThrough ? '唤醒直通' : '已唤醒',
+    title: 'AKP153 屏幕已点亮',
+    subtitle: (msg && msg.passThrough) ? `已同步响应 r${row}c${col} 按键指令` : `背光亮度已恢复至 ${cfg.brightness}%`,
+    accent: '#38bdf8',
+  });
+  log(`device woke up by key r${row}c${col} (passThrough=${!!(msg && msg.passThrough)}, brightness=${cfg.brightness})`);
 }
 
 function findSpanMasterInRow(page, row, col) {
@@ -686,39 +813,88 @@ const LAUNCHER_WORKER_ALIASES = {
   steam: 'steam|steamwebhelper',
   epicgameslauncher: 'EpicGamesLauncher',
   clash: 'Clash for Windows|clash-verge|Mihomo Party|clash',
+  cloudmusic: 'cloudmusic',
+  qqmusic: 'QQMusic',
 };
 const siblingExeCache = new Map();
+const targetProcMemo = new Map();
+
+/**
+ * 零磁盘 I/O 快速进程名读取（专供 onKeyDown 关键路径，防止机械硬盘唤醒或 PowerShell 解析卡住按键响应）
+ */
+function resolveButtonProcessNameFast(spec) {
+  if (!spec) return '';
+  if (spec.watchProcess && String(spec.watchProcess).trim()) {
+    return String(spec.watchProcess).trim().replace(/\.exe$/i, '');
+  }
+  if (spec._resolvedProcName) return spec._resolvedProcName;
+  const rawTarget = String(spec.target || (spec.action2 && spec.action2.target) || '').trim();
+  if (!rawTarget) return '';
+  if (targetProcMemo.has(rawTarget)) return targetProcMemo.get(rawTarget);
+  const ext = path.extname(rawTarget).toLowerCase();
+  if (ext === '.exe') {
+    const bn = path.basename(rawTarget, ext);
+    const lower = bn.toLowerCase();
+    return LAUNCHER_WORKER_ALIASES[lower] || bn;
+  }
+  return '';
+}
 
 async function resolveButtonProcessName(spec) {
   if (!spec) return '';
   if (spec.watchProcess && String(spec.watchProcess).trim()) {
     return String(spec.watchProcess).trim().replace(/\.exe$/i, '');
   }
-  const rawTarget = spec.target || (spec.action2 && spec.action2.target) || '';
+  const rawTarget = String(spec.target || (spec.action2 && spec.action2.target) || '').trim();
   if (!rawTarget) return '';
+  if (targetProcMemo.has(rawTarget)) {
+    const hit = targetProcMemo.get(rawTarget);
+    spec._resolvedProcName = hit;
+    return hit;
+  }
   try {
     const probed = await probe.probeAppAsync(rawTarget);
     const baseProc = (await runner.processNameFor(probed)) || '';
     if (!baseProc) return '';
     const lower = baseProc.toLowerCase();
     if (LAUNCHER_WORKER_ALIASES[lower]) {
-      return LAUNCHER_WORKER_ALIASES[lower];
+      const alias = LAUNCHER_WORKER_ALIASES[lower];
+      targetProcMemo.set(rawTarget, alias);
+      spec._resolvedProcName = alias;
+      return alias;
     }
     if (probed && (probed.endsWith('.exe') || probed.endsWith('.EXE'))) {
-      if (siblingExeCache.has(probed)) return siblingExeCache.get(probed);
+      if (siblingExeCache.has(probed)) {
+        const cached = siblingExeCache.get(probed);
+        targetProcMemo.set(rawTarget, cached);
+        spec._resolvedProcName = cached;
+        return cached;
+      }
       const dir = path.dirname(probed);
-      if (fs.existsSync(dir)) {
-        const files = fs.readdirSync(dir).filter((f) => /\.exe$/i.test(f) && !/^(unins|crash|update|setup|vc_redist)/i.test(f));
+      try {
+        const dirFiles = await fs.promises.readdir(dir);
+        const exes = dirFiles.filter((f) => /\.exe$/i.test(f) && !/^(unins|crash|update|setup|vc_redist|unitycrash|cef_)/i.test(f));
+        // 优先排布与主程序名有共同前缀的关联进程，容量提升至 12 个，防止多进程软件漏检
+        const prefix = lower.slice(0, Math.min(4, lower.length));
+        exes.sort((a, b) => {
+          const al = a.toLowerCase().startsWith(prefix) ? 0 : 1;
+          const bl = b.toLowerCase().startsWith(prefix) ? 0 : 1;
+          return al - bl || a.localeCompare(b);
+        });
         const names = [baseProc];
-        for (const f of files.slice(0, 5)) {
+        for (const f of exes.slice(0, 12)) {
           const bn = f.replace(/\.exe$/i, '');
           if (bn.toLowerCase() !== lower) names.push(bn);
         }
         const joined = names.join('|');
         siblingExeCache.set(probed, joined);
+        targetProcMemo.set(rawTarget, joined);
+        spec._resolvedProcName = joined;
         return joined;
-      }
+      } catch (_) {}
     }
+    targetProcMemo.set(rawTarget, baseProc);
+    spec._resolvedProcName = baseProc;
     return baseProc;
   } catch (_) {
     return '';
@@ -870,9 +1046,10 @@ async function onHardwareKeyEvent(phase, msg) {
   lastActivity = now;
 
   const cfgNow = config.load();
-  const wakeGuardMs = 180;
+  const passThrough = cfgNow.wakePassThrough !== false;
+  const wakeGuardMs = passThrough ? 0 : 60;
 
-  if (deviceAsleep || (now - lastWakeTime < wakeGuardMs)) {
+  if (deviceAsleep || (!msg.fromWake && wakeGuardMs > 0 && (now - lastWakeTime < wakeGuardMs))) {
     if (deviceAsleep && phase === 'down') {
       deviceAsleep = false;
       if (NativeInput && typeof NativeInput.setSleepState === 'function') {
@@ -880,13 +1057,18 @@ async function onHardwareKeyEvent(phase, msg) {
       }
       lastWakeTime = now;
       broadcast('device:sleep-state', { asleep: false });
-      await safeRpc('wake', { brightness: cfgNow.brightness, force: true });
+      safeRpc('wake', { brightness: cfgNow.brightness, force: true }).catch(() => {});
       pollForegroundAndProcessState(null, true).catch(() => {});
       repaintSoon(true);
       broadcast('key:flash', { row, col, phase: 'wake', skipBounce: true });
-      log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed`);
+      if (!passThrough) {
+        log(`key r${row}c${col} pressed while asleep -> woke panel, action suppressed (wakePassThrough=false)`);
+        return;
+      }
+      log(`key r${row}c${col} pressed while asleep -> woke panel + pass-through executing action`);
+    } else if (!passThrough) {
+      return;
     }
-    return;
   }
 
   if (phase === 'up') {
@@ -1051,13 +1233,13 @@ async function onKeyDown(row, col) {
       // 'auto' | 'process' | 'manual'
       const inGrace = spec._graceUntil && Date.now() < spec._graceUntil;
       if ((syncMode === 'process' || syncMode === 'auto') && spec.toggleAction && !inGrace) {
-        const procName = await resolveButtonProcessName(spec);
+        const procName = resolveButtonProcessNameFast(spec) || (await resolveButtonProcessName(spec));
         if (procName) {
           const alive = await runner.isRunningAsync(procName);
           if (alive) {
             spec._everSeenRunning = true;
             curState = 1;
-          } else if (syncMode === 'process' || spec._everSeenRunning) {
+          } else {
             curState = 0;
           }
         }
@@ -1068,7 +1250,7 @@ async function onKeyDown(row, col) {
       }
       const nextState = (curState === 1 ? 0 : 1);
       spec._activeState = nextState;
-      spec._graceUntil = nextState === 1 ? (Date.now() + 7000) : (Date.now() + 1500);
+      spec._graceUntil = nextState === 1 ? (Date.now() + 12000) : (Date.now() + 1500);
       runtimeStore.setKeyState(page.id, effectiveRow, effectiveCol, {
         activeState: nextState,
         windowSubState: nextState === 1 ? 'focused' : 'stopped',
@@ -1136,11 +1318,27 @@ async function onKeyDown(row, col) {
     { row: effectiveRow, col: effectiveCol, pageId: page.id, spanOffset, spanCols },
     { bypassFocusExisting: !!(actionToRun && actionToRun._bypassFocusExisting) }
   );
-  // 若当前处于弹出式临时键盘层 (Hold-to-Layer)，执行完动作后自动弹回主页面
+  // 若当前处于弹出式临时键盘层 (Hold-to-Layer)，执行完动作后仅在未发生 Auto-Profile 新切页时自动弹回主页面
   if (activeHoldLayer && activeHoldLayer.overlayPageId === page.id && spec.holdStayOpen !== true) {
     const retId = activeHoldLayer.returnPageId;
+    const expectedOverlayId = activeHoldLayer.overlayPageId;
     activeHoldLayer = null;
-    setTimeout(() => { goToPage(retId, 'hold-to-layer auto-return', true).catch(() => {}); }, 160);
+    setTimeout(() => {
+      const latestCfg = config.load();
+      if (latestCfg && latestCfg.currentPage === expectedOverlayId) {
+        goToPage(retId, 'hold-to-layer auto-return', true).catch(() => {});
+      }
+    }, 180);
+  }
+  if (!isDualMode && res && res.ok && actionToRun && (actionToRun.type === 'app' || actionToRun.type === 'url' || actionToRun.type === 'folder')) {
+    showHudOverlay({
+      icon: 'play',
+      tag: actionToRun.type === 'app' ? '正在启动' : '已打开',
+      title: actionToRun.label || path.basename(String(actionToRun.target || '')),
+      subtitle: String(actionToRun.target || '').slice(0, 44),
+      accent: actionToRun.color || '#3b82f6',
+      progress: actionToRun.type === 'app' ? 'indeterminate' : undefined,
+    });
   }
   const what = res.ok ? 'ok' + (res.action ? ` (${res.action})` : '') : 'FAILED ' + res.error;
   log(`  result: ${what}`);
@@ -1215,7 +1413,8 @@ function resetIdleTimer() {
     } catch (_) {}
 
     if (deviceAsleep) {
-      if (sleptBySystemIdle && sysIdleSec < 3) {
+      // 800ms 高敏检测：只要系统空闲归零（用户晃动鼠标或敲击键盘点亮了显示器），立即联动唤醒底座，消灭 5 秒盲区
+      if (sleptBySystemIdle && sysIdleSec < 4) {
         sleptBySystemIdle = false;
         lastActivity = Date.now();
         doWake();
@@ -1227,11 +1426,11 @@ function resetIdleTimer() {
     const sysIdleMs = sysIdleSec * 1000;
     const thresholdMs = minutes * 60 * 1000;
     if (consoleIdleMs > thresholdMs && (sysIdleMs === 0 || sysIdleMs > thresholdMs || consoleIdleMs > thresholdMs)) {
-      sleptBySystemIdle = sysIdleMs >= thresholdMs;
+      sleptBySystemIdle = true;
       doSleep();
       lastActivity = Date.now();
     }
-  }, 5000);
+  }, 800);
 }
 
 /**
@@ -1385,13 +1584,16 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
             : (rt.activeState !== undefined ? rt.activeState : (spec.badgeInitialState || 0));
           const graceUntil = Math.max(spec._graceUntil || 0, rt.graceUntil || 0);
 
-          // 若处于启动或窗口最小化动画宽限期内，不强行覆盖刚切换的状态
+          // 若处于启动或窗口最小化动画宽限期内，一旦检测到进程已启动则立即锁定 everSeenRunning，不强行覆盖刚切换的状态
           if (graceUntil && nowMs < graceUntil) {
             if (isAlive) {
               spec._everSeenRunning = true;
               rt.everSeenRunning = true;
+              spec._graceUntil = 0;
+              rt.graceUntil = 0;
+            } else {
+              continue;
             }
-            continue;
           }
 
           if (isAlive) {
@@ -1399,7 +1601,25 @@ async function pollForegroundAndProcessState(pushedFg = null, forceBroadcast = f
             rt.everSeenRunning = true;
           } else {
             if (syncMode === 'auto' && curState === 1 && !spec._everSeenRunning && !rt.everSeenRunning) {
-              spec._downgradedToManual = true;
+              // 关键修复：当宽限期结束后仍未检测到目标进程存活（如启动超时/UAC取消/瞬态脚本执行完毕），
+              // 必须将 _activeState 重置回 0（默认待机态），绝不能卡在状态 1 导致下次按键误执行 taskkill！
+              spec._activeState = 0;
+              spec._windowSubState = 'stopped';
+              spec._graceUntil = 0;
+              runtimeStore.setKeyState(page.id, row, col, {
+                activeState: 0,
+                windowSubState: 'stopped',
+                graceUntil: 0,
+                everSeenRunning: false,
+              });
+              broadcast('key:toggleState', {
+                pageId: page.id,
+                row,
+                col,
+                activeState: 0,
+                windowSubState: 'stopped',
+              });
+              triggerHeadlessPushIfNeeded(false).catch(() => {});
               continue;
             }
           }
@@ -1837,6 +2057,30 @@ ipcMain.handle('device:batchDraw', async (e, a) => {
 
 ipcMain.handle('device:brightness', (e, v) => safeRpc('brightness', { value: v }));
 ipcMain.handle('device:setDebounce', (e, ms) => safeRpc('setDebounce', { value: ms }));
+ipcMain.handle('device:setWakePassThrough', (e, val) => {
+  config.set('wakePassThrough', val !== false);
+  return safeRpc('setWakePassThrough', { value: val !== false });
+});
+ipcMain.handle('device:setHidEngine', async (e, engine) => {
+  const clean = ['auto', 'native-cs', 'node-hid'].includes(engine) ? engine : 'auto';
+  config.set('hidEngine', clean);
+  if (clean === 'native-cs') {
+    activeHidEngine = 'native-cs';
+    await openDevice(false);
+  } else {
+    if (activeHidEngine === 'native-cs') {
+      try { await NativeInput.hidClose(); } catch (_) {}
+    }
+    activeHidEngine = 'node-hid';
+    await openDevice(false);
+  }
+  return { ok: true, activeHidEngine };
+});
+ipcMain.handle('runtime:headlessStats', () => {
+  return Object.assign({}, runtimeStore.globalState.headlessStats, {
+    activeHidEngine,
+  });
+});
 ipcMain.handle('device:startAnim', (e, payload) => {
   if (deviceAsleep) return { ok: true, skipped: true };
   return safeRpc('startAnim', payload || {});
@@ -2441,6 +2685,14 @@ ipcMain.handle('plugins:market', () => {
   return telemetry.listMarketplacePlugins();
 });
 
+ipcMain.handle('plugins:createCustom', (e, opts = {}) => {
+  return telemetry.createCustomPluginTemplate(opts || {});
+});
+
+ipcMain.handle('plugins:uninstall', (e, pluginId) => {
+  return telemetry.uninstallPlugin(pluginId);
+});
+
 ipcMain.handle('plugins:install', async (e, pluginIdOrMode) => {
   if (!pluginIdOrMode || pluginIdOrMode === '__pick__') {
     if (!win) return { ok: false };
@@ -2979,6 +3231,25 @@ if (!gotLock) {
       NativeInput.on('procs', () => {
         pollForegroundAndProcessState();
       });
+      NativeInput.on('hid_key', (pkt) => {
+        if (!pkt) return;
+        if (pkt.state === 1) {
+          onHardwareKeyEvent('down', { row: pkt.row, col: pkt.col, profileId: pkt.profileId });
+        } else if (pkt.state === 0 && pkt.profileId === 'akp03') {
+          onHardwareKeyEvent('up', { row: pkt.row, col: pkt.col, profileId: pkt.profileId });
+        } else {
+          onHardwareKeyEvent('down', { row: pkt.row, col: pkt.col, profileId: pkt.profileId });
+          onHardwareKeyEvent('up', { row: pkt.row, col: pkt.col, profileId: pkt.profileId });
+        }
+      });
+      NativeInput.on('hid_enc', (enc) => {
+        if (enc) onHardwareEncoderEvent(enc);
+      });
+      NativeInput.on('hid_lost', (err) => {
+        if (activeHidEngine === 'native-cs') {
+          publishDeviceLink(false, (err && err.message) || 'DEVICE_LOST');
+        }
+      });
       NativeInput.on('shutdown', (payload) => {
         if (payload && payload.mode === 'suspend') {
           doSleep(true, 'blackout').catch(() => {});
@@ -2991,8 +3262,13 @@ if (!gotLock) {
     }
 
     setInterval(() => {
-      // 设备离线时别再往渲染进程发"重画副屏"，那边会白编码 3 张 JPEG 再撞 NOT_OPEN
-      if (!deviceAsleep && deviceLinkUp !== false) broadcast('device:repaint-strips', {});
+      if (!deviceAsleep && deviceLinkUp !== false) {
+        if (!win || win.isDestroyed() || !win.isVisible()) {
+          triggerHeadlessPushIfNeeded(false).catch(() => {});
+        } else {
+          broadcast('device:repaint-strips', {});
+        }
+      }
     }, 30000);
 
     // 降频兜底巡检（前台切换与进程变更已由 WinEventHook 与原生监控实时推送）

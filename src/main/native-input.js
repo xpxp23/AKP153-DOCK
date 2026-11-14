@@ -74,6 +74,13 @@ function ensureCompiledBinary() {
     });
     if (r.status === 0 && fs.existsSync(tmpOut)) {
       try {
+        if (fs.existsSync(BIN_PATH)) {
+          try {
+            const oldBak = `${BIN_PATH}.old.${Date.now()}`;
+            fs.renameSync(BIN_PATH, oldBak);
+            try { fs.unlinkSync(oldBak); } catch (_) {}
+          } catch (_) {}
+        }
         fs.renameSync(tmpOut, BIN_PATH);
         fs.writeFileSync(SHA_PATH, csHash, 'utf8');
       } catch (e) {
@@ -152,6 +159,23 @@ function ensureDaemon() {
             evtBus.emit('audio_device', { deviceId: evtPayload });
           } else if (evtType === 'shutdown') {
             evtBus.emit('shutdown', { mode: evtPayload || '1' });
+          } else if (evtType === 'hid_key') {
+            const p = evtPayload.trim().split(/\s+/);
+            evtBus.emit('hid_key', {
+              row: parseInt(p[0], 10) || 0,
+              col: parseInt(p[1], 10) || 0,
+              state: parseInt(p[2], 10) || 0,
+              profileId: p[3] || 'akp153',
+            });
+          } else if (evtType === 'hid_enc') {
+            const p = evtPayload.trim().split(/\s+/);
+            evtBus.emit('hid_enc', {
+              knob: parseInt(p[0], 10) || 0,
+              dir: p[1] || 'cw',
+              rawCode: parseInt(p[2], 10) || 0,
+            });
+          } else if (evtType === 'hid_lost') {
+            evtBus.emit('hid_lost', { message: evtPayload || 'READ_ERROR' });
           }
           continue;
         }
@@ -767,6 +791,67 @@ const NativeInput = {
       : 'toggle';
     const res = await sendCmd(`app_audio_mute ${clean} ${m}`, 1500);
     return NativeInput.parseAppAudioResp(res);
+  },
+
+  renderTileJpeg: async (opts = {}) => {
+    const size = Math.max(32, Math.min(288, parseInt(opts.size, 10) || 96));
+    const rotMode = String(opts.rotMode || 'ccw').trim();
+    const bg1 = String(opts.bgColor || '#1e293b').replace(/\|/g, '');
+    const bg2 = String(opts.bgColor2 || '').replace(/\|/g, '');
+    const topText = String(opts.topText || '').replace(/[\r\n|]/g, ' ').slice(0, 24);
+    const bigText = String(opts.bigText || '').replace(/[\r\n|]/g, ' ').slice(0, 24);
+    const title = String(opts.title || '').replace(/[\r\n|]/g, ' ').slice(0, 24);
+    const badgeText = String(opts.badgeText || '').replace(/[\r\n|]/g, ' ').slice(0, 12);
+    const badgeBg = String(opts.badgeBg || '#107c41').replace(/\|/g, '');
+    const progressPct = typeof opts.progressPct === 'number' ? Math.round(opts.progressPct) : -1;
+    const iconScale = Math.max(20, Math.min(100, parseInt(opts.iconScale, 10) || 62));
+    const iconDataUrl = String(opts.iconDataUrl || '').replace(/[\r\n]/g, '');
+    const payload = [size, rotMode, bg1, bg2, topText, bigText, title, badgeText, badgeBg, progressPct, iconScale, iconDataUrl].join('|');
+    const res = await sendCmd(`render_tile ${payload}`, 2500);
+    if (typeof res === 'string' && res.startsWith('OK ')) {
+      return res.slice(3).trim();
+    }
+    return null;
+  },
+
+  hidOpen: async (profileId = 'akp153', debounceMs = 80) => {
+    const res = await sendCmd(`hid_open ${profileId || 'akp153'} ${parseInt(debounceMs, 10) || 80}`, 3000);
+    if (typeof res === 'string' && res.startsWith('OK ')) {
+      return { ok: true, path: res.slice(3).trim() };
+    }
+    return { ok: false, error: String(res || 'ERR').replace(/^ERR\s*/, '') };
+  },
+
+  hidClose: async () => {
+    await sendCmd('hid_close', 1200);
+    return { ok: true };
+  },
+
+  hidBrightness: async (val = 80) => {
+    const res = await sendCmd(`hid_brightness ${Math.max(0, Math.min(100, parseInt(val, 10) || 80))}`, 1500);
+    return { ok: typeof res === 'string' && res.startsWith('OK') };
+  },
+
+  hidWake: async (brightness = 80) => {
+    const res = await sendCmd(`hid_wake ${Math.max(1, Math.min(100, parseInt(brightness, 10) || 80))}`, 2000);
+    return { ok: typeof res === 'string' && res.startsWith('OK') };
+  },
+
+  hidSleep: async (mode = 'zeros-last') => {
+    const res = await sendCmd(`hid_sleep ${mode || 'zeros-last'}`, 2000);
+    return { ok: typeof res === 'string' && res.startsWith('OK') };
+  },
+
+  hidClear: async () => {
+    const res = await sendCmd('hid_clear', 1500);
+    return { ok: typeof res === 'string' && res.startsWith('OK') };
+  },
+
+  hidDraw: async (row, col, data, force = false) => {
+    if (!data) return { ok: false, error: 'EMPTY_DATA' };
+    const cleanB64 = String(data).replace(/^data:image\/[a-zA-Z]+;base64,/, '').replace(/\s+/g, '');
+    const res = await sendCmd(`hid_draw ${Number(row) || 0} ${Number(col) || 0} ${force ? '1' : '0'} ${cleanB64}`, 4000);
+    return { ok: typeof res === 'string' && res.startsWith('OK'), drawn: typeof res === 'string' && res.startsWith('OK') };
   },
 
   stop: () => {

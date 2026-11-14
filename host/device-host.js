@@ -1,22 +1,23 @@
 'use strict';
 /**
- * AKP153 / Multi-Model StreamDock Device Host (v0.11.0)
+ * AKP153 / Multi-Model StreamDock Device Host (v0.12.0)
  *
- * Runs as a PLAIN NODE process (not inside Electron) so that:
- *   - node-hid's N-API prebuild is used directly (no electron-rebuild / VS build tools)
- *   - the device layer can be tested headlessly from the command line
- *   - a driver crash can never take down the UI
- *
- * Talks JSON-RPC over stdin/stdout, one JSON object per line.
- *
- * Commands:  open | close | draw | batchDraw | clear | brightness | setDebounce | setHardwareProfile | sleep | wake | ping | status
- * Events:    ready | opened | lost | error | down | up | encoder | wake
+ * 架构升级亮点 (v0.12.0)：
+ *   1. 双通道优先级调度锁 (Dual-Lane Priority Scheduler)：
+ *      - 高优通道 (High-Priority Lane)：负责 wake/sleep、亮度控制、单键状态即时重绘与按压回弹帧。
+ *      - 批量通道 (Bulk Preemptible Lane)：负责 18 键整页重绘与后台遥测，每写完 1 颗按键自动让出总线并优先排空高优通道，
+ *        彻底消灭「唤醒或后台遥测刷屏期间按键无反馈/卡顿 500ms」的队头阻塞。
+ *   2. 智能唤醒首按直通 (Wake-On-Key Pass-Through)：
+ *      - 支持在黑屏休眠态下按任意键瞬间点亮屏幕并同步透传触发该键绑定的动作，告别「唤醒吃掉第一下、必须按两次」。
+ *   3. USB 选择性挂起防休眠心跳 (CMD.CONNECT Keep-Alive Heartbeat)：
+ *      - 后台静置时每 18 秒自动发送轻量级 CONNECT 报文保活 USB HID 链路，杜绝操作系统或底座固件总线深睡导致首按丢包。
  */
 
 const path = require('path');
 const {
   getHardwareProfile,
   detectHardwareProfileByUsb,
+  posToDeviceIndex,
 } = require(path.join(__dirname, '..', 'src', 'main', 'hardware-profiles.js'));
 
 let HID = null;
@@ -37,6 +38,7 @@ const CANDIDATES = [
   { vendorId: 0x0300, productId: 0x1030, profileId: 'akp03' },
   { vendorId: 0x5548, productId: 0x6672, profileId: 'akp03' },
   { vendorId: 0x0300, productId: 0x1001, profileId: 'streamdock_15' },
+  { vendorId: 0x5548, productId: 0x0001, profileId: 'streamdock_15' },
 ];
 
 const PREFIX = Buffer.from([67, 82, 84, 0, 0]); // "CRT\0\0"
@@ -53,20 +55,10 @@ const CMD = {
 };
 
 const RECONNECT_MS = 2000;
+const HEARTBEAT_INTERVAL_MS = 18000;
 
 function buttonId(row, col, profileId = 'akp153') {
-  const prof = getHardwareProfile(profileId);
-  const cols = prof.grid.cols;
-  const rows = prof.grid.rows;
-  if (col >= 0 && col < cols && row >= 0 && row < rows) {
-    if (prof.id === 'akp03') {
-      // 3×2 布局键位映射 (1..6)
-      return row * cols + col + 1;
-    }
-    // AKP153 / 15键标准版：右起或列优先映射 (13 - 3 * col + row)
-    return (cols - 1) * rows + 1 - rows * col + row;
-  }
-  return null;
+  return posToDeviceIndex(row, col, profileId);
 }
 
 function stripId(row) {
@@ -92,10 +84,16 @@ class Device {
     this.broken = false;
     this.brightness = 80;
     this.savedBrightness = 80;
-    this.debounceMs = 100;
+    this.debounceMs = 80;
+    this.wakePassThrough = true; // 唤醒首按直通：休眠时按键既点亮屏幕又立即触发按键动作
     this.lastSleepMode = 'zeros-last';
     this.queue = Promise.resolve();
+    this.highPriorityQueue = []; // [{ fn, resolve, reject }]
+    this._drainingHigh = false;
+    this.lastWriteAt = 0;
+    this.lastHighDrawAt = new Map(); // "${row},${col}" -> timestamp
     this.watchdog = null;
+    this.heartbeatTimer = null;
     this.stopped = false;   // set by the 'close' command to stop self-healing
     this.lastPress = new Map();
     this.activeDownKeys = new Set(); // tracks state===1 keys on button-mode hardware
@@ -104,9 +102,6 @@ class Device {
     this.animTimer = null;
     this._animBusy = false;
     this._abortDraw = false;
-    // v0.11.1 整页批次世代：只有"更新的整页重绘"才能抢占正在进行的整页重绘。
-    // 旧实现用 drawGen 记录所有 batchDraw，导致一个 1~9 项的遥测小批次就能把
-    // 18 项整页重绘拦腰截断，且截断后不补画 —— 这就是"切页只刷新了一部分"的根因。
     this.fullBatchSeq = 0;
     this.fullBatchEpoch = 0;
     this._pktBuf = Buffer.alloc(PKT);
@@ -125,18 +120,61 @@ class Device {
 
   setDebounce(ms) {
     const val = Number(ms);
-    if (!Number.isNaN(val) && val >= 20 && val <= 1000) {
+    if (!Number.isNaN(val) && val >= 15 && val <= 1000) {
       this.debounceMs = Math.round(val);
     }
     return this.debounceMs;
   }
 
+  setWakePassThrough(enable) {
+    this.wakePassThrough = enable !== false;
+    return this.wakePassThrough;
+  }
+
+  lockHigh(fn) {
+    return new Promise((resolve, reject) => {
+      this.highPriorityQueue.push({ fn, resolve, reject });
+      if (!this._drainingHigh) {
+        this.lock(() => this._drainHighPriority());
+      }
+    });
+  }
+
+  async _drainHighPriority() {
+    if (this._drainingHigh) return;
+    this._drainingHigh = true;
+    try {
+      while (this.highPriorityQueue.length > 0) {
+        const item = this.highPriorityQueue.shift();
+        try {
+          const res = await item.fn();
+          item.resolve(res);
+        } catch (err) {
+          item.reject(err);
+        }
+      }
+    } finally {
+      this._drainingHigh = false;
+    }
+  }
+
+  lock(fn) {
+    const next = this.queue.then(async () => {
+      await this._drainHighPriority();
+      return await fn();
+    }, async () => {
+      await this._drainHighPriority();
+      return await fn();
+    });
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
   startAnim(row, col, frames, fps = 10, loop = true) {
     if (!Array.isArray(frames) || frames.length === 0) return false;
     const key = `${row},${col}`;
-    // 低功耗帧率预算控制器：单键循环动效默认限制在 8~12 FPS（瞬态按压回弹允许最高 18 FPS）
     const isTransient = loop === false && frames.length <= 4;
-    const maxFps = isTransient ? 18 : 12;
+    const maxFps = isTransient ? 20 : 12;
     const clampedFps = Math.max(2, Math.min(maxFps, Number(fps) || 10));
     this.animations.set(key, {
       row: Number(row),
@@ -147,7 +185,20 @@ class Device {
       loop: loop !== false,
       idx: 0,
       lastTick: 0,
+      isTransient,
     });
+    if (isTransient && this.isOpen && !this.asleep && frames[0]) {
+      const anim = this.animations.get(key);
+      if (anim) {
+        anim.lastTick = Date.now();
+        anim.idx = 1;
+        this.lockHigh(async () => {
+          if (!this.asleep && this.isOpen) {
+            this._drawUnlocked(Number(row), Number(col), frames[0], false);
+          }
+        }).catch(() => {});
+      }
+    }
     this._ensureAnimLoop();
     return true;
   }
@@ -185,7 +236,6 @@ class Device {
       }
       const now = Date.now();
       const due = [];
-      // 动态总线带宽预算：当同屏激活多个 GIF/动态图标时自动拉大最小帧间隔，单次 Tick 最多推送 4 颗动效键，绝不阻塞物理按键响应
       const activeLoopCount = Array.from(this.animations.values()).filter((a) => a.loop).length;
       const budgetLoadFactor = activeLoopCount > 3 ? (1 + (activeLoopCount - 3) * 0.22) : 1;
       for (const [key, anim] of this.animations.entries()) {
@@ -194,7 +244,7 @@ class Device {
           anim.lastTick = now;
           const frameData = anim.frames[anim.idx];
           if (frameData && due.length < 4) {
-            due.push({ row: anim.row, col: anim.col, data: frameData, force: false });
+            due.push({ row: anim.row, col: anim.col, data: frameData, force: false, isTransient: !!anim.isTransient });
           }
           anim.idx++;
           if (anim.idx >= anim.frames.length) {
@@ -209,31 +259,29 @@ class Device {
       if (due.length > 0) {
         this._animBusy = true;
         try {
-          await this.lock(async () => {
+          const hasTransient = due.some((d) => d.isTransient);
+          const runnerFn = async () => {
             for (const it of due) {
               if (this.asleep || this._abortDraw || !this.isOpen) break;
               this._drawUnlocked(it.row, it.col, it.data, false);
             }
-          });
+          };
+          if (hasTransient) await this.lockHigh(runnerFn);
+          else await this.lock(runnerFn);
         } catch (_) {
         } finally {
           this._animBusy = false;
         }
       }
-    }, 45);
+    }, 40);
     if (this.animTimer.unref) this.animTimer.unref();
-  }
-
-  lock(fn) {
-    const next = this.queue.then(fn, fn);
-    this.queue = next.catch(() => {});
-    return next;
   }
 
   close() {
     this.activeDownKeys.clear();
     this.clearAnims();
     this.lastFrames.clear();
+    this.lastHighDrawAt.clear();
     if (this.hid) {
       try { this.hid.removeAllListeners('data'); } catch (e) { /* ignore */ }
       try { this.hid.removeAllListeners('error'); } catch (e) { /* ignore */ }
@@ -270,6 +318,7 @@ class Device {
         const detected = detectHardwareProfileByUsb(d.vendorId, d.productId, d.product || '');
         this.setHardwareProfile(detected ? detected.id : (item.candidateProfileId || 'akp153'));
         this.attach();
+        this.startHeartbeat();
         return d;
       } catch (e) {
         lastErr = e;
@@ -279,6 +328,18 @@ class Device {
       throw new Error('DEVICE_BUSY');
     }
     throw new Error('OPEN_FAILED: ' + (lastErr && lastErr.message));
+  }
+
+  startHeartbeat() {
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => {
+      if (this.stopped || !this.isOpen || this.asleep || this._animBusy || this._drainingHigh) return;
+      const idleMs = Date.now() - (this.lastWriteAt || 0);
+      if (idleMs >= 15000) {
+        this.cmd(CMD.CONNECT).catch(() => {});
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    if (this.heartbeatTimer.unref) this.heartbeatTimer.unref();
   }
 
   attach() {
@@ -304,7 +365,10 @@ class Device {
           this.asleep = false;
           const wakeB = this.savedBrightness || this.brightness || 80;
           this.wake(wakeB, true).catch(() => {});
-          emit({ event: 'wake', by: 'encoder', knob: enc.knob, dir: enc.dir });
+          emit({ event: 'wake', by: 'encoder', knob: enc.knob, dir: enc.dir, passThrough: !!this.wakePassThrough });
+          if (this.wakePassThrough) {
+            emit({ event: 'encoder', knob: enc.knob, dir: enc.dir, rawCode: id, profileId: prof.id, fromWake: true });
+          }
           return;
         }
         emit({
@@ -335,25 +399,32 @@ class Device {
 
       const key = pos.row + ',' + pos.col;
       const now = Date.now();
-      const threshold = Math.max(20, Number(this.debounceMs) || 100);
+      const threshold = Math.max(15, Number(this.debounceMs) || 80);
 
-      // 休眠态下按任意键仅唤醒屏幕，不误触发绑定的动作
+      // 休眠态下按键唤醒：立即高优恢复背光，并根据 wakePassThrough 决定是否直通触发该键动作
       if (this.asleep) {
         if (state === 0 && this.activeDownKeys.has(key)) {
           this.activeDownKeys.delete(key);
           return;
         }
-        process.stderr.write(`[input] key press while asleep at r${pos.row}c${pos.col} -> wake only\n`);
+        process.stderr.write(`[input] key press while asleep at r${pos.row}c${pos.col} -> wake (passThrough=${this.wakePassThrough})\n`);
         this.asleep = false;
-        this.lastPress.delete(key);
+        this.lastPress.set(key, now);
         this.activeDownKeys.clear();
         const wakeB = this.savedBrightness || this.brightness || 80;
         this.wake(wakeB, true).catch(() => {});
-        emit({ event: 'wake', by: 'key', row: pos.row, col: pos.col });
+        emit({ event: 'wake', by: 'key', row: pos.row, col: pos.col, passThrough: !!this.wakePassThrough });
+        if (this.wakePassThrough) {
+          emit({ event: 'down', row: pos.row, col: pos.col, profileId: prof.id, fromWake: true });
+          if (state !== 1) {
+            emit({ event: 'up', row: pos.row, col: pos.col, profileId: prof.id, fromWake: true });
+          } else {
+            this.activeDownKeys.add(key);
+          }
+        }
         return;
       }
 
-      // 双报文固件 (state === 1 按下, state === 0 抬起)：在按下瞬间立即响应，抬起仅通知 up
       if (state === 1) {
         if (now - (this.lastPress.get(key) || 0) < threshold) return;
         this.lastPress.set(key, now);
@@ -368,8 +439,6 @@ class Device {
         return;
       }
 
-      // AKP153 等单报文固件 (inputMode: 'push'，data[10] 恒为 0)：
-      // 彻底移除旧版 330ms 长按等待定时器，收到报文经防抖后立即零延迟触发 down & up！
       if (now - (this.lastPress.get(key) || 0) < threshold) return;
       this.lastPress.set(key, now);
 
@@ -391,6 +460,7 @@ class Device {
     let n;
     try {
       n = this.hid.write(buf);
+      this.lastWriteAt = Date.now();
     } catch (e) {
       this.broken = true;
       this.lastFrames.clear();
@@ -405,7 +475,7 @@ class Device {
   }
 
   cmd(bytes) {
-    return this.lock(async () => {
+    return this.lockHigh(async () => {
       return this.writeRaw(this.pad(Buffer.concat([Buffer.from([0]), PREFIX, Buffer.from(bytes)])));
     });
   }
@@ -475,9 +545,6 @@ class Device {
     if (!jpegBase64) throw new Error('EMPTY_IMAGE');
 
     const frameKey = `${row},${col}`;
-    // 关键修复：当外部显式调用 draw 推送最新状态帧（如双态角标切换、静音切换）时，
-    // 若该键存在非循环的按压回弹动画 (loop === false)，立即终止旧回弹动画，防止旧状态残影在 45ms 后反向覆盖新角标！
-    // v0.11.1：force 通道（整页重绘/强制刷新）连循环动效一并清掉，否则旧页 GIF 帧会把新画面盖回上一页。
     const existingAnim = this.animations.get(frameKey);
     if (existingAnim && (force || !existingAnim.loop)) {
       this.animations.delete(frameKey);
@@ -487,23 +554,13 @@ class Device {
       return { drawn: false, skipped: true };
     }
 
-    return this.lock(async () => {
+    const drawTs = Date.now();
+    this.lastHighDrawAt.set(frameKey, drawTs);
+    return this.lockHigh(async () => {
       return this._drawUnlocked(row, col, jpegBase64, force);
     });
   }
 
-  /**
-   * 批量写图。
-   * @param {Array} items [{row,col,data,force}]
-   * @param {Object} opts  { full: 是否整页重绘, epoch: 渲染侧页面世代 }
-   *
-   * v0.11.1 关键修复：
-   * 1. 只有"更新的整页重绘"(full=true) 才能抢占正在进行的整页重绘；遥测/单键小批次
-   *    永远不能中断整页重绘，只能排在它后面（FIFO 队列保证顺序）。
-   * 2. 逐项 try/catch —— 单个按键写失败不再拖死整批，失败项通过 failed 回传。
-   * 3. 被抢占/失败/跳过的项通过 missing 回传，渲染侧据此补发。
-   * 4. 整页重绘且 force 时，清掉该键上残留的旧页动效帧，防止 45ms 定时器把旧画面盖回来。
-   */
   async batchDraw(items, opts = {}) {
     const list = Array.isArray(items) ? items : [];
     const full = !!opts.full && list.length > 1;
@@ -519,6 +576,7 @@ class Device {
     }
     if (list.length === 0) return { drawn: 0, skipped: 0, failed: [], missing: [], aborted: false };
 
+    const batchEnqueuedAt = Date.now();
     let mySeq = this.fullBatchSeq;
     if (full) {
       this.fullBatchSeq += 1;
@@ -533,7 +591,9 @@ class Device {
       const missing = [];
       let idx = 0;
       for (const it of list) {
-        // 只有"更晚开始的整页重绘"可以抢占当前整页重绘；小批次一律不抢占
+        if (this.highPriorityQueue.length > 0) {
+          await this._drainHighPriority();
+        }
         const superseded = full && this.fullBatchSeq !== mySeq;
         if (!it) { skipped++; continue; }
         if (this.asleep || this._abortDraw || superseded) {
@@ -541,9 +601,12 @@ class Device {
           continue;
         }
         const frameKey = `${it.row},${it.col}`;
+        const lastHighTs = this.lastHighDrawAt.get(frameKey) || 0;
+        if (!full && lastHighTs > batchEnqueuedAt) {
+          skipped++;
+          continue;
+        }
         if (it.force) {
-          // 整页/强制重绘时，旧页的循环动效（GIF/WebP，loop=true）必须一并清掉，
-          // 否则它会在 45ms 后把上一页的画面重新画回来。
           this.animations.delete(frameKey);
         } else {
           const existingAnim = this.animations.get(frameKey);
@@ -561,8 +624,7 @@ class Device {
         }
 
         idx++;
-        // 每绘制 2 个按键通过 setImmediate 让出一次事件循环，使物理按键 hid.on('data') 不被全屏刷图阻塞
-        if (idx % 2 === 0 && idx < list.length) {
+        if (idx < list.length) {
           await new Promise((resolve) => setImmediate(resolve));
         }
       }
@@ -690,8 +752,6 @@ class Device {
           asleep: !!wasAsleep,
         });
       } catch (e) {
-        // 每次"离线周期"只上报一次，主进程据此让渲染侧进入指数退避；
-        // 不这样报的话，渲染进程永远不知道设备没打开，会一直空转编码+推图。
         if (!this.openFailReported) {
           this.openFailReported = true;
           emit({ event: 'open-failed', message: String((e && e.message) || e) });
@@ -722,6 +782,7 @@ async function handle(msg) {
     case 'open': {
       try {
         if (msg.debounceMs !== undefined) device.setDebounce(msg.debounceMs);
+        if (msg.wakePassThrough !== undefined) device.setWakePassThrough(msg.wakePassThrough);
         if (msg.profileId) device.setHardwareProfile(msg.profileId);
         const info = device.open();
         device.openFailReported = false;
@@ -744,6 +805,10 @@ async function handle(msg) {
     case 'setDebounce': {
       const d = device.setDebounce(msg.value !== undefined ? msg.value : msg.debounceMs);
       return reply(id, { debounceMs: d });
+    }
+    case 'setWakePassThrough': {
+      const w = device.setWakePassThrough(msg.value !== undefined ? msg.value : msg.wakePassThrough);
+      return reply(id, { wakePassThrough: w });
     }
     case 'reset': {
       await device.reset(msg.brightness);
@@ -793,6 +858,7 @@ async function handle(msg) {
         asleep: device.asleep,
         brightness: device.brightness,
         debounceMs: device.debounceMs,
+        wakePassThrough: device.wakePassThrough,
         profileId: device.profileId,
         activeAnims: device.animations.size,
       });

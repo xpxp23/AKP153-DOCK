@@ -798,6 +798,42 @@ namespace AkpInput
             out uint lpNumberOfBytesWritten,
             IntPtr lpOverlapped);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool ReadFile(
+            SafeFileHandle hFile,
+            byte[] lpBuffer,
+            uint nNumberOfBytesToRead,
+            out uint lpNumberOfBytesRead,
+            IntPtr lpOverlapped);
+
+        static bool IsSupportedAkpDevicePath(string lower)
+        {
+            if (string.IsNullOrEmpty(lower)) return false;
+            if (lower.Contains("vid_5548") && (
+                lower.Contains("pid_6674") ||
+                lower.Contains("pid_6670") ||
+                lower.Contains("pid_6672") ||
+                lower.Contains("pid_0001")))
+            {
+                return true;
+            }
+            if (lower.Contains("vid_0300") && (
+                lower.Contains("pid_1010") ||
+                lower.Contains("pid_1020") ||
+                lower.Contains("pid_3004") ||
+                lower.Contains("pid_1011") ||
+                lower.Contains("pid_1030") ||
+                lower.Contains("pid_1001")))
+            {
+                return true;
+            }
+            if (lower.Contains("vid_6603") && lower.Contains("pid_1005"))
+            {
+                return true;
+            }
+            return false;
+        }
+
         static List<string> EnumerateAkpDevices()
         {
             var list = new List<string>();
@@ -831,8 +867,7 @@ namespace AkpInput
                                 if (!string.IsNullOrEmpty(path))
                                 {
                                     string lower = path.ToLowerInvariant();
-                                    if ((lower.Contains("vid_5548") && lower.Contains("pid_6674")) ||
-                                        (lower.Contains("vid_0300") && lower.Contains("pid_1010")))
+                                    if (IsSupportedAkpDevicePath(lower))
                                     {
                                         list.Add(path);
                                     }
@@ -1960,8 +1995,11 @@ namespace AkpInput
 
         public static string ActivateOrToggleWindow(string procName, bool allowMinimize)
         {
-            // 关键修复：将窗口激活操作封送到拥有真实 Win32 消息队列的 _guardForm UI 线程执行，
-            // 使 AttachThreadInput 100% 生效，彻底解决后台控制台线程无法抢占前台焦点、仅在任务栏闪烁的问题。
+            // 先在当前工作线程完成耗时的进程枚举与窗口句柄搜索，仅将最终的焦点切换封送到 _guardForm UI 线程，
+            // 避免 _guardForm 消息泵被 Process.GetProcessesByName 长时间阻塞。
+            var candidates = ParseProcessCandidates(procName);
+            if (candidates.Count == 0) return "ERR EMPTY";
+
             if (_guardForm != null && !_guardForm.IsDisposed && _guardForm.IsHandleCreated && _guardForm.InvokeRequired)
             {
                 try
@@ -3427,6 +3465,452 @@ namespace AkpInput
             y = p.Y;
         }
 
+        #region Native Overlapped HID Direct Engine & GDI+ Headless Tile Renderer (v0.12.0)
+
+        private static SafeFileHandle _nativeHidWriteHandle = null;
+        private static SafeFileHandle _nativeHidReadHandle = null;
+        private static Thread _nativeHidReadThread = null;
+        private static System.Threading.Timer _nativeHidHeartbeatTimer = null;
+        private static volatile bool _nativeHidRunning = false;
+        private static string _nativeHidProfileId = "akp153";
+        private static int _nativeHidDebounceMs = 80;
+        private static int _nativeHidBrightness = 80;
+        private static readonly object _nativeHidWriteLock = new object();
+        private static readonly Dictionary<string, string> _nativeHidLastFrames = new Dictionary<string, string>();
+        private static readonly Dictionary<string, long> _nativeHidLastPress = new Dictionary<string, long>();
+        private static long _nativeHidLastWriteTick = 0;
+
+        static int MapPosToHardwareId(int row, int col, string profileId)
+        {
+            if (col == 5) return 16 + row;
+            if (profileId == "akp03")
+            {
+                if (row < 0 || row >= 2 || col < 0 || col >= 3) return -1;
+                return row * 3 + col + 1;
+            }
+            if (row < 0 || row >= 3 || col < 0 || col >= 5) return -1;
+            return 13 - 3 * col + row;
+        }
+
+        static bool MapHardwareIdToPos(int hwId, string profileId, out int row, out int col)
+        {
+            row = 0;
+            col = 0;
+            if (hwId >= 16 && hwId <= 18)
+            {
+                row = hwId - 16;
+                col = 5;
+                return true;
+            }
+            int rows = (profileId == "akp03") ? 2 : 3;
+            int cols = (profileId == "akp03") ? 3 : 5;
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    if (MapPosToHardwareId(r, c, profileId) == hwId)
+                    {
+                        row = r;
+                        col = c;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        static int CalcGamma(int pct)
+        {
+            int clamped = Math.Max(0, Math.Min(100, pct));
+            return (int)Math.Round(100.0 * Math.Pow(clamped / 100.0, 0.75));
+        }
+
+        public static string NativeHidOpen(string profileId, int debounceMs)
+        {
+            NativeHidClose();
+            _nativeHidProfileId = string.IsNullOrEmpty(profileId) ? "akp153" : profileId;
+            _nativeHidDebounceMs = Math.Max(15, Math.Min(1000, debounceMs));
+
+            var paths = EnumerateAkpDevices();
+            if (!string.IsNullOrEmpty(_cachedDevicePath) && !paths.Contains(_cachedDevicePath))
+            {
+                paths.Insert(0, _cachedDevicePath);
+            }
+            if (paths.Count == 0) return "ERR DEVICE_NOT_FOUND";
+
+            uint GENERIC_WRITE = 0x40000000;
+            uint GENERIC_READ = 0x80000000;
+            uint FILE_SHARE_READ = 0x00000001;
+            uint FILE_SHARE_WRITE = 0x00000002;
+            uint OPEN_EXISTING = 3;
+
+            foreach (var p in paths)
+            {
+                try
+                {
+                    var wHandle = CreateFile(p, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+                    if (wHandle == null || wHandle.IsInvalid) continue;
+                    var rHandle = CreateFile(p, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+                    _nativeHidWriteHandle = wHandle;
+                    _nativeHidReadHandle = (rHandle != null && !rHandle.IsInvalid) ? rHandle : wHandle;
+                    _cachedDevicePath = p;
+                    _nativeHidRunning = true;
+
+                    _nativeHidReadThread = new Thread(NativeHidReadLoop);
+                    _nativeHidReadThread.IsBackground = true;
+                    _nativeHidReadThread.Priority = ThreadPriority.AboveNormal;
+                    _nativeHidReadThread.Start();
+
+                    _nativeHidHeartbeatTimer = new System.Threading.Timer(_ =>
+                    {
+                        if (!_nativeHidRunning || _deviceKnownAsleep) return;
+                        long nowTick = Environment.TickCount & Int32.MaxValue;
+                        if (nowTick - _nativeHidLastWriteTick >= 15000)
+                        {
+                            NativeHidSendCmd(new byte[] { 67, 79, 78, 78, 69, 67, 84 }); // CONNECT heartbeat
+                        }
+                    }, null, 18000, 18000);
+
+                    return "OK " + p;
+                }
+                catch { }
+            }
+            return "ERR OPEN_FAILED";
+        }
+
+        public static void NativeHidClose()
+        {
+            _nativeHidRunning = false;
+            if (_nativeHidHeartbeatTimer != null)
+            {
+                try { _nativeHidHeartbeatTimer.Dispose(); } catch { }
+                _nativeHidHeartbeatTimer = null;
+            }
+            lock (_nativeHidWriteLock)
+            {
+                _nativeHidLastFrames.Clear();
+                if (_nativeHidReadHandle != null && _nativeHidReadHandle != _nativeHidWriteHandle)
+                {
+                    try { _nativeHidReadHandle.Close(); } catch { }
+                }
+                if (_nativeHidWriteHandle != null)
+                {
+                    try { _nativeHidWriteHandle.Close(); } catch { }
+                }
+                _nativeHidReadHandle = null;
+                _nativeHidWriteHandle = null;
+            }
+        }
+
+        private static void NativeHidReadLoop()
+        {
+            byte[] buf = new byte[513];
+            while (_nativeHidRunning && _nativeHidReadHandle != null && !_nativeHidReadHandle.IsInvalid)
+            {
+                try
+                {
+                    uint readBytes = 0;
+                    if (!ReadFile(_nativeHidReadHandle, buf, (uint)buf.Length, out readBytes, IntPtr.Zero) || readBytes < 10)
+                    {
+                        if (!_nativeHidRunning) break;
+                        Thread.Sleep(5);
+                        continue;
+                    }
+                    int rawId = buf[9];
+                    int state = (readBytes > 10) ? buf[10] : 0;
+                    if (rawId == 0) continue;
+
+                    if (_nativeHidProfileId == "akp03" && (rawId == 0x50 || rawId == 0x51 || rawId == 0x33 || rawId == 0x60 || rawId == 0x61 || rawId == 0x35 || rawId == 0x90 || rawId == 0x91 || rawId == 0x34))
+                    {
+                        int knob = (rawId == 0x50 || rawId == 0x51 || rawId == 0x33) ? 0 : ((rawId == 0x60 || rawId == 0x61 || rawId == 0x35) ? 1 : 2);
+                        string dir = (rawId == 0x50 || rawId == 0x60 || rawId == 0x90) ? "ccw" : ((rawId == 0x51 || rawId == 0x61 || rawId == 0x91) ? "cw" : "press");
+                        WriteOut("", string.Format("@evt hid_enc {0} {1} {2}", knob, dir, rawId));
+                        continue;
+                    }
+
+                    int r, c;
+                    if (MapHardwareIdToPos(rawId, _nativeHidProfileId, out r, out c))
+                    {
+                        string k = r + "," + c;
+                        long nowTick = Environment.TickCount & Int32.MaxValue;
+                        long prevTick = 0;
+                        if (_nativeHidLastPress.TryGetValue(k, out prevTick) && (nowTick - prevTick) < _nativeHidDebounceMs && state != 0)
+                        {
+                            continue;
+                        }
+                        _nativeHidLastPress[k] = nowTick;
+                        WriteOut("", string.Format("@evt hid_key {0} {1} {2} {3}", r, c, state, _nativeHidProfileId));
+                    }
+                }
+                catch
+                {
+                    if (!_nativeHidRunning) break;
+                    WriteOut("", "@evt hid_lost READ_ERROR");
+                    break;
+                }
+            }
+        }
+
+        public static bool NativeHidWriteRaw(byte[] pkt513)
+        {
+            lock (_nativeHidWriteLock)
+            {
+                if (_nativeHidWriteHandle == null || _nativeHidWriteHandle.IsInvalid) return false;
+                uint written = 0;
+                bool ok = WriteFile(_nativeHidWriteHandle, pkt513, 513, out written, IntPtr.Zero) && written > 0;
+                if (ok) _nativeHidLastWriteTick = Environment.TickCount & Int32.MaxValue;
+                return ok;
+            }
+        }
+
+        public static bool NativeHidSendCmd(byte[] cmdBytes)
+        {
+            return NativeHidWriteRaw(MakeHidPacket(cmdBytes));
+        }
+
+        public static bool NativeHidSetBrightness(int pct)
+        {
+            _nativeHidBrightness = Math.Max(0, Math.Min(100, pct));
+            int g = CalcGamma(_nativeHidBrightness);
+            bool ok1 = NativeHidSendCmd(new byte[] { 76, 73, 71, 0, 0, (byte)g });
+            bool ok2 = NativeHidSendCmd(new byte[] { 76, 66, 76, 73, 71, (byte)g });
+            return ok1 || ok2;
+        }
+
+        public static bool NativeHidDraw(int row, int col, bool force, string jpegBase64)
+        {
+            if (_deviceKnownAsleep || string.IsNullOrEmpty(jpegBase64)) return false;
+            int id = MapPosToHardwareId(row, col, _nativeHidProfileId);
+            if (id < 0) return false;
+
+            string key = row + "," + col;
+            lock (_nativeHidWriteLock)
+            {
+                string prev;
+                if (!force && _nativeHidLastFrames.TryGetValue(key, out prev) && prev == jpegBase64)
+                {
+                    return true;
+                }
+                byte[] img;
+                try { img = Convert.FromBase64String(jpegBase64); }
+                catch { return false; }
+                int total = img.Length;
+                if (total == 0) return false;
+
+                byte[] bat = MakeHidPacket(new byte[] {
+                    66, 65, 84,
+                    (byte)((total >> 24) & 0xFF),
+                    (byte)((total >> 16) & 0xFF),
+                    (byte)((total >> 8) & 0xFF),
+                    (byte)(total & 0xFF),
+                    (byte)id
+                });
+                if (!NativeHidWriteRaw(bat)) return false;
+
+                byte[] pkt = new byte[513];
+                for (int off = 0; off < total; off += 512)
+                {
+                    Array.Clear(pkt, 0, 513);
+                    int chunkLen = Math.Min(512, total - off);
+                    Buffer.BlockCopy(img, off, pkt, 1, chunkLen);
+                    if (!NativeHidWriteRaw(pkt)) return false;
+                }
+                NativeHidSendCmd(new byte[] { 83, 84, 80 }); // STP
+                _nativeHidLastFrames[key] = jpegBase64;
+                return true;
+            }
+        }
+
+        static Color ParseHtmlHexColor(string hex, Color fallback)
+        {
+            if (string.IsNullOrEmpty(hex)) return fallback;
+            try
+            {
+                return ColorTranslator.FromHtml(hex.StartsWith("#") ? hex : ("#" + hex));
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        public static string RenderHeadlessTileJpeg(string specPayload)
+        {
+            // Payload format: size|rotMode|bgColor|bgColor2|topText|bigText|title|badgeText|badgeBg|progressPct|iconScale|iconBase64
+            if (string.IsNullOrEmpty(specPayload)) return "ERR EMPTY";
+            string[] parts = specPayload.Split(new char[] { '|' }, 12);
+            if (parts.Length < 11) return "ERR BAD_SPEC";
+
+            int size = 96;
+            int.TryParse(parts[0], out size);
+            if (size < 32 || size > 288) size = 96;
+            string rotMode = parts[1];
+            Color bg1 = ParseHtmlHexColor(parts[2], Color.FromArgb(30, 41, 59));
+            Color bg2 = string.IsNullOrEmpty(parts[3]) ? Color.FromArgb(Math.Max(0, bg1.R - 18), Math.Max(0, bg1.G - 18), Math.Max(0, bg1.B - 18)) : ParseHtmlHexColor(parts[3], bg1);
+            string topText = parts[4];
+            string bigText = parts[5];
+            string title = parts[6];
+            string badgeText = parts[7];
+            Color badgeBg = ParseHtmlHexColor(parts[8], Color.FromArgb(16, 124, 65));
+            int progressPct = -1;
+            int.TryParse(parts[9], out progressPct);
+            int iconScale = 62;
+            int.TryParse(parts[10], out iconScale);
+            string iconB64 = (parts.Length >= 12) ? parts[11] : "";
+
+            using (Bitmap bmp = new Bitmap(size, size, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+
+                    using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(new Rectangle(0, 0, size, size), bg1, bg2, 135f))
+                    {
+                        g.FillRectangle(brush, 0, 0, size, size);
+                    }
+
+                    if (!string.IsNullOrEmpty(iconB64))
+                    {
+                        try
+                        {
+                            int commaIdx = iconB64.IndexOf(',');
+                            string rawB64 = commaIdx >= 0 ? iconB64.Substring(commaIdx + 1) : iconB64;
+                            byte[] imgBytes = Convert.FromBase64String(rawB64);
+                            using (var ms = new MemoryStream(imgBytes))
+                            using (var iconImg = Image.FromStream(ms))
+                            {
+                                int dim = Math.Max(20, Math.Min(size - 8, (size * iconScale) / 100));
+                                int ix = (size - dim) / 2;
+                                int iy = string.IsNullOrEmpty(title) ? ((size - dim) / 2) : Math.Max(4, (size - dim) / 2 - 7);
+                                g.DrawImage(iconImg, new Rectangle(ix, iy, dim, dim));
+                            }
+                        }
+                        catch { }
+                    }
+
+                    using (var sfCenter = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                    {
+                        if (!string.IsNullOrEmpty(topText))
+                        {
+                            using (var fTop = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold, GraphicsUnit.Pixel))
+                            using (var bTop = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
+                            {
+                                g.DrawString(topText, fTop, bTop, new RectangleF(4, 5, size - 8, 14), sfCenter);
+                            }
+                        }
+                        if (!string.IsNullOrEmpty(bigText) && string.IsNullOrEmpty(iconB64))
+                        {
+                            using (var fBig = new Font("Segoe UI", size >= 90 ? 18f : 15f, FontStyle.Bold, GraphicsUnit.Pixel))
+                            using (var bBig = new SolidBrush(Color.White))
+                            {
+                                g.DrawString(bigText, fBig, bBig, new RectangleF(3, size * 0.25f, size - 6, size * 0.45f), sfCenter);
+                            }
+                        }
+                        if (!string.IsNullOrEmpty(title))
+                        {
+                            using (var fTitle = new Font("Microsoft YaHei UI", 11.5f, FontStyle.Bold, GraphicsUnit.Pixel))
+                            using (var bTitle = new SolidBrush(Color.White))
+                            {
+                                g.DrawString(title, fTitle, bTitle, new RectangleF(3, size - 22, size - 6, 18), sfCenter);
+                            }
+                        }
+                        if (!string.IsNullOrEmpty(badgeText))
+                        {
+                            using (var fBadge = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold, GraphicsUnit.Pixel))
+                            {
+                                SizeF bSz = g.MeasureString(badgeText, fBadge);
+                                float bw = Math.Max(22f, Math.Min(size - 8f, bSz.Width + 8f));
+                                float bh = 15f;
+                                float bx = size - bw - 4f;
+                                float by = 4f;
+                                using (var bPill = new SolidBrush(badgeBg))
+                                using (var bTxt = new SolidBrush(Color.White))
+                                {
+                                    g.FillRectangle(bPill, bx, by, bw, bh);
+                                    g.DrawString(badgeText, fBadge, bTxt, new RectangleF(bx, by, bw, bh), sfCenter);
+                                }
+                            }
+                        }
+                    }
+
+                    if (progressPct >= 0)
+                    {
+                        int pw = size - 14;
+                        int fillW = Math.Max(2, Math.Min(pw, (pw * progressPct) / 100));
+                        using (var bTrack = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+                        using (var bFill = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                        {
+                            g.FillRectangle(bTrack, 7, size - 8, pw, 4);
+                            g.FillRectangle(bFill, 7, size - 8, fillW, 4);
+                        }
+                    }
+                }
+
+                if (rotMode == "ccw") bmp.RotateFlip(RotateFlipType.Rotate270FlipNone);
+                else if (rotMode == "cw") bmp.RotateFlip(RotateFlipType.Rotate90FlipNone);
+                else if (rotMode == "180") bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
+
+                using (var outMs = new MemoryStream())
+                {
+                    ImageCodecInfo jpgEncoder = null;
+                    foreach (var codec in ImageCodecInfo.GetImageEncoders())
+                    {
+                        if (codec.MimeType == "image/jpeg") { jpgEncoder = codec; break; }
+                    }
+                    if (jpgEncoder != null)
+                    {
+                        var ep = new EncoderParameters(1);
+                        ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                        bmp.Save(outMs, jpgEncoder, ep);
+                    }
+                    else
+                    {
+                        bmp.Save(outMs, ImageFormat.Jpeg);
+                    }
+                    return "OK " + Convert.ToBase64String(outMs.ToArray());
+                }
+            }
+        }
+
+        #endregion
+
+        static bool IsHeavyAsyncCommand(string op)
+        {
+            switch (op)
+            {
+                case "find_color":
+                case "extract_icon":
+                case "app_path":
+                case "net_stats":
+                case "proc_titles":
+                case "fg_window":
+                case "check_procs":
+                case "win_state":
+                case "win_radar":
+                case "pick_window":
+                case "pick_pixel":
+                case "sample_pixel":
+                case "win_activate":
+                case "win_close":
+                case "audio_devices":
+                case "audio_switch":
+                case "audio_peak":
+                case "app_audio_list":
+                case "app_audio_get":
+                case "app_audio_set":
+                case "app_audio_step":
+                case "app_audio_mute":
+                case "render_tile":
+                case "hid_open":
+                case "hid_draw":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         static void ExecuteCommand(string rawLine, bool allowAsync = false)
         {
             if (string.IsNullOrWhiteSpace(rawLine)) return;
@@ -3447,6 +3931,14 @@ namespace AkpInput
             if (parts.Length == 0) return;
 
             string op = parts[0].ToLowerInvariant();
+            if (allowAsync && IsHeavyAsyncCommand(op))
+            {
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    ExecuteCommand(rawLine, false);
+                });
+                return;
+            }
             try
             {
                 switch (op)
@@ -3922,6 +4414,77 @@ namespace AkpInput
                             int nameCnt = hasMode ? (parts.Length - 2) : (parts.Length - 1);
                             string appTarget = nameCnt > 0 ? string.Join(" ", parts, 1, nameCnt).Trim().Trim('"') : "@foreground";
                             WriteOut(reqPrefix, AppAudioControl(appTarget, "mute", muteMode));
+                        }
+                        break;
+
+                    case "render_tile":
+                        {
+                            int pStart = line.IndexOf(parts[0]) + parts[0].Length;
+                            string specPayload = (pStart < line.Length) ? line.Substring(pStart).Trim() : "";
+                            WriteOut(reqPrefix, RenderHeadlessTileJpeg(specPayload));
+                        }
+                        break;
+
+                    case "hid_open":
+                        {
+                            string profId = parts.Length > 1 ? parts[1] : "akp153";
+                            int deb = parts.Length > 2 ? int.Parse(parts[2]) : 80;
+                            WriteOut(reqPrefix, NativeHidOpen(profId, deb));
+                        }
+                        break;
+
+                    case "hid_close":
+                        NativeHidClose();
+                        WriteOut(reqPrefix, "OK");
+                        break;
+
+                    case "hid_brightness":
+                        {
+                            int bVal = parts.Length > 1 ? int.Parse(parts[1]) : 80;
+                            bool bOk = NativeHidSetBrightness(bVal);
+                            WriteOut(reqPrefix, bOk ? "OK" : "ERR WRITE_FAILED");
+                        }
+                        break;
+
+                    case "hid_wake":
+                        {
+                            int wVal = parts.Length > 1 ? int.Parse(parts[1]) : _nativeHidBrightness;
+                            _deviceKnownAsleep = false;
+                            NativeHidSendCmd(new byte[] { 68, 73, 83 }); // DIS
+                            NativeHidSetBrightness(wVal);
+                            WriteOut(reqPrefix, "OK");
+                        }
+                        break;
+
+                    case "hid_sleep":
+                        {
+                            _deviceKnownAsleep = true;
+                            NativeHidSendCmd(new byte[] { 76, 66, 76, 73, 71, 0 });
+                            NativeHidSendCmd(new byte[] { 76, 73, 71, 0, 0, 0 });
+                            NativeHidSendCmd(new byte[] { 72, 65, 78 });
+                            WriteOut(reqPrefix, "OK");
+                        }
+                        break;
+
+                    case "hid_clear":
+                        _nativeHidLastFrames.Clear();
+                        NativeHidSendCmd(new byte[] { 67, 76, 69, 0, 0, 0, 255 });
+                        WriteOut(reqPrefix, "OK");
+                        break;
+
+                    case "hid_draw":
+                        {
+                            if (parts.Length < 5)
+                            {
+                                WriteOut(reqPrefix, "ERR BAD_ARGS");
+                                break;
+                            }
+                            int dRow = int.Parse(parts[1]);
+                            int dCol = int.Parse(parts[2]);
+                            bool dForce = parts[3] == "1" || parts[3].Equals("true", StringComparison.OrdinalIgnoreCase);
+                            string b64 = parts[4];
+                            bool dOk = NativeHidDraw(dRow, dCol, dForce, b64);
+                            WriteOut(reqPrefix, dOk ? "OK" : "ERR DRAW_FAILED");
                         }
                         break;
 

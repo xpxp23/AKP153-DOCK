@@ -4451,6 +4451,7 @@ header#bar .brand {
 }
 .drawer.open {
   max-height: 38px !important;
+  overflow: visible !important;
 }
 .drawer.open .library {
   display: flex;
@@ -4568,7 +4569,7 @@ body[data-theme="dark"] .encoder-dock-bar {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.65) 0%, rgba(9, 13, 22, 0.85) 100%);
   border-color: rgba(255, 255, 255, 0.1);
 }
-.encoder-Dock-bar[hidden] {
+.encoder-dock-bar[hidden] {
   display: none !important;
 }
 .encoder-knob-card {
@@ -5248,4 +5249,235 @@ body[data-theme="dark"] .window-radar-status {
   gap: 6px;
   padding-top: 4px;
   border-top: 1px dashed var(--line);
+}
+
+
+/* =====================================================================
+ * v0.12.0 架构与美学增强样式：
+ * 1. 检查器渐进式手风琴折叠面板 (.insp-sub-accordion)
+ * 2. 可视化小组件画布工作台 Pro (.ws-pro-modal-box)
+ * 3. 应用内插件市场 2.0 实时画布预览与插件生成器 (.pm-v2-*)
+ * ===================================================================== */
+
+.insp-sub-accordion {
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  overflow: hidden;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.insp-sub-accordion[open] {
+  border-color: rgba(56, 189, 248, 0.38);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.06);
+}
+.insp-sub-accordion > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 11px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  background: rgba(148, 163, 184, 0.06);
+  transition: background 0.15s ease;
+}
+.insp-sub-accordion > summary::-webkit-details-marker {
+  display: none;
+}
+.insp-sub-accordion > summary:hover {
+  background: var(--accent-subtle);
+}
+.insp-sub-accordion .sub-acc-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.insp-sub-accordion .sub-acc-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.insp-sub-accordion .sub-acc-body {
+  padding: 9px 10px 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* 可视化小组件画布工作台 Pro (Widget Studio Pro Modal) */
+.ws-pro-modal-box {
+  width: 860px;
+  max-width: 95vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 22px;
+  border-radius: 16px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+.ws-pro-layout {
+  display: grid;
+  grid-template-columns: 310px 1fr;
+  gap: 18px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  margin-top: 12px;
+}
+.ws-pro-stage-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+.ws-pro-canvas-frame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border-radius: 16px;
+  background: radial-gradient(circle at 50% 30%, #1e293b, #090d16);
+  border: 2px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.ws-pro-canvas-frame canvas {
+  border-radius: 10px;
+  image-rendering: auto;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.ws-pro-tpl-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  width: 100%;
+}
+.ws-pro-tpl-btn {
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.14s ease;
+}
+.ws-pro-tpl-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.ws-pro-layers-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.ws-pro-layer-card {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color 0.15s ease;
+}
+.ws-pro-layer-card:hover {
+  border-color: var(--accent);
+}
+.ws-pro-layer-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ws-pro-layer-sliders {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ws-pro-layer-sliders label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10.5px;
+}
+
+/* 插件市场 2.0 过滤栏与实时预览画布 */
+.pm-v2-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pm-v2-cats {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.pm-v2-cat-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.pm-v2-cat-pill.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.pm-v2-card-body {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+}
+.pm-v2-preview-box {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #0f172a;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+.pm-v2-preview-box canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.pm-v2-create-drawer {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px dashed var(--accent);
 }

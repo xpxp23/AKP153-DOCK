@@ -27,5 +27,9 @@ desktop.ini
 icons.json
 icons.json.tmp
 
+# 临时编译文件
+bin/*.old.exe
+bin/*.new.exe
+
 # 本地工作区工具与缓存
 .workbuddy/

@@ -211,6 +211,52 @@ const BUILTIN_MARKET_PLUGINS = [
         { label: '烈焰暖橙 (Warm)', value: 'warm' }
       ] }
     ]
+  },
+  {
+    id: 'disk_storage_monitor',
+    name: '磁盘空间与 I/O 健康看板',
+    category: '系统监控',
+    icon: '💿',
+    color: '#0c243c',
+    accent: '#38bdf8',
+    title: '磁盘 C:',
+    value: '58%',
+    sub: '余 186G',
+    subValue: '余 186G',
+    badge: { text: 'C:', bg: '#0284c7' },
+    bars: [
+      { label: 'C', value: 58, color: '#38bdf8' },
+      { label: 'D', value: 64, color: '#10b981' },
+      { label: 'E', value: 42, color: '#10b981' },
+    ],
+    progress: 58,
+    features: ['📊 多盘对比柱图', '🏷️ 告警角标', '🔄 按击轮换盘符'],
+    description: '实时监控系统盘与工作盘剩余容量百分比、告警角标与多盘符柱状对比，按击轮换目标盘符',
+    configSchema: [
+      { key: 'drives', label: '监控盘符列表 (逗号分隔)', type: 'text', default: 'C:,D:,E:', placeholder: 'C:,D:,E:' },
+      { key: 'warnPct', label: '空间告警阈值 (%)', type: 'number', default: 85, placeholder: '85' }
+    ]
+  },
+  {
+    id: 'countdown_event',
+    name: '重要日程 / 下班倒计时看板',
+    category: '开发者工具',
+    icon: '⏳',
+    color: '#1e1b4b',
+    accent: '#6366f1',
+    title: '距离 18:00',
+    value: '2h15m',
+    sub: '今日进度 72%',
+    subValue: '今日进度 72%',
+    badge: { text: '下班', bg: '#6366f1' },
+    progress: 72,
+    features: ['⏱️ 下班/周末倒计时', '📏 进度条', '🔄 按击切换目标'],
+    description: '支持自定义下班时间或里程碑目标倒计时、进度条与鼓励标语，按击切换「今日下班 / 周末 / 自定义目标」',
+    configSchema: [
+      { key: 'offWorkTime', label: '每日下班时间 (HH:mm)', type: 'text', default: '18:00', placeholder: '18:00' },
+      { key: 'eventTitle', label: '自定义日程名称', type: 'text', default: '版本发版', placeholder: '版本发版' },
+      { key: 'eventDays', label: '自定义日程剩余天数', type: 'number', default: 7, placeholder: '7' }
+    ]
   }
 ];
 
@@ -220,14 +266,14 @@ let lastTelemetry = {
   weather: { city: '本地', temp: '24°C', tempNum: 24, condition: '晴间多云', desc: '晴间多云', icon: '⛅', humidity: '56%', humidityNum: 56, wind: '东南风 2级' },
   obs: { running: false, streaming: false, recording: false, statusText: 'OBS 待命', scene: '主场景' },
   media: {
-    active: true, playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦', album: '叶惠美',
-    lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
-    positionSec: 42, durationSec: 269, progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+    active: false, playing: false, app: '未在播放', track: '暂无媒体播放', title: '暂无媒体播放', artist: '等待音频源…', album: '',
+    lyric: '当前无活动媒体会话', subLyric: '支持系统 SMTC · 网易云 · QQ音乐 · Spotify',
+    positionSec: 0, durationSec: 0, progressPct: 0, timeText: '00:00 / 00:00', coverColor: '#334155'
   },
   media_now: {
-    active: true, playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦', album: '叶惠美',
-    lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
-    positionSec: 42, durationSec: 269, progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+    active: false, playing: false, app: '未在播放', track: '暂无媒体播放', title: '暂无媒体播放', artist: '等待音频源…', album: '',
+    lyric: '当前无活动媒体会话', subLyric: '支持系统 SMTC · 网易云 · QQ音乐 · Spotify',
+    positionSec: 0, durationSec: 0, progressPct: 0, timeText: '00:00 / 00:00', coverColor: '#334155'
   },
   pomodoro: { running: false, phase: 'work', remainSec: 25 * 60, remainingSec: 25 * 60, totalSec: 25 * 60, formatted: '25:00', progressPct: 0 },
   plugins: BUILTIN_MARKET_PLUGINS.map(p => Object.assign({}, p))
@@ -2200,9 +2246,30 @@ const DEFAULT_COMPOSITE_LAYERS = [
   { id: 'ly_bot', source: 'net_speed', slot: 'bottom', color: '#38bdf8', label: 'NET' },
 ];
 
-function resolveCompositeLayerValue(source) {
+function interpolateLayerTemplate(tplStr) {
+  const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 22, memPct: 30 };
+  const net = (lastTelemetry && lastTelemetry.net) || { rxText: '180 KB/s', txText: '40 KB/s' };
+  const pomo = (lastTelemetry && lastTelemetry.pomodoro) || { formatted: '25:00' };
+  const cpu = (lastSysStats && lastSysStats.cpu !== undefined) ? lastSysStats.cpu : 24;
+  const mem = (lastSysStats && lastSysStats.mem !== undefined) ? lastSysStats.mem : 48;
+  const vol = (lastAudioState && lastAudioState.volume !== undefined) ? lastAudioState.volume : 60;
+  const d = new Date();
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return String(tplStr || 'CPU ${cpu}% · GPU ${gpu}°C')
+    .replace(/\$\{cpu(?:\.load)?\}/gi, String(cpu))
+    .replace(/\$\{gpu(?:\.temp)?\}/gi, String(gpu.temp || 46))
+    .replace(/\$\{gpu\.load\}/gi, String(gpu.load || 22))
+    .replace(/\$\{mem(?:\.usage)?\}/gi, String(mem))
+    .replace(/\$\{net(?:\.rxText)?\}/gi, String(net.rxText || '180K'))
+    .replace(/\$\{vol(?:ume)?\}/gi, String(vol))
+    .replace(/\$\{time\}/gi, hhmm)
+    .replace(/\$\{pomo\}/gi, String(pomo.formatted || '25:00'));
+}
+
+function resolveCompositeLayerValue(source, ly = null) {
   const gpu = (lastTelemetry && lastTelemetry.gpu) || { temp: 46, load: 22, memPct: 30, history: [22, 26, 24, 30, 28, 25] };
   const net = (lastTelemetry && lastTelemetry.net) || { rxText: '180 KB/s', txText: '40 KB/s', history: [110, 150, 130, 190, 175] };
+  const pomo = (lastTelemetry && lastTelemetry.pomodoro) || { formatted: '25:00', phaseText: '专注', progressPct: 35 };
   const cpu = (lastSysStats && lastSysStats.cpu !== undefined) ? lastSysStats.cpu : 24;
   const mem = (lastSysStats && lastSysStats.mem !== undefined) ? lastSysStats.mem : 48;
   const vol = (lastAudioState && lastAudioState.volume !== undefined) ? lastAudioState.volume : 60;
@@ -2219,6 +2286,17 @@ function resolveCompositeLayerValue(source) {
       return { text: `↓${net.rxText || '180 KB/s'}`, big: `↓${net.rxText || '180K'}`, pct: 45, history: net.history || [120, 160, 140, 210, 180] };
     case 'mem_usage':
       return { text: `MEM ${mem}%`, big: `${mem}%`, pct: mem, history: (lastSysStats && lastSysStats.memHistory) || [48, 49, 50, 50, 51] };
+    case 'pomodoro_timer':
+      return { text: `🍅 ${pomo.phaseText || '专注'} ${pomo.formatted || '25:00'}`, big: pomo.formatted || '25:00', pct: pomo.progressPct || 0 };
+    case 'disk_usage':
+      return { text: 'DISK C: 58%', big: '58%', pct: 58, bars: [
+        { label: 'C', value: 58, color: '#38bdf8' },
+        { label: 'D', value: 64, color: '#10b981' },
+      ] };
+    case 'custom_tpl': {
+      const rendered = interpolateLayerTemplate((ly && ly.tpl) || 'CPU ${cpu}% · ${gpu}°C');
+      return { text: rendered, big: rendered, pct: cpu };
+    }
     case 'audio_vol':
       return { text: isMute ? '🔇 MUTE' : `🔊 ${vol}%`, big: isMute ? 'MUTE' : `${vol}%`, pct: isMute ? 0 : vol, bars: [
         { label: 'OUT', value: isMute ? 0 : vol, color: '#06b6d4' },
@@ -2250,23 +2328,49 @@ function paintCompositeWidgetCanvas(ctx, spec, size, fullW, fullH, scale) {
   // 1. 先绘制背景波形层 (background)
   for (const ly of layers) {
     if (!ly || ly.slot !== 'background') continue;
-    const d = resolveCompositeLayerValue(ly.source);
+    const d = resolveCompositeLayerValue(ly.source, ly);
     if (Array.isArray(d.history) && d.history.length > 1) {
       const col = ly.color || '#38bdf8';
-      drawSparklineChart(ctx, d.history, 4, Math.round(fullH * 0.42), fullW - 8, Math.round(fullH * 0.52), col, col + '33');
+      const ox = Math.round((Number(ly.offsetX) || 0) * scale);
+      const oy = Math.round((Number(ly.offsetY) || 0) * scale);
+      drawSparklineChart(ctx, d.history, 4 + ox, Math.round(fullH * 0.42) + oy, fullW - 8, Math.round(fullH * 0.52), col, col + '33');
     }
   }
 
-  // 2. 绘制柱状图层或进度条层
+  // 2. 绘制圆环仪表盘 (ring)、柱状图层 (bars) 或进度条层 (progress)
   for (const ly of layers) {
     if (!ly) continue;
-    const d = resolveCompositeLayerValue(ly.source);
-    if (ly.slot === 'bars' && Array.isArray(d.bars)) {
-      const bx = fullW > size ? (size + Math.round(6 * scale)) : Math.round(7 * scale);
+    const d = resolveCompositeLayerValue(ly.source, ly);
+    const ox = Math.round((Number(ly.offsetX) || 0) * scale);
+    const oy = Math.round((Number(ly.offsetY) || 0) * scale);
+    const lScale = Math.max(0.5, Math.min(1.8, (Number(ly.scale) || 100) / 100));
+
+    if (ly.slot === 'ring') {
+      const rcx = Math.round(fullW / 2) + ox;
+      const rcy = Math.round(fullH * 0.48) + oy;
+      const radius = Math.round(Math.min(size, fullH) * 0.32 * lScale);
+      const lw = Math.max(3, Math.round(5.5 * scale * lScale));
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineWidth = lw;
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.beginPath();
+      ctx.arc(rcx, rcy, radius, Math.PI * 0.75, Math.PI * 2.25, false);
+      ctx.stroke();
+      const pct = Math.max(0, Math.min(100, Number(d.pct) || 0));
+      if (pct > 0) {
+        ctx.strokeStyle = ly.color || '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(rcx, rcy, radius, Math.PI * 0.75, Math.PI * (0.75 + 1.5 * (pct / 100)), false);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (ly.slot === 'bars' && Array.isArray(d.bars)) {
+      const bx = (fullW > size ? (size + Math.round(6 * scale)) : Math.round(7 * scale)) + ox;
       const bw = fullW > size ? (fullW - bx - Math.round(7 * scale)) : (fullW - Math.round(14 * scale));
-      drawBarsChart(ctx, d.bars, bx, Math.round(22 * scale), bw, fullH - Math.round(30 * scale), scale * 0.9);
+      drawBarsChart(ctx, d.bars, bx, Math.round(22 * scale) + oy, bw, fullH - Math.round(30 * scale), scale * 0.9 * lScale);
     } else if (ly.slot === 'progress') {
-      const px = Math.round(7 * scale), py = fullH - Math.round(8 * scale), pw = fullW - Math.round(14 * scale), ph = Math.max(3, Math.round(3.5 * scale));
+      const px = Math.round(7 * scale) + ox, py = fullH - Math.round(8 * scale) + oy, pw = fullW - Math.round(14 * scale), ph = Math.max(3, Math.round(3.5 * scale * lScale));
       ctx.fillStyle = 'rgba(255,255,255,0.15)';
       ctx.fillRect(px, py, pw, ph);
       ctx.fillStyle = ly.color || '#10b981';
@@ -2274,32 +2378,44 @@ function paintCompositeWidgetCanvas(ctx, spec, size, fullW, fullH, scale) {
     }
   }
 
-  // 3. 绘制顶部 / 中部 / 底部指标文字层
+  // 3. 绘制顶部 / 中部 / 底部 / 自由模板指标文字层
   const textMaxW = (fullW > size && layers.some(l => l.slot === 'bars')) ? (size - Math.round(12 * scale)) : (fullW - Math.round(12 * scale));
-  const centerX = (fullW > size && layers.some(l => l.slot === 'bars')) ? (size / 2) : (fullW / 2);
+  const baseCenterX = (fullW > size && layers.some(l => l.slot === 'bars')) ? (size / 2) : (fullW / 2);
 
   for (const ly of layers) {
     if (!ly) continue;
-    const d = resolveCompositeLayerValue(ly.source);
+    const d = resolveCompositeLayerValue(ly.source, ly);
     const prefix = ly.label ? `${ly.label} ` : '';
+    const ox = Math.round((Number(ly.offsetX) || 0) * scale);
+    const oy = Math.round((Number(ly.offsetY) || 0) * scale);
+    const lScale = Math.max(0.5, Math.min(1.8, (Number(ly.scale) || 100) / 100));
+    const centerX = baseCenterX + ox;
+
     if (ly.slot === 'top') {
       ctx.fillStyle = ly.color || '#4ade80';
-      ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
+      ctx.font = `bold ${Math.round(9.5 * scale * lScale)}px "Microsoft YaHei", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      drawClampedLine(ctx, d.text || (prefix + d.big), centerX, Math.round(6 * scale), textMaxW, 'center');
+      drawClampedLine(ctx, d.text || (prefix + d.big), centerX, Math.round(6 * scale) + oy, textMaxW, 'center');
     } else if (ly.slot === 'middle') {
       ctx.fillStyle = ly.color || '#ffffff';
-      ctx.font = `bold ${Math.round(17 * scale)}px "Segoe UI", Consolas, sans-serif`;
+      ctx.font = `bold ${Math.round(17 * scale * lScale)}px "Segoe UI", Consolas, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      drawClampedLine(ctx, prefix ? `${prefix}${d.big}` : (d.big || d.text), centerX, Math.round(fullH * 0.44), textMaxW, 'center');
+      drawClampedLine(ctx, prefix ? `${prefix}${d.big}` : (d.big || d.text), centerX, Math.round(fullH * 0.44) + oy, textMaxW, 'center');
     } else if (ly.slot === 'bottom') {
       ctx.fillStyle = ly.color || '#94a3b8';
-      ctx.font = `bold ${Math.round(9 * scale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.font = `bold ${Math.round(9 * scale * lScale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      drawClampedLine(ctx, d.text || d.big, centerX, fullH - Math.round(9 * scale), textMaxW, 'center');
+      drawClampedLine(ctx, d.text || d.big, centerX, fullH - Math.round(9 * scale) + oy, textMaxW, 'center');
+    } else if (ly.slot === 'custom_text') {
+      const rendered = ly.tpl ? interpolateLayerTemplate(ly.tpl) : (d.text || d.big);
+      ctx.fillStyle = ly.color || '#f8fafc';
+      ctx.font = `bold ${Math.round(11 * scale * lScale)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      drawClampedLine(ctx, rendered, centerX, Math.round(fullH * 0.5) + oy, fullW - 8, 'center');
     }
   }
 }
@@ -2473,9 +2589,9 @@ function paintWideWidgetMasterCanvas(spec, size, spanCols, keyPos) {
 
   if (kind === 'media_now') {
     const m = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
-      playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦',
-      lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在',
-      progressPct: 26, timeText: '00:42 / 04:29', coverColor: '#7c3aed'
+      playing: false, app: '未在播放', track: '暂无媒体播放', title: '暂无媒体播放', artist: '等待音频源…',
+      lyric: '当前无活动媒体会话', subLyric: '支持系统 SMTC · 网易云 · QQ音乐 · Spotify',
+      progressPct: 0, timeText: '00:00 / 00:00', coverColor: '#334155'
     };
     drawWideBg('#2e1065', '#0f172a', 'rgba(232, 121, 249, 0.38)');
 
@@ -2517,7 +2633,7 @@ function paintWideWidgetMasterCanvas(spec, size, spanCols, keyPos) {
     ctx.font = `bold ${Math.round(9.5 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    const trackTitle = m.track || m.title || '晴天';
+    const trackTitle = m.track || m.title || '暂无媒体播放';
     const artistStr = m.artist ? ` · ${m.artist}` : '';
     drawClampedLine(ctx, `🎵 ${m.app || 'SMTC'}  |  ${trackTitle}${artistStr}`, rx, Math.round(8 * scale), rw, 'left');
 
@@ -2836,8 +2952,8 @@ function paintWidgetCanvas(spec, size, keyPos) {
   } else if (kind === 'media_now') {
     drawBg('#2e1065', '#0f172a');
     const m = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
-      playing: true, app: '网易云音乐', track: '晴天', title: '晴天', artist: '周杰伦',
-      lyric: '故事的小黄花 从出生那年就飘着', progressPct: 26
+      playing: false, app: '未在播放', track: '暂无媒体播放', title: '暂无媒体播放', artist: '',
+      lyric: '当前无活动媒体会话', progressPct: 0
     };
     ctx.fillStyle = '#f0abfc';
     ctx.font = `bold ${Math.round(9 * geomScale)}px "Microsoft YaHei", sans-serif`;
@@ -2849,7 +2965,7 @@ function paintWidgetCanvas(spec, size, keyPos) {
     ctx.textAlign = 'right';
     ctx.fillText(m.playing === false ? '⏸' : '▶', size - Math.round(6 * geomScale), Math.round(6 * geomScale));
 
-    const songLine = (m.track || m.title || '晴天') + (m.artist && !(m.title || '').includes(m.artist) ? ` - ${m.artist}` : '');
+    const songLine = (m.track || m.title || '暂无媒体播放') + (m.artist && !(m.title || '').includes(m.artist) ? ` - ${m.artist}` : '');
     ctx.fillStyle = '#ffffff';
     ctx.font = `bold ${Math.round(11 * scale)}px "Microsoft YaHei", sans-serif`;
     ctx.textBaseline = 'middle';
@@ -3007,7 +3123,7 @@ function paintPanoramaStripCanvas(page, preStats = null) {
   } else if (mode === 'lyrics_waterfall') {
     // 贯穿式多行滚动歌词瀑布 + 顶部黑胶唱头
     const media = (lastTelemetry && (lastTelemetry.media_now || lastTelemetry.media)) || {
-      title: '晴天', artist: '周杰伦', lyric: '故事的小黄花 从出生那年就飘着', subLyric: '童年的荡秋千 随记忆一直晃到现在', progressPct: 36
+      title: '暂无媒体播放', artist: '等待音频源…', lyric: '当前无活动媒体会话', subLyric: '支持 SMTC 实时歌词同步', progressPct: 0
     };
     ctx.fillStyle = accent;
     ctx.font = 'bold 10.5px "Microsoft YaHei", sans-serif';
@@ -3167,6 +3283,12 @@ async function pushStrip(row, force = false, preStats = null) {
   const c = await buildStripCanvas(row, preStats);
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const b64 = await encodeCanvasToJpegB64(c, rotMode);
+  const pageId = (curPage() && curPage().id) || 'p1';
+  const hashKey = `strip:${pageId}:${row}`;
+  if (!force && dirtyRectHashStore.get(hashKey) === b64) {
+    return;
+  }
+  dirtyRectHashStore.set(hashKey, b64);
   await api.deviceDraw({ row, col: 5, data: b64, force: !!force });
 }
 
@@ -3295,7 +3417,7 @@ async function repaintAll(force = false) {
   }
 
   let sharedStats = lastSysStats;
-  const strips = pageStrips();
+  const strips = effectiveStrips();
   const needsStats = [0, 1, 2].some((r) => {
     const st = strips[String(r)];
     return st && ['cpu', 'mem', 'sys', 'volume'].includes(st.type);
@@ -6309,43 +6431,223 @@ const WIDGET_KIND_INFOS = [
 ];
 
 function openPluginMarketModal(onSelectPlugin) {
+  const existing = document.getElementById('pluginMarketModal');
+  if (existing) existing.remove();
+
   const wrap = document.createElement('div');
   wrap.className = 'modal';
   wrap.id = 'pluginMarketModal';
-  const catalog = BUILTIN_MARKET_PLUGINS;
+
+  let activeCat = '全部';
+  let searchKw = '';
+  const allCats = ['全部', '系统监控', '音频与直播', '开发者工具', '金融行情', '智能家居', '扩展插件'];
+
+  const getMergedCatalog = () => {
+    const map = new Map();
+    for (const p of BUILTIN_MARKET_PLUGINS) {
+      map.set(p.id, Object.assign({ builtin: true }, p));
+    }
+    if (Array.isArray(cachedPluginSchemas)) {
+      for (const ext of cachedPluginSchemas) {
+        const normId = String(ext.id || '').replace(/-/g, '_');
+        if (!map.has(normId)) {
+          map.set(normId, {
+            id: normId,
+            name: ext.name || normId,
+            category: ext.category || '扩展插件',
+            icon: '🧩',
+            color: ext.color || '#0f172a',
+            description: ext.description || '用户自定义扩展画布插件',
+            features: ['⚡ 动态渲染', '🔧 可配置参数'],
+            custom: true,
+          });
+        }
+      }
+    }
+    return Array.from(map.values());
+  };
 
   wrap.innerHTML = `
-    <div class="modalbox" style="width: 680px; max-width: 94vw; padding: 16px 20px;">
+    <div class="modalbox" style="width: 780px; max-width: 95vw; padding: 18px 22px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line);">
         <div>
-          <h3 style="margin:0; font-size:15px;">🛍️ AKP153 可视化画布插件中心 (v0.9 Plugin API)</h3>
-          <div style="font-size:11.5px; color:var(--muted); margin-top:3px;">支持 Sparkline 折线图、Bars 多路推子、SVG 矢量图标与 Badge 状态角标渲染</div>
+          <h3 style="margin:0; font-size:15.5px;">🧩 AKP153 应用内插件市场与组件工坊 (Plugin Market 2.0)</h3>
+          <div style="font-size:11.5px; color:var(--muted); margin-top:3px;">内置 96×96 硬件真彩实时预览 · 支持一键生成自定义 JS 插件与沙箱安全热加载</div>
         </div>
         <div style="display:flex; gap:6px; align-items:center;">
-          <button type="button" class="ghost tiny" id="pmInstallLocalBtn">📦 安装本地 .plugin.js</button>
+          <button type="button" class="primary tiny" id="pmToggleCreatorBtn">✨ 一键生成新插件</button>
+          <button type="button" class="ghost tiny" id="pmInstallLocalBtn">📦 导入 .plugin.js</button>
           <button type="button" class="ghost tiny" id="pmCloseBtn">✕ 关闭</button>
         </div>
       </div>
-      <div class="plugin-market-grid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; max-height: 76vh; overflow-y:auto; padding-right:4px;">
-        ${catalog.map(p => `
-          <div class="plugin-market-card" data-pid="${escapeAttr(p.id)}" style="background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:11px 12px; display:flex; flex-direction:column; gap:7px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-              <span style="font-weight:700; font-size:13px; color:var(--ink);">${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name)}</span>
-              <span style="font-size:10px; padding:2px 7px; border-radius:999px; background:var(--accent-subtle); color:var(--accent); font-weight:600;">${escapeHtml(p.category)}</span>
-            </div>
-            <div style="font-size:11.5px; color:var(--muted); line-height:1.45;">${escapeHtml(p.description)}</div>
-            <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:auto;">
-              ${(p.features || []).map(f => `<span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(56,189,248,0.12); color:var(--ink);">${escapeHtml(f)}</span>`).join('')}
-            </div>
-            <button type="button" class="primary tiny pm-use-btn" data-pid="${escapeAttr(p.id)}" style="margin-top:4px; width:100%;">⚡ 立即绑定此插件</button>
-          </div>
-        `).join('')}
+
+      <div id="pmCreateDrawer" class="pm-v2-create-drawer" hidden>
+        <div style="font-size:12px; font-weight:700; color:var(--ink); margin-bottom:8px;">✨ 快速脚手架：一键生成并热加载自定义 `.plugin.js` 插件</div>
+        <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr auto auto; gap:8px; align-items:center;">
+          <input id="pmNewName" type="text" placeholder="插件名称 (如：服务器延迟监控)" />
+          <select id="pmNewCat">
+            <option value="系统监控">分类：系统监控</option>
+            <option value="开发者工具">分类：开发者工具</option>
+            <option value="音频与直播">分类：音频与直播</option>
+            <option value="扩展插件">分类：扩展插件</option>
+          </select>
+          <select id="pmNewVisual">
+            <option value="sparkline">图表：Sparkline 趋势折线</option>
+            <option value="bars">图表：Bars 多路柱状图</option>
+          </select>
+          <input id="pmNewColor" type="color" value="#0f172a" style="width:32px; height:28px; padding:0; border:none; border-radius:6px; cursor:pointer;" title="卡片主题底色" />
+          <button type="button" class="primary tiny" id="pmConfirmCreateBtn">⚡ 立即创建并加载</button>
+        </div>
       </div>
+
+      <div class="pm-v2-toolbar">
+        <div class="pm-v2-cats" id="pmCatBar">
+          ${allCats.map(c => `<button type="button" class="pm-v2-cat-pill ${c === activeCat ? 'active' : ''}" data-cat="${escapeAttr(c)}">${escapeHtml(c)}</button>`).join('')}
+        </div>
+        <input id="pmSearchInput" type="text" placeholder="🔍 搜索插件名称 / 描述 / 特性…" style="width: 210px; font-size:12px;" />
+      </div>
+
+      <div id="pmGridContainer" class="plugin-market-grid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; max-height: 64vh; overflow-y:auto; padding-right:4px;"></div>
     </div>
   `;
   document.body.appendChild(wrap);
   const close = () => wrap.remove();
   wrap.querySelector('#pmCloseBtn').onclick = close;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+
+  const renderCards = () => {
+    const grid = wrap.querySelector('#pmGridContainer');
+    const list = getMergedCatalog().filter((p) => {
+      if (activeCat !== '全部' && p.category !== activeCat) return false;
+      if (searchKw) {
+        const hay = `${p.name} ${p.description} ${p.category} ${(p.features || []).join(' ')}`.toLowerCase();
+        if (!hay.includes(searchKw.toLowerCase())) return false;
+      }
+      return true;
+    });
+
+    grid.innerHTML = list.map(p => `
+      <div class="plugin-market-card" data-pid="${escapeAttr(p.id)}" style="background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:11px 12px; display:flex; flex-direction:column; gap:8px;">
+        <div class="pm-v2-card-body">
+          <div class="pm-v2-preview-box" data-preview-pid="${escapeAttr(p.id)}" title="96×96 硬件真彩实时画布预览"></div>
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-weight:700; font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(p.icon || '🧩')} ${escapeHtml(p.name)}</span>
+              <span style="font-size:10px; padding:2px 7px; border-radius:999px; background:var(--accent-subtle); color:var(--accent); font-weight:600; flex-shrink:0;">${escapeHtml(p.category)}</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--muted); line-height:1.42;">${escapeHtml(p.description)}</div>
+          </div>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:auto;">
+          ${(p.features || []).map(f => `<span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(56,189,248,0.12); color:var(--ink);">${escapeHtml(f)}</span>`).join('')}
+        </div>
+        <div style="display:flex; gap:6px; margin-top:2px;">
+          <button type="button" class="primary tiny pm-use-btn" data-pid="${escapeAttr(p.id)}" style="flex:1;">⚡ ${onSelectPlugin ? '绑定到当前选中格' : '放置到当前选中格'}</button>
+          ${p.custom ? `<button type="button" class="ghost tiny danger pm-del-btn" data-pid="${escapeAttr(p.id)}" title="卸载此自定义插件">🗑️</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+    // 为每张卡片渲染 1:1 96x96 实时硬件画布缩略图
+    grid.querySelectorAll('[data-preview-pid]').forEach((boxEl) => {
+      const pid = boxEl.dataset.previewPid;
+      const meta = list.find(x => x.id === pid) || list[0];
+      paintWidgetCanvas({ type: 'widget', widgetKind: 'plugin', pluginId: pid, color: (meta && meta.color) || '#0f172a' }, 96).then((cnv) => {
+        if (cnv && boxEl.isConnected) {
+          boxEl.innerHTML = '';
+          boxEl.appendChild(cnv);
+        }
+      }).catch(() => {});
+    });
+
+    grid.querySelectorAll('.pm-use-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const pid = btn.dataset.pid;
+        const meta = getMergedCatalog().find(x => x.id === pid) || BUILTIN_MARKET_PLUGINS[0];
+        close();
+        if (onSelectPlugin) {
+          onSelectPlugin(meta);
+        } else if (selected && selected.col < KEY_COLS && !isBackCell(selected.row, selected.col)) {
+          pushHistory(`绑定市场插件：${meta.name}`);
+          pageButtons()[`${selected.row},${selected.col}`] = {
+            type: 'widget',
+            widgetKind: 'plugin',
+            pluginId: meta.id,
+            action: 'plugin_click',
+            label: meta.name,
+            color: meta.color || '#0f172a',
+          };
+          await commit(true);
+          renderInspector();
+          toast(`✅ 已将插件「${meta.name}」放置到 r${selected.row}c${selected.col}`);
+        } else {
+          toast('💡 请先在面板上点选一个按键格子，再点击绑定插件');
+        }
+      };
+    });
+
+    grid.querySelectorAll('.pm-del-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const pid = btn.dataset.pid;
+        if (!DEMO && api.pluginsUninstall) {
+          const res = await api.pluginsUninstall(pid);
+          if (res && Array.isArray(res.plugins)) cachedPluginSchemas = res.plugins;
+          renderCards();
+          toast('🗑️ 已卸载自定义插件');
+        }
+      };
+    });
+  };
+
+  wrap.querySelectorAll('.pm-v2-cat-pill').forEach(pill => {
+    pill.onclick = () => {
+      activeCat = pill.dataset.cat || '全部';
+      wrap.querySelectorAll('.pm-v2-cat-pill').forEach(x => x.classList.toggle('active', x === pill));
+      renderCards();
+    };
+  });
+
+  const searchInp = wrap.querySelector('#pmSearchInput');
+  if (searchInp) {
+    searchInp.oninput = () => {
+      searchKw = searchInp.value.trim();
+      renderCards();
+    };
+  }
+
+  const toggleCreatorBtn = wrap.querySelector('#pmToggleCreatorBtn');
+  const createDrawer = wrap.querySelector('#pmCreateDrawer');
+  if (toggleCreatorBtn && createDrawer) {
+    toggleCreatorBtn.onclick = () => {
+      createDrawer.hidden = !createDrawer.hidden;
+    };
+  }
+
+  const confirmCreateBtn = wrap.querySelector('#pmConfirmCreateBtn');
+  if (confirmCreateBtn) {
+    confirmCreateBtn.onclick = async () => {
+      const name = wrap.querySelector('#pmNewName').value.trim() || '自定义监控看板';
+      const category = wrap.querySelector('#pmNewCat').value || '扩展插件';
+      const visualType = wrap.querySelector('#pmNewVisual').value || 'sparkline';
+      const color = wrap.querySelector('#pmNewColor').value || '#0f172a';
+      if (!DEMO && api.pluginsCreateCustom) {
+        const res = await api.pluginsCreateCustom({ name, category, visualType, color });
+        if (res && res.ok) {
+          if (Array.isArray(res.plugins)) cachedPluginSchemas = res.plugins;
+          createDrawer.hidden = true;
+          renderCards();
+          toast(`✨ 已生成并热加载插件：「${name}」`);
+        }
+      } else {
+        const newId = 'custom_' + Date.now().toString(36);
+        cachedPluginSchemas.push({ id: newId, name, category, color, description: `${name} (自定义插件)` });
+        createDrawer.hidden = true;
+        renderCards();
+        toast(`✨ 已在预览环境创建插件：「${name}」`);
+      }
+    };
+  }
+
   const installBtn = wrap.querySelector('#pmInstallLocalBtn');
   if (installBtn) {
     installBtn.onclick = async () => {
@@ -6354,23 +6656,351 @@ function openPluginMarketModal(onSelectPlugin) {
         if (res && res.ok && Array.isArray(res.plugins)) {
           cachedPluginSchemas = res.plugins;
           toast(`✅ 插件安装成功，共加载 ${res.plugins.length} 个插件`);
-          close();
-          renderInspector();
+          renderCards();
         }
       } else {
         toast('预览模式下不支持安装本地文件');
       }
     };
   }
-  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
-  wrap.querySelectorAll('.pm-use-btn').forEach(btn => {
-    btn.onclick = () => {
-      const pid = btn.dataset.pid;
-      const meta = catalog.find(x => x.id === pid) || catalog[0];
-      close();
-      if (onSelectPlugin) onSelectPlugin(meta);
+
+  renderCards();
+}
+
+const STUDIO_PRO_TEMPLATES = [
+  {
+    id: 'cyber_all',
+    name: '⚡ 赛博全能监控 (CPU+GPU+网速+波形)',
+    color: '#0f172a',
+    layers: [
+      { id: 'l1', source: 'sparkline_gpu', slot: 'background', color: '#38bdf8', label: '', offsetX: 0, offsetY: 0, scale: 100 },
+      { id: 'l2', source: 'cpu_load', slot: 'top', color: '#4ade80', label: 'CPU', offsetX: 0, offsetY: 0, scale: 100 },
+      { id: 'l3', source: 'gpu_temp', slot: 'middle', color: '#ffffff', label: 'GPU', offsetX: 0, offsetY: -2, scale: 105 },
+      { id: 'l4', source: 'net_speed', slot: 'bottom', color: '#38bdf8', label: 'NET', offsetX: 0, offsetY: 0, scale: 100 },
+    ],
+  },
+  {
+    id: 'radial_gauge',
+    name: '⭕ 极简圆环仪表盘 (Radial Gauge)',
+    color: '#111827',
+    layers: [
+      { id: 'l1', source: 'cpu_load', slot: 'ring', color: '#10b981', label: '', offsetX: 0, offsetY: 0, scale: 105 },
+      { id: 'l2', source: 'cpu_load', slot: 'middle', color: '#ffffff', label: '', offsetX: 0, offsetY: -2, scale: 95 },
+      { id: 'l3', source: 'custom_tpl', slot: 'bottom', color: '#94a3b8', label: '', tpl: 'CPU · ${gpu}°C', offsetX: 0, offsetY: 0, scale: 95 },
+    ],
+  },
+  {
+    id: 'stream_mixer',
+    name: '🎚️ 直播导播音控台 (电平柱+时间+音量)',
+    color: '#1e1b4b',
+    layers: [
+      { id: 'l1', source: 'clock_time', slot: 'top', color: '#a5b4fc', label: '', offsetX: 0, offsetY: 0, scale: 100 },
+      { id: 'l2', source: 'audio_bars', slot: 'bars', color: '#38bdf8', label: '', offsetX: 0, offsetY: 2, scale: 100 },
+      { id: 'l3', source: 'audio_vol', slot: 'progress', color: '#10b981', label: '', offsetX: 0, offsetY: 0, scale: 100 },
+    ],
+  },
+  {
+    id: 'dual_net_radar',
+    name: '🌐 双轨网络吞吐与内存进度',
+    color: '#0c243c',
+    layers: [
+      { id: 'l1', source: 'sparkline_net', slot: 'background', color: '#06b6d4', label: '', offsetX: 0, offsetY: 0, scale: 100 },
+      { id: 'l2', source: 'custom_tpl', slot: 'top', color: '#38bdf8', label: '', tpl: 'NET ↓ UP', offsetX: 0, offsetY: 0, scale: 95 },
+      { id: 'l3', source: 'net_speed', slot: 'middle', color: '#ffffff', label: '', offsetX: 0, offsetY: -2, scale: 95 },
+      { id: 'l4', source: 'mem_usage', slot: 'progress', color: '#a855f7', label: '', offsetX: 0, offsetY: 0, scale: 100 },
+    ],
+  },
+];
+
+function openWidgetStudioProModal(targetSpec = null) {
+  const existing = document.getElementById('widgetStudioProModal');
+  if (existing) existing.remove();
+
+  let spec = targetSpec;
+  if (!spec && selected && selected.col < KEY_COLS && !isBackCell(selected.row, selected.col)) {
+    const key = `${selected.row},${selected.col}`;
+    if (!pageButtons()[key]) {
+      pageButtons()[key] = {
+        type: 'widget',
+        widgetKind: 'composite',
+        action: 'refresh',
+        label: '自由画布',
+        color: '#0f172a',
+        widgetLayers: JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS)),
+      };
+    }
+    spec = pageButtons()[key];
+  }
+  if (!spec) {
+    toast('💡 请先在中央面板点选一个按键格子，即可打开可视化画布工作台');
+    return;
+  }
+
+  spec.type = 'widget';
+  spec.widgetKind = 'composite';
+  if (!Array.isArray(spec.widgetLayers) || !spec.widgetLayers.length) {
+    spec.widgetLayers = JSON.parse(JSON.stringify(DEFAULT_COMPOSITE_LAYERS));
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal';
+  wrap.id = 'widgetStudioProModal';
+
+  wrap.innerHTML = `
+    <div class="ws-pro-modal-box">
+      <div style="display:flex; align-items:center; justify-content:space-between; padding-bottom:10px; border-bottom:1px solid var(--line);">
+        <div>
+          <h3 style="margin:0; font-size:16px;">🎨 可视化小组件画布工作台 (Widget Studio Pro v0.12)</h3>
+          <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">支持多图层自由叠加、圆环仪表 (Radial Gauge)、坐标微调、字号缩放与动态模板变量 <code>\${cpu}%</code> <code>\${gpu}°C</code> 绑定</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="primary tiny" id="wsProAddLayerBtn">＋ 新增图层</button>
+          <button type="button" class="ghost tiny" id="wsProCloseBtn">✓ 完成并保存</button>
+        </div>
+      </div>
+
+      <div class="ws-pro-layout">
+        <div class="ws-pro-stage-col">
+          <div style="font-size:12px; font-weight:700; color:var(--ink);">🖥️ 3× 高清硬件实时画布预览</div>
+          <div class="ws-pro-canvas-frame" id="wsProCanvasMount"></div>
+          <div style="display:flex; align-items:center; gap:8px; width:100%; justify-content:space-between; font-size:11.5px;">
+            <span>画布底色：</span>
+            <input type="color" id="wsProBgColor" value="${escapeAttr(spec.color || '#0f172a')}" style="width:36px; height:24px; border:none; border-radius:4px; cursor:pointer;" />
+            <span>独立刷新率：</span>
+            <select id="wsProFreqSel" style="width:110px; font-size:11px;">
+              ${WIDGET_FREQ_OPTIONS.map(f => `<option value="${f.ms}" ${(Number(spec.refreshIntervalMs) || 2500) === f.ms ? 'selected' : ''}>${f.label}</option>`).join('')}
+            </select>
+          </div>
+          <div style="width:100%; border-top:1px solid var(--line); padding-top:8px;">
+            <div style="font-size:11px; color:var(--muted); margin-bottom:6px;">⚡ 一键套用预设画布工程模板：</div>
+            <div class="ws-pro-tpl-grid">
+              ${STUDIO_PRO_TEMPLATES.map(t => `<button type="button" class="ws-pro-tpl-btn" data-tpl="${escapeAttr(t.id)}">${escapeHtml(t.name)}</button>`).join('')}
+            </div>
+          </div>
+        </div>
+
+        <div class="ws-pro-layers-col" id="wsProLayerList"></div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(wrap);
+
+  const updatePreviewCanvas = async () => {
+    const mount = wrap.querySelector('#wsProCanvasMount');
+    if (!mount) return;
+    const spanCols = Math.max(1, Math.min(3, Number(spec.spanCols) || 1));
+    const cnv = document.createElement('canvas');
+    const baseSize = 96;
+    const zoom = 2.4;
+    cnv.width = Math.round(baseSize * spanCols * zoom);
+    cnv.height = Math.round(baseSize * zoom);
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = spec.color || '#0f172a';
+    ctx.fillRect(0, 0, cnv.width, cnv.height);
+    paintCompositeWidgetCanvas(ctx, spec, Math.round(baseSize * zoom), cnv.width, cnv.height, zoom);
+    mount.innerHTML = '';
+    mount.appendChild(cnv);
+  };
+
+  const renderLayerCards = () => {
+    const listEl = wrap.querySelector('#wsProLayerList');
+    if (!listEl) return;
+    const layers = spec.widgetLayers || [];
+    listEl.innerHTML = layers.map((ly, idx) => `
+      <div class="ws-pro-layer-card" data-idx="${idx}">
+        <div class="ws-pro-layer-top">
+          <span style="font-size:11px; font-weight:700; color:var(--accent); min-width:44px;">图层 #${idx + 1}</span>
+          <select class="ws-pro-src" data-idx="${idx}" style="flex:1.2; font-size:12px;">
+            ${STUDIO_LAYER_SOURCES.map(s => `<option value="${s.id}" ${ly.source === s.id ? 'selected' : ''}>${s.label}</option>`).join('')}
+          </select>
+          <select class="ws-pro-slot" data-idx="${idx}" style="flex:1; font-size:12px;">
+            ${STUDIO_LAYER_SLOTS.map(s => `<option value="${s.id}" ${ly.slot === s.id ? 'selected' : ''}>${s.label}</option>`).join('')}
+          </select>
+          <input type="color" class="ws-pro-color" data-idx="${idx}" value="${escapeAttr(ly.color || '#38bdf8')}" style="width:28px; height:24px; border:none; border-radius:4px; cursor:pointer;" title="图层颜色" />
+          <button type="button" class="ghost tiny ws-pro-up" data-idx="${idx}" title="上移">↑</button>
+          <button type="button" class="ghost tiny danger ws-pro-del" data-idx="${idx}" title="删除">✕</button>
+        </div>
+        <div style="display:grid; grid-template-columns: 110px 1fr; gap:8px; align-items:center;">
+          <input type="text" class="ws-pro-label" data-idx="${idx}" value="${escapeAttr(ly.label || '')}" placeholder="前缀标签 (如 GPU)" style="font-size:11.5px;" />
+          <input type="text" class="ws-pro-tpl" data-idx="${idx}" value="${escapeAttr(ly.tpl || '')}" placeholder="模板变量 (如 CPU \${cpu}% · \${gpu}°C · \${net})" style="font-size:11.5px; ${(ly.source === 'custom_tpl' || ly.slot === 'custom_text') ? '' : 'opacity:0.65;'}" />
+        </div>
+        <div class="ws-pro-layer-sliders">
+          <label>水平偏移 X (<b class="v-ox">${Number(ly.offsetX) || 0}</b>px)
+            <input type="range" class="ws-pro-ox" data-idx="${idx}" min="-36" max="36" value="${Number(ly.offsetX) || 0}" />
+          </label>
+          <label>垂直偏移 Y (<b class="v-oy">${Number(ly.offsetY) || 0}</b>px)
+            <input type="range" class="ws-pro-oy" data-idx="${idx}" min="-36" max="36" value="${Number(ly.offsetY) || 0}" />
+          </label>
+          <label>尺寸缩放 (<b class="v-sc">${Number(ly.scale) || 100}</b>%)
+            <input type="range" class="ws-pro-sc" data-idx="${idx}" min="60" max="160" step="5" value="${Number(ly.scale) || 100}" />
+          </label>
+        </div>
+      </div>
+    `).join('');
+
+    listEl.querySelectorAll('.ws-pro-src').forEach(el => {
+      el.onchange = async () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].source = el.value;
+          await commit(true);
+          renderLayerCards();
+          updatePreviewCanvas();
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-slot').forEach(el => {
+      el.onchange = async () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].slot = el.value;
+          await commit(true);
+          renderLayerCards();
+          updatePreviewCanvas();
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-color').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].color = el.value;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-label').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].label = el.value;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-tpl').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].tpl = el.value;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-ox').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].offsetX = Number(el.value) || 0;
+          el.parentElement.querySelector('.v-ox').textContent = spec.widgetLayers[i].offsetX;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-oy').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].offsetY = Number(el.value) || 0;
+          el.parentElement.querySelector('.v-oy').textContent = spec.widgetLayers[i].offsetY;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-sc').forEach(el => {
+      el.oninput = () => {
+        const i = Number(el.dataset.idx);
+        if (spec.widgetLayers[i]) {
+          spec.widgetLayers[i].scale = Number(el.value) || 100;
+          el.parentElement.querySelector('.v-sc').textContent = spec.widgetLayers[i].scale;
+          updatePreviewCanvas();
+          scheduleDebouncedCommit(true);
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-up').forEach(btn => {
+      btn.onclick = async () => {
+        const i = Number(btn.dataset.idx);
+        if (i > 0 && spec.widgetLayers[i]) {
+          const tmp = spec.widgetLayers[i - 1];
+          spec.widgetLayers[i - 1] = spec.widgetLayers[i];
+          spec.widgetLayers[i] = tmp;
+          await commit(true);
+          renderLayerCards();
+          updatePreviewCanvas();
+        }
+      };
+    });
+    listEl.querySelectorAll('.ws-pro-del').forEach(btn => {
+      btn.onclick = async () => {
+        const i = Number(btn.dataset.idx);
+        spec.widgetLayers.splice(i, 1);
+        await commit(true);
+        renderLayerCards();
+        updatePreviewCanvas();
+      };
+    });
+  };
+
+  wrap.querySelector('#wsProAddLayerBtn').onclick = async () => {
+    spec.widgetLayers.push({
+      id: 'ly_' + Date.now().toString(36),
+      source: 'custom_tpl',
+      slot: 'custom_text',
+      color: '#38bdf8',
+      label: '',
+      tpl: 'CPU ${cpu}% · ${gpu}°C',
+      offsetX: 0,
+      offsetY: 18,
+      scale: 100,
+    });
+    await commit(true);
+    renderLayerCards();
+    updatePreviewCanvas();
+  };
+
+  wrap.querySelector('#wsProBgColor').oninput = (e) => {
+    spec.color = e.target.value;
+    spec.customColor = true;
+    updatePreviewCanvas();
+    scheduleDebouncedCommit(true);
+  };
+
+  wrap.querySelector('#wsProFreqSel').onchange = async (e) => {
+    spec.refreshIntervalMs = Number(e.target.value) || 2500;
+    await commit(false);
+  };
+
+  wrap.querySelectorAll('.ws-pro-tpl-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const tpl = STUDIO_PRO_TEMPLATES.find(x => x.id === btn.dataset.tpl);
+      if (tpl) {
+        spec.color = tpl.color;
+        spec.widgetLayers = JSON.parse(JSON.stringify(tpl.layers));
+        wrap.querySelector('#wsProBgColor').value = tpl.color;
+        await commit(true);
+        renderLayerCards();
+        updatePreviewCanvas();
+        toast(`✨ 已应用画布模板：「${tpl.name}」`);
+      }
     };
   });
+
+  const close = () => {
+    wrap.remove();
+    renderInspector();
+  };
+  wrap.querySelector('#wsProCloseBtn').onclick = close;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+
+  renderLayerCards();
+  updatePreviewCanvas();
 }
 
 function getPluginSchemaForId(pluginId) {
@@ -6471,9 +7101,12 @@ const STUDIO_LAYER_SOURCES = [
   { id: 'gpu_temp', label: '🎮 GPU 温度/核心' },
   { id: 'net_speed', label: '🌐 实时下行网速' },
   { id: 'mem_usage', label: '💾 内存占用 (%)' },
+  { id: 'disk_usage', label: '💿 磁盘空间 (%)' },
+  { id: 'pomodoro_timer', label: '🍅 番茄钟专注倒计时' },
   { id: 'audio_vol', label: '🔊 主音量/静音' },
   { id: 'audio_bars', label: '🎚️ 多路声卡峰值电平条' },
   { id: 'clock_time', label: '🕒 实时时钟 (HH:mm)' },
+  { id: 'custom_tpl', label: '🔤 自定义变量模板 (${cpu}%)' },
   { id: 'sparkline_gpu', label: '📈 GPU 历史趋势波形' },
   { id: 'sparkline_cpu', label: '📈 CPU 历史趋势波形' },
   { id: 'sparkline_net', label: '📈 网速吞吐趋势波形' },
@@ -6483,6 +7116,8 @@ const STUDIO_LAYER_SLOTS = [
   { id: 'top', label: '⬆️ 顶部标题栏' },
   { id: 'middle', label: '🎯 中央主数值' },
   { id: 'bottom', label: '⬇️ 底部副指标' },
+  { id: 'custom_text', label: '🏷️ 自由坐标模板文本' },
+  { id: 'ring', label: '⭕ 圆环仪表盘 (Radial)' },
   { id: 'background', label: '🌊 背景折线图' },
   { id: 'bars', label: '📊 多路电平柱图' },
   { id: 'progress', label: '📏 底部进度条' },
@@ -6540,9 +7175,10 @@ function renderWidgetEditorHtml(spec) {
       <!-- Widget Studio 可视化多图层编排器 -->
       <div class="widget-studio-box">
         <div class="ws-head">
-          <span class="ws-title">🎨 可视化小组件图层编排工坊 (Widget Studio)</span>
+          <span class="ws-title">🎨 可视化图层编排工坊 (Studio)</span>
           <div style="display:flex; gap:4px;">
-            <button type="button" class="ghost tiny" id="i-ws-add-layer">＋ 添加图层</button>
+            <button type="button" class="primary tiny" id="i-ws-open-pro" title="打开 3× 高清放大画布工作台，支持圆环仪表、坐标偏移与变量模板">✨ 展开画布工作台</button>
+            <button type="button" class="ghost tiny" id="i-ws-add-layer">＋ 图层</button>
             ${hasCustomLayers ? `<button type="button" class="ghost tiny danger" id="i-ws-reset-layers">重置</button>` : ''}
           </div>
         </div>
@@ -6647,6 +7283,10 @@ function wireWidgetEditor(box, spec) {
     spec.widgetKind = 'composite';
   };
 
+  const btnOpenPro = box.querySelector('#i-ws-open-pro');
+  if (btnOpenPro) {
+    btnOpenPro.onclick = () => openWidgetStudioProModal(spec);
+  }
   const btnAddLayer = box.querySelector('#i-ws-add-layer');
   if (btnAddLayer) {
     btnAddLayer.onclick = async () => {
@@ -6985,9 +7625,17 @@ function renderBatchInspector(box) {
   };
 }
 
+let _lastInspectorCellSig = '';
 function renderInspector() {
   stopCurrentHkRecorder(null);
   const box = $('inspector');
+  const inspBody = box ? box.closest('.insp-body') : null;
+  const curCellSig = selected ? `${selected.row},${selected.col}` : (multiSelected.size > 1 ? 'batch' : 'page');
+  const savedScrollTop = (inspBody && curCellSig === _lastInspectorCellSig) ? inspBody.scrollTop : 0;
+  _lastInspectorCellSig = curCellSig;
+  if (inspBody && savedScrollTop > 0) {
+    requestAnimationFrame(() => { inspBody.scrollTop = savedScrollTop; });
+  }
   const title = $('inspectorTitle');
   const inspTabs = $('inspTabs');
 
@@ -7357,42 +8005,44 @@ function renderInspector() {
               ` : ''}
             </div>
 
-            <!-- 双态状态切换策略 + 阶段一 1：十字准星拾取窗口 & 实时进程雷达 -->
-            <div class="dual-sync-policy-card" style="background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:8px 0;">
-              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:5px;">
-                <label style="font-size:11.5px; font-weight:600; color:var(--ink); margin:0;">🧠 状态切换与进程同步策略</label>
-                <span style="font-size:10px; color:var(--accent);">v0.11 4态窗口焦点引擎</span>
-              </div>
-              <select id="i-toggle-sync-mode" style="font-size:12px;">
-                <option value="auto" ${(!spec.toggleSyncMode || spec.toggleSyncMode === 'auto') ? 'selected' : ''}>🧠 智能混合模式 (推荐：常驻软件同步进程，脚本/启动器自动保持双态)</option>
-                <option value="window" ${spec.toggleSyncMode === 'window' ? 'selected' : ''}>🪟 任务栏窗口模式 (未启动则启动 → 后台可见/最小化则置顶 → 前台则最小化)</option>
-                <option value="manual" ${spec.toggleSyncMode === 'manual' ? 'selected' : ''}>🔄 纯手动乒乓切换 (适合开关命令，严格按击交替形态 1 ⇄ 2)</option>
-                <option value="process" ${spec.toggleSyncMode === 'process' ? 'selected' : ''}>📡 严格绑定进程存活 (仅当目标或指定监测进程运行时处于形态 2)</option>
-              </select>
-              <div style="margin-top:8px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                  <label style="font-size:11px; color:var(--muted); margin:0;">关联监测进程树（支持 | 分隔，自动兼容 Launcher 壳进程）</label>
-                  <button type="button" class="crosshair-pick-btn" id="i-crosshair-pick-win" title="鼠标变为十字准星，点击任意正在运行的软件窗口即可一键抓取真实主进程、路径、HWND与图标">
-                    🎯 十字准星拾取窗口
-                  </button>
-                </div>
-                <input id="i-watch-process" placeholder="留空则自动解析（支持 WeChat|Weixin 等关联进程树）" value="${escapeAttr(spec.watchProcess || '')}" style="font-size:12px;" />
-              </div>
-              <div style="margin-top:6px; ${spec.toggleSyncMode === 'window' ? '' : 'display:none;'}">
-                <label style="font-size:11px; color:var(--muted);">托盘深度隐藏唤醒热键（可选，如微信 Ctrl+Alt+W，留空则自动单实例重入唤醒）</label>
-                <input id="i-tray-wake-hotkey" placeholder="如 Ctrl+Alt+W（解决缩入托盘后无窗口句柄的唤醒）" value="${escapeAttr(spec.trayWakeHotkey || '')}" style="font-size:12px;" />
-              </div>
-              <div class="win-radar-card" id="i-win-radar-card">
-                <div class="win-radar-head">
-                  <span style="font-size:11px; font-weight:700; color:var(--ink);">🟢 实时进程与窗口雷达</span>
-                  <div style="display:flex; gap:4px; align-items:center;">
-                    <span class="win-radar-status-pill stopped" id="i-radar-pill">检测中…</span>
-                    <button type="button" class="ghost tiny" id="i-radar-refresh" style="padding:1px 6px; font-size:10px;">↻ 刷新</button>
+            <!-- 渐进式折叠：双态状态切换策略 + 十字准星拾取窗口 & 实时进程雷达 -->
+            <details class="insp-sub-accordion" id="i-dual-policy-acc" ${spec.toggleSyncMode === 'window' || spec.watchProcess ? 'open' : ''}>
+              <summary>
+                <span class="sub-acc-left">🧠 状态同步策略与窗口雷达</span>
+                <span class="sub-acc-badge" id="i-sync-summary-pill">${spec.toggleSyncMode === 'window' ? '窗口 4 态' : (spec.toggleSyncMode === 'process' ? '进程绑定' : (spec.toggleSyncMode === 'manual' ? '手动乒乓' : '智能混合'))}${spec.watchProcess ? ' · ' + escapeHtml(String(spec.watchProcess).split('|')[0]) : ''}</span>
+              </summary>
+              <div class="sub-acc-body">
+                <select id="i-toggle-sync-mode" style="font-size:12px;">
+                  <option value="auto" ${(!spec.toggleSyncMode || spec.toggleSyncMode === 'auto') ? 'selected' : ''}>🧠 智能混合模式 (推荐：常驻软件同步进程，超时自动安全归零)</option>
+                  <option value="window" ${spec.toggleSyncMode === 'window' ? 'selected' : ''}>🪟 任务栏窗口模式 (未启动则启动 → 后台可见/最小化则置顶 → 前台则最小化)</option>
+                  <option value="manual" ${spec.toggleSyncMode === 'manual' ? 'selected' : ''}>🔄 纯手动乒乓切换 (适合开关命令，严格按击交替形态 1 ⇄ 2)</option>
+                  <option value="process" ${spec.toggleSyncMode === 'process' ? 'selected' : ''}>📡 严格绑定进程存活 (仅当目标或指定监测进程运行时处于形态 2)</option>
+                </select>
+                <div style="margin-top:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <label style="font-size:11px; color:var(--muted); margin:0;">关联监测进程树（支持 | 分隔，自动兼容 Launcher 壳进程）</label>
+                    <button type="button" class="crosshair-pick-btn" id="i-crosshair-pick-win" title="鼠标变为十字准星，点击任意正在运行的软件窗口即可一键抓取真实主进程、路径、HWND与图标">
+                      🎯 十字准星拾取窗口
+                    </button>
                   </div>
+                  <input id="i-watch-process" placeholder="留空则自动解析（支持 WeChat|Weixin 等关联进程树）" value="${escapeAttr(spec.watchProcess || '')}" style="font-size:12px;" />
                 </div>
-                <div class="win-radar-meta" id="i-radar-meta">点击「↻ 刷新」或「🎯 十字准星拾取窗口」查看实时 HWND / PID / 窗口类名</div>
+                <div style="margin-top:6px; ${spec.toggleSyncMode === 'window' ? '' : 'display:none;'}">
+                  <label style="font-size:11px; color:var(--muted);">托盘深度隐藏唤醒热键（可选，如微信 Ctrl+Alt+W，留空则自动单实例重入唤醒）</label>
+                  <input id="i-tray-wake-hotkey" placeholder="如 Ctrl+Alt+W（解决缩入托盘后无窗口句柄的唤醒）" value="${escapeAttr(spec.trayWakeHotkey || '')}" style="font-size:12px;" />
+                </div>
+                <div class="win-radar-card" id="i-win-radar-card">
+                  <div class="win-radar-head">
+                    <span style="font-size:11px; font-weight:700; color:var(--ink);">🟢 实时进程与窗口雷达</span>
+                    <div style="display:flex; gap:4px; align-items:center;">
+                      <span class="win-radar-status-pill stopped" id="i-radar-pill">检测中…</span>
+                      <button type="button" class="ghost tiny" id="i-radar-refresh" style="padding:1px 6px; font-size:10px;">↻ 刷新</button>
+                    </div>
+                  </div>
+                  <div class="win-radar-meta" id="i-radar-meta">点击「↻ 刷新」或「🎯 十字准星拾取窗口」查看实时 HWND / PID / 窗口类名</div>
+                </div>
               </div>
-            </div>
+            </details>
 
             <!-- 互换动作胶囊 -->
             <div class="dual-action-swap-card">
@@ -7533,21 +8183,23 @@ function renderInspector() {
           </div>
         ` : ''}
 
-        <!-- 阶段三 1：基于窗口上下文的子文件夹 / 弹出式临时键盘层 (Hold-to-Layer) -->
-        <div style="margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid rgba(124,58,237,0.32); background:rgba(124,58,237,0.05);">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-            <label style="font-size:11.5px; font-weight:700; color:var(--ink); margin:0;">📂 弹出式临时键盘层 (Hold-to-Layer)</label>
-            <span style="font-size:10px; color:#a855f7; font-weight:600;">按住展开二级工具盘 · 松手自动弹回</span>
+        <!-- 渐进式折叠：弹出式临时键盘层 (Hold-to-Layer) -->
+        <details class="insp-sub-accordion" ${spec.holdPageId ? 'open' : ''}>
+          <summary>
+            <span class="sub-acc-left">📂 弹出式临时键盘层 (Hold-to-Layer)</span>
+            <span class="sub-acc-badge">${spec.holdPageId ? ('已绑定: ' + escapeHtml((pageById(spec.holdPageId) && pageById(spec.holdPageId).name) || '子页')) : '未启用'}</span>
+          </summary>
+          <div class="sub-acc-body">
+            <select id="i-hold-page-id" style="font-size:12px;">
+              <option value="" ${!spec.holdPageId ? 'selected' : ''}>🚫 不启用临时弹层（执行上方常规按键动作）</option>
+              ${pageTree().filter(x => x.page.id !== curPage().id).map(({ page, depth }) => `
+                <option value="${escapeAttr(page.id)}" ${spec.holdPageId === page.id ? 'selected' : ''}>
+                  📂 按住/点击临时弹出：「${'　'.repeat(depth)}${escapeHtml(page.name)}」 (点选后自动弹回本页)
+                </option>
+              `).join('')}
+            </select>
           </div>
-          <select id="i-hold-page-id" style="font-size:12px;">
-            <option value="" ${!spec.holdPageId ? 'selected' : ''}>🚫 不启用临时弹层（执行上方常规按键动作）</option>
-            ${pageTree().filter(x => x.page.id !== curPage().id).map(({ page, depth }) => `
-              <option value="${escapeAttr(page.id)}" ${spec.holdPageId === page.id ? 'selected' : ''}>
-                📂 按住/点击临时弹出：「${'　'.repeat(depth)}${escapeHtml(page.name)}」 (松手或点选后自动弹回本页)
-              </option>
-            `).join('')}
-          </select>
-        </div>
+        </details>
       </div>
     </details>
 
@@ -13579,8 +14231,60 @@ function bindShell() {
     osdPosSel.addEventListener('change', async (e) => {
       cfg.osdPosition = e.target.value || 'bottom';
       if (!DEMO) await saveConfig();
-      toast(cfg.osdPosition === 'top' ? '✨ OSD 灵动岛位置已设为：屏幕顶部中央' : '✨ OSD 灵动岛位置已设为：屏幕底部中央');
+      const posName = cfg.osdPosition === 'top' ? '屏幕顶部中央' : (cfg.osdPosition === 'top-right' ? '屏幕右上角' : '屏幕底部中央');
+      toast(`✨ OSD 灵动胶囊位置已设为：${posName}`);
     });
+  }
+  const osdDurSel = $('prefOsdDuration');
+  if (osdDurSel) {
+    osdDurSel.value = String(cfg.osdDurationMs || 1400);
+    osdDurSel.addEventListener('change', async (e) => {
+      cfg.osdDurationMs = Number(e.target.value) || 1400;
+      if (!DEMO) await saveConfig();
+      toast(`⏱️ OSD 胶囊停留时长已设为 ${(cfg.osdDurationMs / 1000).toFixed(1)} 秒`);
+    });
+  }
+  const wakePassBox = $('prefWakePassThrough');
+  if (wakePassBox) {
+    wakePassBox.checked = cfg.wakePassThrough !== false;
+    wakePassBox.addEventListener('change', async (e) => {
+      cfg.wakePassThrough = e.target.checked;
+      if (!DEMO) {
+        await saveConfig();
+        if (api.deviceSetWakePassThrough) await api.deviceSetWakePassThrough(cfg.wakePassThrough);
+      }
+      toast(cfg.wakePassThrough ? '⚡ 已开启休眠唤醒首按直通：按一下即唤醒并触发动作' : '已设为传统模式：休眠首按仅唤醒屏幕');
+    });
+  }
+  const hidEngineSel = $('prefHidEngine');
+  if (hidEngineSel) {
+    hidEngineSel.value = cfg.hidEngine || 'auto';
+    hidEngineSel.addEventListener('change', async (e) => {
+      cfg.hidEngine = e.target.value || 'auto';
+      if (!DEMO) {
+        await saveConfig();
+        if (api.deviceSetHidEngine) await api.deviceSetHidEngine(cfg.hidEngine);
+      }
+      const label = cfg.hidEngine === 'native-cs' ? 'C# 原生 Overlapped 零延迟直连引擎' : (cfg.hidEngine === 'node-hid' ? 'Node-HID 双通道优先级引擎' : '智能双擎自动优选');
+      toast(`🚀 底层硬件通信管道已切换为：${label}`);
+    });
+  }
+  const headlessBox = $('prefHeadlessTrayMode');
+  if (headlessBox) {
+    headlessBox.checked = cfg.headlessTrayMode !== false;
+    headlessBox.addEventListener('change', async (e) => {
+      cfg.headlessTrayMode = e.target.checked;
+      if (!DEMO) await saveConfig();
+      toast(cfg.headlessTrayMode ? '🌙 已启用托盘无头同构省电渲染引擎' : '已关闭托盘无头渲染');
+    });
+  }
+  const topMarketBtn = $('topPluginMarketBtn');
+  if (topMarketBtn) {
+    topMarketBtn.onclick = () => openPluginMarketModal(null);
+  }
+  const topStudioBtn = $('topWidgetStudioBtn');
+  if (topStudioBtn) {
+    topStudioBtn.onclick = () => openWidgetStudioProModal(null);
   }
   const btnPrevHud = $('btnPreviewHud');
   if (btnPrevHud) {
@@ -14267,10 +14971,10 @@ function renderProfileSwitcherBar() {
   if (!bar || !cfg) return;
   if (!Array.isArray(cfg.profiles) || !cfg.profiles.length) {
     cfg.profiles = [
-      { id: 'office', name: '办公模式', icon: '💼', accent: '#3b82f6', pages: cfg.pages, currentPage: cfg.currentPage },
-      { id: 'stream', name: '直播模式', icon: '📡', accent: '#a855f7', pages: cfg.pages, currentPage: cfg.currentPage },
-      { id: 'edit',   name: '剪辑模式', icon: '🎬', accent: '#f59e0b', pages: cfg.pages, currentPage: cfg.currentPage },
-      { id: 'gaming', name: '游戏模式', icon: '🎮', accent: '#10b981', pages: cfg.pages, currentPage: cfg.currentPage },
+      { id: 'office', name: '办公模式', icon: '💼', accent: '#3b82f6', pages: clone(cfg.pages), currentPage: cfg.currentPage },
+      { id: 'stream', name: '直播模式', icon: '📡', accent: '#a855f7', pages: clone(cfg.pages), currentPage: cfg.currentPage },
+      { id: 'edit',   name: '剪辑模式', icon: '🎬', accent: '#f59e0b', pages: clone(cfg.pages), currentPage: cfg.currentPage },
+      { id: 'gaming', name: '游戏模式', icon: '🎮', accent: '#10b981', pages: clone(cfg.pages), currentPage: cfg.currentPage },
     ];
     cfg.currentProfile = 'office';
   }
@@ -14399,7 +15103,7 @@ function openProfileManagerModal() {
       if (res && res.config) cfg = res.config;
     } else {
       const id = 'prof_' + Date.now().toString(36);
-      cfg.profiles.push({ id, name, icon: '🗂️', accent: '#3b82f6', pages: cfg.pages, currentPage: cfg.currentPage });
+      cfg.profiles.push({ id, name, icon: '🗂️', accent: '#3b82f6', pages: clone(cfg.pages), currentPage: cfg.currentPage });
       cfg.currentProfile = id;
     }
     close();
@@ -14608,6 +15312,39 @@ function bindDevice() {
     lastTelemetry = Object.assign({}, lastTelemetry, data);
     if (data.media_now && !data.media) lastTelemetry.media = data.media_now;
     if (!cfg || isDeviceAsleep) return;
+
+    // 精准局部重绘过滤：若本次仅更新了番茄钟 (pomodoro) 或某个指定插件 (pluginId)，
+    // 仅重绘绑定了对应数据源的按键与副屏槽位，彻底终结「番茄钟一开每秒重绘全页所有小组件」的 HID 阻塞风暴！
+    const dataKeys = Object.keys(data);
+    const isPomoOnly = dataKeys.length === 1 && data.pomodoro !== undefined;
+    const isPluginOnly = data.pluginId !== undefined && dataKeys.every(k => k === 'pluginId' || k === 'pluginState');
+    const targetPlgNorm = isPluginOnly ? String(data.pluginId || '').replace(/-/g, '_') : '';
+
+    const shouldUpdateWidget = (sp) => {
+      if (!sp || sp.type !== 'widget') return false;
+      const wk = sp.widgetKind || 'gpu';
+      if (isPomoOnly) {
+        if (wk === 'pomodoro') return true;
+        if (wk === 'composite' && Array.isArray(sp.widgetLayers)) {
+          return sp.widgetLayers.some(l => l && (l.source === 'pomodoro_timer' || (l.tpl && l.tpl.includes('${pomo}'))));
+        }
+        return false;
+      }
+      if (isPluginOnly) {
+        return wk === 'plugin' && String(sp.pluginId || '').replace(/-/g, '_') === targetPlgNorm;
+      }
+      return true;
+    };
+
+    const shouldUpdateStrip = (st) => {
+      if (!st) return false;
+      const t = st.type || '';
+      const wk = st.widgetKind || st.telemetryType || t;
+      if (isPomoOnly) return wk === 'pomodoro';
+      if (isPluginOnly) return (t === 'plugin' || wk === 'plugin') && String(st.pluginId || '').replace(/-/g, '_') === targetPlgNorm;
+      return WIDGET_KINDS.includes(t) || t === 'widget' || t === 'telemetry';
+    };
+
     const epochAtStart = devicePageEpoch;
     const buttons = pageButtons();
     const strips = effectiveStrips();
@@ -14617,7 +15354,8 @@ function bindDevice() {
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < KEY_COLS; c++) {
         const sp = buttons[`${r},${c}`];
-        if (sp && sp.type === 'widget') {
+        if (shouldUpdateWidget(sp)) {
+          if (isWindowVisible) refreshSingleCell(r, c);
           if (Number(sp.spanCols) > 1) {
             pushKey(r, c, false).catch(() => {});
           } else {
@@ -14630,7 +15368,8 @@ function bindDevice() {
         }
       }
       const st = strips[String(r)];
-      if (st && (WIDGET_KINDS.includes(st.type) || st.type === 'widget' || st.type === 'telemetry')) {
+      if (shouldUpdateStrip(st)) {
+        if (isWindowVisible) refreshStripCells(lastSysStats);
         batchJobs.push(
           buildStripCanvas(r).then(async (cnv) => ({
             row: r, col: 5, data: await encodeCanvasToJpegB64(cnv, rotMode), force: false,
@@ -14638,10 +15377,9 @@ function bindDevice() {
         );
       }
     }
-    if (isWindowVisible) refreshGrid();
     if (!DEMO && batchJobs.length > 0 && api.deviceBatchDraw) {
       Promise.all(batchJobs).then((items) => {
-        if (epochAtStart !== devicePageEpoch) return null; // 期间已切页，丢弃旧页帧
+        if (epochAtStart !== devicePageEpoch) return null;
         return api.deviceBatchDraw({ items, full: false, epoch: epochAtStart });
       }).catch(() => {});
     }
@@ -14676,6 +15414,34 @@ function bindDevice() {
   api.on('key:result', (payload) => {
     if (payload) flashKeyResult(payload.row, payload.col, payload.success, payload.text);
   });
+  const updateInspectorRuntimeStatusOnly = (row, col, activeState, windowSubState) => {
+    const box = $('inspector');
+    if (!box) return;
+    const s = pageButtons()[`${row},${col}`];
+    if (!s) return;
+    const curBadge = getActiveBadge(s, { row, col });
+    const tryBtn = $('i-toggle-try-btn');
+    if (tryBtn) {
+      tryBtn.textContent = `🔄 试切状态预览（当前：${(curBadge && curBadge.text) || '无角标'}）`;
+    }
+    const cards = box.querySelectorAll('.badge-toggle-card');
+    if (cards && cards.length === 2) {
+      cards[0].classList.toggle('active-state', activeState === 0);
+      cards[1].classList.toggle('active-state', activeState === 1);
+    }
+    const radarPill = $('i-radar-pill');
+    if (radarPill) {
+      if (activeState === 1) {
+        const subLabel = windowSubState === 'focused' ? '前台置顶' : (windowSubState === 'minimized' ? '已最小化' : (windowSubState === 'tray_hidden' ? '托盘隐藏' : '后台运行'));
+        radarPill.textContent = `● ${subLabel}`;
+        radarPill.className = 'win-radar-status-pill running';
+      } else {
+        radarPill.textContent = '○ 未运行';
+        radarPill.className = 'win-radar-status-pill stopped';
+      }
+    }
+  };
+
   const onKeyStateMsg = async ({ pageId, row, col, activeState, windowSubState }) => {
     if (!cfg || !cfg.pages) return;
     const p = (pageId && cfg.pages.find((x) => x.id === pageId)) || curPage();
@@ -14698,8 +15464,9 @@ function bindDevice() {
       }
       refreshSingleCell(row, col);
       await pushKey(row, col, true);
+      // 关键体验修复：后台进程状态变化时只做无损 DOM 局部更新，绝不重刷整个 renderInspector() 摧毁用户输入框焦点与滚动条！
       if (selected && selected.row === row && selected.col === col) {
-        renderInspector();
+        updateInspectorRuntimeStatusOnly(row, col, activeState, windowSubState);
       }
     }
   };
@@ -14964,7 +15731,7 @@ async function boot() {
     const hidden = !isWindowVisible;
     const page = curPage();
     if (!page) return;
-    const strips = pageStrips();
+    const strips = effectiveStrips();
     const buttons = pageButtons();
     const epochAtStart = devicePageEpoch;
     const neededTypes = new Set();

@@ -54,19 +54,33 @@ async function run() {
   };
 
   for (const mode of Device.SLEEP_MODES) {
+    // 1.1 传统模式 (wakePassThrough = false)：休眠按键仅唤醒屏幕，不发射 down/up
+    dev.setWakePassThrough(false);
     dev.asleep = true;
     capturedHost.length = 0;
     dev.lastPress.clear();
 
-    // 休眠时按下按键 (例如 r0c0 -> id 13)
     dev.hid.emit('data', packet(13));
-    const events = capturedHost.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
-    const hasDownOrUp = events.some((e) => e.event === 'down' || e.event === 'up');
-    const wakeEvent = events.find((e) => e.event === 'wake' && e.by === 'key');
+    let events = capturedHost.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+    let hasDownOrUp = events.some((e) => e.event === 'down' || e.event === 'up');
+    let wakeEvent = events.find((e) => e.event === 'wake' && e.by === 'key');
 
-    check(`Host [${mode}]: 休眠时按键不发射 down/up 业务事件`, !hasDownOrUp);
-    check(`Host [${mode}]: 休眠时按键发射专属 wake 唤醒事件`, !!wakeEvent && wakeEvent.row === 0 && wakeEvent.col === 0);
-    check(`Host [${mode}]: 触发按键后硬件标记已恢复非休眠`, dev.asleep === false);
+    check(`Host [${mode}][传统模式]: 休眠时按键不发射 down/up 业务事件`, !hasDownOrUp);
+    check(`Host [${mode}][传统模式]: 休眠时按键发射专属 wake 唤醒事件`, !!wakeEvent && wakeEvent.row === 0 && wakeEvent.col === 0);
+    check(`Host [${mode}][传统模式]: 触发按键后硬件标记已恢复非休眠`, dev.asleep === false);
+
+    // 1.2 v0.12.0 首按直通模式 (wakePassThrough = true)：休眠按键发射 wake 并透传直通 down/up
+    dev.setWakePassThrough(true);
+    dev.asleep = true;
+    capturedHost.length = 0;
+    dev.lastPress.clear();
+
+    dev.hid.emit('data', packet(13));
+    events = capturedHost.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+    const passDown = events.find((e) => e.event === 'down' && e.fromWake);
+    const passWake = events.find((e) => e.event === 'wake' && e.passThrough);
+    check(`Host [${mode}][首按直通]: 休眠按键同步发射 wake 且标记 passThrough`, !!passWake);
+    check(`Host [${mode}][首按直通]: 休眠按键同步直通发射 down 事件 (fromWake=true)`, !!passDown && passDown.row === 0 && passDown.col === 0);
 
     // 唤醒后再次按键 -> 正常发射 down+up
     capturedHost.length = 0;

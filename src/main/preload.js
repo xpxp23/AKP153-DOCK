@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
   runtimeGetSnapshot: (pageId) => ipcRenderer.invoke('runtime:getSnapshot', pageId),
+  headlessStats: () => ipcRenderer.invoke('runtime:headlessStats'),
   hardwareGetProfiles: () => ipcRenderer.invoke('hardware:getProfiles'),
   hardwareSetModel: (modelId) => ipcRenderer.invoke('hardware:setModel', modelId),
 
@@ -24,6 +25,8 @@ contextBridge.exposeInMainWorld('api', {
   deviceBatchDraw: (items) => ipcRenderer.invoke('device:batchDraw', items),
   deviceBrightness: (v) => ipcRenderer.invoke('device:brightness', v),
   deviceSetDebounce: (ms) => ipcRenderer.invoke('device:setDebounce', ms),
+  deviceSetWakePassThrough: (val) => ipcRenderer.invoke('device:setWakePassThrough', val),
+  deviceSetHidEngine: (engine) => ipcRenderer.invoke('device:setHidEngine', engine),
   deviceStartAnim: (payload) => ipcRenderer.invoke('device:startAnim', payload),
   deviceStopAnim: (payload) => ipcRenderer.invoke('device:stopAnim', payload),
   deviceClearAnims: () => ipcRenderer.invoke('device:clearAnims'),
@@ -51,10 +54,13 @@ contextBridge.exposeInMainWorld('api', {
   fetchFavicon: (url) => ipcRenderer.invoke('app:fetchFavicon', url),
 
   windowHide: () => ipcRenderer.invoke('window:hide'),
-  // 首屏渲染完成通知（主进程据此在隐藏状态下预热首帧）
   uiReady: () => ipcRenderer.send('app:ui-ready'),
-  // 渲染进程长任务回报（只用于 perf 日志，节流由主进程做）
   reportPerf: (kind, ms) => ipcRenderer.send('app:perf', { kind, ms }),
+  snipSend: (channel, data) => {
+    if (['snip:selected', 'snip:fullscreen', 'snip:cancel'].includes(channel)) {
+      ipcRenderer.send(channel, data);
+    }
+  },
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
@@ -67,6 +73,8 @@ contextBridge.exposeInMainWorld('api', {
   pluginsReload: () => ipcRenderer.invoke('plugins:reload'),
   pluginsMarket: () => ipcRenderer.invoke('plugins:market'),
   pluginsInstall: (pluginId) => ipcRenderer.invoke('plugins:install', pluginId),
+  pluginsCreateCustom: (opts) => ipcRenderer.invoke('plugins:createCustom', opts),
+  pluginsUninstall: (pluginId) => ipcRenderer.invoke('plugins:uninstall', pluginId),
   pluginsEvaluate: (pluginId, pluginConfig) => ipcRenderer.invoke('plugins:evaluate', { pluginId, pluginConfig }),
   pluginsTrigger: (pluginId, args) => ipcRenderer.invoke('plugins:trigger', { pluginId, args }),
   pageManualSwitch: (pageId) => ipcRenderer.invoke('page:manualSwitch', pageId),

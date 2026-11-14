@@ -19,6 +19,8 @@
       <button id="btnUndo" class="ghost tool-pill-btn" title="撤销上一步修改 (Ctrl+Z)" disabled>↩ 撤销</button>
       <button id="btnRedo" class="ghost tool-pill-btn" title="重做上一步修改 (Ctrl+Y)" disabled>↪ 重做</button>
     </div>
+    <button id="topWidgetStudioBtn" class="ghost tool-pill-btn" title="打开可视化小组件图层画布工坊 (Widget Studio Pro)">🎨 画布工坊</button>
+    <button id="topPluginMarketBtn" class="ghost tool-pill-btn" title="打开应用内插件市场与自定义插件生成器 (Plugin Market 2.0)">🧩 插件市场</button>
     <button id="btnStyleBrush" class="ghost tool-pill-btn" title="提取当前选中按键的底色/字号/缩放/对齐，点击其它按键一键刷入样式（Esc 退出）">🖌️ 样式刷</button>
     <button id="settingsBtn" class="ghost gear-btn" title="设备与控制台设置">⚙️ 设置</button>
   </div>
@@ -115,7 +117,28 @@
                 <option value="light">仅调低亮度（保留显存画面）</option>
               </select>
             </label>
-            <div class="card-hint muted">💡 休眠时按任意键即可唤醒并点亮屏幕；自动具备防误触唤醒保护。</div>
+            <div class="pref-row" style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);">
+              <div class="pref-info">
+                <span class="pref-name">⚡ 休眠唤醒首按直通触发 (Wake-On-Key Pass-Through)</span>
+                <span class="pref-desc">黑屏休眠或显示器刚点亮时按下按键，瞬间唤醒屏幕并同步执行该键动作，彻底告别「唤醒吞掉第一下、必须按两次」</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="prefWakePassThrough" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="pref-row" style="margin-top: 10px;">
+              <div class="pref-info">
+                <span class="pref-name">🚀 底层 HID 硬件通信管道引擎 (Dual-Engine HID)</span>
+                <span class="pref-desc">支持在 Node-HID 双通道优先级队列与 C# 原生 Overlapped 零延迟直连守护进程间热切换</span>
+              </div>
+              <select id="prefHidEngine" class="pref-select" style="min-width: 190px;">
+                <option value="auto">🧠 智能双擎自动优选 (推荐)</option>
+                <option value="native-cs">⚡ C# 原生 Overlapped 直连引擎</option>
+                <option value="node-hid">🛡️ Node-HID 双通道优先级引擎</option>
+              </select>
+            </div>
+            <div class="card-hint muted">💡 已内置 18s USB 选择性挂起防休眠心跳 (CMD.CONNECT) 与 800ms 系统唤醒联动检测。</div>
           </div>
 
           <div class="settings-card">
@@ -168,10 +191,16 @@
                 <span class="pref-name">OSD 桌面毛玻璃灵动岛胶囊 (HUD Overlay)</span>
                 <span class="pref-desc">盲按物理设备切页、调音量、触发双态开关或番茄钟时，屏幕中央弹出 1.2s 无焦点穿透毛玻璃胶囊</span>
               </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <select id="prefOsdPosition" class="pref-select" style="min-width:130px;">
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                <select id="prefOsdPosition" class="pref-select" style="min-width:122px;">
                   <option value="bottom">⬇️ 屏幕底部中央</option>
                   <option value="top">⬆️ 屏幕顶部中央</option>
+                  <option value="top-right">↗️ 屏幕右上角</option>
+                </select>
+                <select id="prefOsdDuration" class="pref-select" style="min-width:92px;" title="OSD 胶囊停留时长">
+                  <option value="900">0.9 秒</option>
+                  <option value="1400" selected>1.4 秒</option>
+                  <option value="2200">2.2 秒</option>
                 </select>
                 <button type="button" id="btnPreviewHud" class="ghost tiny">✨ 预览 HUD</button>
                 <label class="switch">
@@ -204,10 +233,20 @@
             <div class="pref-row" style="margin-top: 12px;">
               <div class="pref-info">
                 <span class="pref-name">硬件动效帧缓冲与按压微缩回弹 (Frame Scheduler)</span>
-                <span class="pref-desc">启用 12 FPS 局部动态帧缓冲推送（音频电平跳动、按压回弹微动效）</span>
+                <span class="pref-desc">启用高优通道瞬态按压回弹微动效与 12 FPS 动态帧缓冲推送</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="prefKeyPressAnim" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="pref-row" style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line);">
+              <div class="pref-info">
+                <span class="pref-name">🌙 托盘无头同构省电渲染 (Headless Isomorphic Render)</span>
+                <span class="pref-desc" id="headlessStatsHint">当主窗口最小化至托盘时，由主进程 runtime-store + C# GDI+ 直接进行差量无头渲染，大幅降低后台内存与 GPU 占用</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="prefHeadlessTrayMode" checked />
                 <span class="switch-slider"></span>
               </label>
             </div>
@@ -307,7 +346,7 @@
             <div class="about-grid">
               <div class="about-item">
                 <span class="about-k">软件版本</span>
-                <span class="about-v">v0.11.0 (1:1 Canvas Pipeline · Text Icon Studio 2.0 · Window Picker &amp; Radar · 1×3 Panorama · Hold-to-Layer · VM Sandbox)</span>
+                <span class="about-v">v0.12.0 (Dual-Lane Priority HID · Wake Pass-Through · C# Overlapped Engine · Headless Render · Widget Studio Pro · Plugin Market 2.0)</span>
               </div>
               <div class="about-item">
                 <span class="about-k">硬件型号</span>

@@ -1,13 +1,13 @@
 'use strict';
 /**
- * Hardware Profile Adapter & Descriptor Engine (v0.11.0)
+ * Hardware Profile Adapter & Descriptor Engine (v0.12.0)
  *
  * 将不同型号的 Stream Dock 硬件布局、报文协议特征（单报文 push vs 双报文 button vs 旋钮编码器）、
  * 屏幕尺寸与过渡动效参数抽象为统一的 Hardware Descriptor。
  *
  * 核心价值：
  * 1. 彻底隔离 AKP153 等单报文设备（inputMode: 'push', data[10] 恒为 0，无物理抬起/长按报文）与支持按键抬起/旋钮设备的协议差异。
- * 2. 为驱动 UI 与底层 device-host 提供统一的坐标映射、画布尺寸、侧屏/旋钮能力描述与上下文切换过渡动效配置。
+ * 2. 为驱动 UI、底层 device-host 与 C# 原生 HID 引擎提供统一的坐标映射、画布尺寸、侧屏/旋钮能力描述与上下文切换过渡动效配置。
  */
 
 const HARDWARE_PROFILES = {
@@ -17,10 +17,11 @@ const HARDWARE_PROFILES = {
     vendorNames: ['AJAZZ', 'Mirabox', 'Keychron'],
     description: '15 键 LCD 主控网格 (5×3) + 右侧一体式 3 段 LCD 状态副屏',
     usbIds: [
+      { vid: 0x5548, pid: 0x6674 },
+      { vid: 0x5548, pid: 0x6670 },
       { vid: 0x0300, pid: 0x1010 },
       { vid: 0x0300, pid: 0x1020 },
       { vid: 0x0300, pid: 0x3004 },
-      { vid: 0x5548, pid: 0x6670 },
       { vid: 0x6603, pid: 0x1005 },
     ],
     grid: {
@@ -34,10 +35,10 @@ const HARDWARE_PROFILES = {
     sideStrip: {
       enabled: true,
       slots: 3,
-      width: 85,
-      totalHeight: 290,
-      slotHeights: [96, 96, 98],
-      slotYOffsets: [0, 96, 192],
+      width: 80,
+      totalHeight: 240,
+      slotHeights: [80, 80, 80],
+      slotYOffsets: [0, 80, 160],
       rotate: 180,
     },
     encoders: {
@@ -46,7 +47,7 @@ const HARDWARE_PROFILES = {
       items: [],
     },
     protocol: {
-      packetSize: 1024,
+      packetSize: 512,
       inputMode: 'push',      // 单次触发报文，data[10] 恒为 0，无物理长按或抬起报文
       supportsHold: false,    // 硬件不支持长按
       supportsKeyUp: false,
@@ -97,7 +98,7 @@ const HARDWARE_PROFILES = {
       ],
     },
     protocol: {
-      packetSize: 1024,
+      packetSize: 512,
       inputMode: 'button',
       supportsHold: false,
       supportsKeyUp: true,
@@ -155,7 +156,7 @@ const HARDWARE_PROFILES = {
       items: [],
     },
     protocol: {
-      packetSize: 1024,
+      packetSize: 512,
       inputMode: 'push',
       supportsHold: false,
       supportsKeyUp: false,
@@ -212,22 +213,39 @@ function detectHardwareProfileByUsb(vid, pid, productName = '') {
 }
 
 /**
- * 将物理设备 keyIndex (1..N) 与逻辑网格 (row, col) 互相转换
- * AKP153 采用列优先排布：col 0..4, 每列 3 行 (bottom-to-top 映射)
+ * 将逻辑网格 (row, col) 与物理设备 keyIndex (1..N) 互相转换
+ * 严格对齐真机固件物理映射：
+ * - AKP03 (3×2): row * cols + col + 1
+ * - AKP153 / StreamDock 15 (5×3): (cols - 1) * rows + 1 - rows * col + row (即 13 - 3 * col + row)
  */
 function posToDeviceIndex(row, col, profileId = 'akp153') {
   const prof = getHardwareProfile(profileId);
+  const cols = prof.grid.cols;
   const rows = prof.grid.rows;
-  return col * rows + (rows - row);
+  if (col === 5) return 16 + row;
+  if (col < 0 || col >= cols || row < 0 || row >= rows) return null;
+  if (prof.id === 'akp03') {
+    return row * cols + col + 1;
+  }
+  return (cols - 1) * rows + 1 - rows * col + row;
 }
 
 function deviceIndexToPos(index, profileId = 'akp153') {
   const prof = getHardwareProfile(profileId);
+  const cols = prof.grid.cols;
   const rows = prof.grid.rows;
-  const idx0 = index - 1;
-  const col = Math.floor(idx0 / rows);
-  const row = (rows - 1) - (idx0 % rows);
-  return { row, col };
+  const idx = Number(index) || 0;
+  if (idx >= 16 && idx <= 18) {
+    return { row: idx - 16, col: 5 };
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (posToDeviceIndex(r, c, prof.id) === idx) {
+        return { row: r, col: c };
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -242,7 +260,7 @@ function parseHardwareInputPacket(buf, profileId = 'akp153') {
     const c = buf[i];
     if (c >= 32 && c < 127) ascii += String.fromCharCode(c);
   }
-  if (!ascii.startsWith('ACK') && !ascii.startsWith('OK')) return null;
+  if (ascii && !ascii.startsWith('ACK') && !ascii.startsWith('OK')) return null;
 
   const rawCode = buf[9];
   const stateByte = buf.length > 10 ? buf[10] : 0;
@@ -264,9 +282,8 @@ function parseHardwareInputPacket(buf, profileId = 'akp153') {
 
   // 2. 标准矩阵按键事件
   if (rawCode >= 1 && rawCode <= prof.grid.keyCount) {
-    // 若硬件为 button 模式且发送了抬起报文 (stateByte === 0 且曾有按下态)，可按模式过滤
-    // 对 AKP153 (inputMode === 'push')，data[10] 恒为 0，单条报文即代表一次按下触发
     const pos = deviceIndexToPos(rawCode, prof.id);
+    if (!pos) return null;
     return {
       eventType: 'key',
       index: rawCode,

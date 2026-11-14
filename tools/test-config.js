@@ -276,6 +276,40 @@ check('cli profile-switch 切回办公模式后完整保留此前编辑的 3 个
     healedWinMode.textIconConfig && healedWinMode.textIconConfig.style === "neon" && healedWinMode.textIconConfig.text1 === "微信");
 }
 
+// ---- v0.12.0 架构与核心修复回归验证 ----
+{
+  const { posToDeviceIndex, deviceIndexToPos } = require('../src/main/hardware-profiles.js');
+  const { buttonId } = require('../host/device-host.js');
+  let mappingOk = true;
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 5; c++) {
+      const idx1 = posToDeviceIndex(r, c, 'akp153');
+      const idx2 = buttonId(r, c, 'akp153');
+      const back = deviceIndexToPos(idx1, 'akp153');
+      if (idx1 !== idx2 || !back || back.row !== r || back.col !== c) {
+        mappingOk = false;
+      }
+    }
+  }
+  check("v0.12.0 hardware-profiles 与 device-host 15 键物理坐标正逆映射 100% 同构对齐", mappingOk);
+
+  const { RuntimeStateStore, computeRenderModel, computeStripRenderModel } = require('../src/main/runtime-store.js');
+  const rt = new RuntimeStateStore();
+  rt.setKeyState('p1', 0, 0, { activeState: 1, windowSubState: 'minimized' });
+  const m = computeRenderModel({
+    type: 'app',
+    label: '微信',
+    color: '#07c160',
+    toggleAction: true,
+    toggleSyncMode: 'window',
+    badgeToggle: true,
+  }, rt.getKeyState('p1', 0, 0), rt.globalState);
+  check("v0.12.0 runtime-store 四态窗口子状态角标（托盘/最小化/后台可见/运行中）前后端同构一致", m.badge && m.badge.text === '最小化');
+
+  const sm = computeStripRenderModel({ type: 'cpu', color: '#1e293b' }, 0, rt.globalState, '1/3');
+  check("v0.12.0 computeStripRenderModel 与无头光栅化引擎就绪", Boolean(sm && sm.mainText.endsWith('%') && sm.visualHash));
+}
+
 // ------------------------------------------------------------- 收尾 ------
 try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
 
