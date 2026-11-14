@@ -85,7 +85,9 @@ class Device {
     this.brightness = 80;
     this.savedBrightness = 80;
     this.debounceMs = 80;
-    this.wakePassThrough = true; // 唤醒首按直通：休眠时按键既点亮屏幕又立即触发按键动作
+    this.wakePassThrough = false; // 由主进程 open / setWakePassThrough 按配置开启唤醒首按直通
+    this._sleeping = false;
+    this.sleepCompletedAt = 0;
     this.lastSleepMode = 'zeros-last';
     this.queue = Promise.resolve();
     this.highPriorityQueue = []; // [{ fn, resolve, reject }]
@@ -352,9 +354,20 @@ class Device {
     });
     hid.on('data', (data) => {
       if (!data || data.length < 10) return;
+      if (this._sleeping) return;
+      // 若首部字节非全零（真实硬件报文以 ACK [65,67,75] 或 OK [79,75] 开头），校验协议头以过滤非按键回显包
+      if (data[0] !== 0 || data[1] !== 0 || data[2] !== 0) {
+        const isAck = data[0] === 65 && data[1] === 67 && data[2] === 75;
+        const isOk = data[0] === 79 && data[1] === 75;
+        if (!isAck && !isOk) return;
+      }
       const id = data[9];
       const state = data.length > 10 ? data[10] : 0;
       if (!id) return;
+      // 刚执行完休眠灭屏指令后的 450ms 静默护栏：过滤硬件 MCU 对 HAN/LIG0 的延迟回显包，防止熄屏瞬间被回显误唤醒
+      if (this.asleep && this.sleepCompletedAt > 0 && (Date.now() - this.sleepCompletedAt < 450)) {
+        return;
+      }
 
       const prof = this.hardwareProfile || getHardwareProfile(this.profileId);
 
@@ -666,35 +679,42 @@ class Device {
       this.savedBrightness = this.brightness;
     }
     this.asleep = true;
+    this._sleeping = true;
+    this.sleepCompletedAt = Date.now();
     this._abortDraw = true;
     this.activeDownKeys.clear();
     this.clearAnims();
     this.lastFrames.clear();
     const waitHw = (ms) => new Promise((r) => setTimeout(r, ms));
-    if (m === 'blackout') {
-      if (!wasAlreadyAsleep) {
-        await step('CLEAR_ALL', () => this.clearScreen());
-        await waitHw(30);
+    try {
+      if (m === 'blackout') {
+        if (!wasAlreadyAsleep) {
+          await step('CLEAR_ALL', () => this.clearScreen());
+          await waitHw(30);
+        }
+        await step('LBLIG0', () => this.setLedBrightness(0));
+        await waitHw(15);
+        await step('LIG0', () => this.setBrightness(0));
+        await waitHw(15);
+        await step('HAN', () => this.cmd(CMD.HAN));
+        await waitHw(20);
+      } else if (m === 'zeros-last') {
+        await step('LBLIG0', () => this.setLedBrightness(0));
+        await step('LIG0', () => this.setBrightness(0));
+        await step('HAN', () => this.cmd(CMD.HAN));
+      } else if (m === 'vendor') {
+        await step('LBLIG0[76,66,76,73,71,0]', () => this.setLedBrightness(0));
+        await step(`LIG0[76,73,71,0,0,${gamma(0)}]`, () => this.setBrightness(0));
+        await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
+      } else if (m === 'nobright') {
+        await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
+      } else {
+        await step('LIG0', () => this.setBrightness(0));
+        await step('LBLIG0', () => this.setLedBrightness(0));
       }
-      await step('LBLIG0', () => this.setLedBrightness(0));
-      await waitHw(15);
-      await step('LIG0', () => this.setBrightness(0));
-      await waitHw(15);
-      await step('HAN', () => this.cmd(CMD.HAN));
-      await waitHw(20);
-    } else if (m === 'zeros-last') {
-      await step('LBLIG0', () => this.setLedBrightness(0));
-      await step('LIG0', () => this.setBrightness(0));
-      await step('HAN', () => this.cmd(CMD.HAN));
-    } else if (m === 'vendor') {
-      await step('LBLIG0[76,66,76,73,71,0]', () => this.setLedBrightness(0));
-      await step(`LIG0[76,73,71,0,0,${gamma(0)}]`, () => this.setBrightness(0));
-      await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
-    } else if (m === 'nobright') {
-      await step('HAN[72,65,78]', () => this.cmd(CMD.HAN));
-    } else {
-      await step('LIG0', () => this.setBrightness(0));
-      await step('LBLIG0', () => this.setLedBrightness(0));
+    } finally {
+      this._sleeping = false;
+      this.sleepCompletedAt = Date.now();
     }
     report.unshift('mode=' + m);
     return report;
@@ -703,6 +723,8 @@ class Device {
   async wake(brightness, force) {
     const was = this.asleep;
     this.asleep = false;
+    this._sleeping = false;
+    this.sleepCompletedAt = 0;
     this._abortDraw = false;
     this.lastFrames.clear();
     if (!was && !force) return false;

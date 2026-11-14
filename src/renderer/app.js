@@ -1208,8 +1208,8 @@ async function updateVolumeState(state) {
     for (let row = 0; row < ROWS; row++) {
       const s = strips[String(row)];
       if (s && s.type === 'volume') {
-        refreshSingleCell(row, 5);
-        if (!DEMO) {
+        if (isWindowVisible) refreshSingleCell(row, 5);
+        if (!DEMO && !isDeviceAsleep) {
           batchJobs.push(
             buildStripCanvas(row, preStats).then(async (c) => ({
               row, col: 5, data: await encodeCanvasToJpegB64(c, rotMode), force: false,
@@ -1742,6 +1742,7 @@ function noteDevicePushFailure() {
 }
 
 function devicePushBlocked() {
+  if (isDeviceAsleep) return true;
   if (deviceOnline && !deviceRetryAt) return false;
   if (deviceRetryAt && Date.now() < deviceRetryAt) return true;
   // 退避到期：放行一次探测。成功会由 host:status 或推图结果清除退避。
@@ -1882,7 +1883,7 @@ try {
 } catch (_) {}
 
 async function pushKey(row, col, force = false) {
-  if (!cfg || DEMO) return;
+  if (!cfg || DEMO || isDeviceAsleep) return;
   if (col < KEY_COLS) {
     const master = findSpanMasterCell(pageButtons(), row, col);
     if (master) {
@@ -3279,7 +3280,7 @@ async function buildStripCanvas(row, preStats = null) {
 }
 
 async function pushStrip(row, force = false, preStats = null) {
-  if (!cfg || DEMO) return;
+  if (!cfg || DEMO || isDeviceAsleep) return;
   const c = await buildStripCanvas(row, preStats);
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const b64 = await encodeCanvasToJpegB64(c, rotMode);
@@ -3309,11 +3310,7 @@ function bumpDevicePageEpoch() {
 const posKeyOf = (it) => `${it.row},${it.col}`;
 
 async function flushPageFrames(items, epoch, myGen, tag) {
-  if (!items || !items.length) return null;
-  const isForced = items.some((it) => it && it.force);
-  // 面板休眠且非强制重绘时整批都会被拒绝，没必要走补发流程；但强制重绘 (force) 必须放行送达设备
-  if (isDeviceAsleep && !isForced) return null;
-  if (isForced) isDeviceAsleep = false;
+  if (!items || !items.length || isDeviceAsleep) return null;
   const byPos = new Map(items.map((it) => [posKeyOf(it), it]));
   let pending = items.slice();
   let last = null;
@@ -3371,8 +3368,7 @@ function schedulePageAnims(myGen, rotMode) {
 }
 
 async function repaintAllKeys(force = false, gen = null) {
-  // 休眠中用非强制重绘没有意义（主进程会整批拒绝）；force 仍放行，因为唤醒/重连后需要它。
-  if (!cfg || DEMO || (isDeviceAsleep && !force)) return;
+  if (!cfg || DEMO || isDeviceAsleep) return;
   const myGen = gen !== null ? gen : ++repaintGen;
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
   const blank = { color: '#20262e', label: '' };
@@ -3401,8 +3397,7 @@ async function repaintAllKeys(force = false, gen = null) {
 }
 
 async function repaintAll(force = false) {
-  // 休眠中用非强制重绘没有意义（主进程会整批拒绝）；force 仍放行，因为唤醒/重连后需要它。
-  if (!cfg || DEMO || (isDeviceAsleep && !force)) return;
+  if (!cfg || DEMO || isDeviceAsleep) return;
   const myGen = ++repaintGen;
   const epoch = devicePageEpoch;
   const rotMode = $('rotate') ? $('rotate').value : (cfg.rotate || 'ccw');
@@ -15304,7 +15299,11 @@ function bindDevice() {
       if (!deviceRetryAt) noteDevicePushFailure();
     }
   });
-  api.on('device:repaint', (opts) => { isDeviceAsleep = false; repaintAll(opts && opts.force); });
+  api.on('device:repaint', (opts) => {
+    if (opts && opts.wake) isDeviceAsleep = false;
+    if (isDeviceAsleep) return;
+    repaintAll(opts && opts.force);
+  });
   api.on('device:repaint-strips', () => { if (!isDeviceAsleep) repaintStrips(); });
   api.on('audio:state', (data) => updateVolumeState(data));
   const handleRealtimeTelemetryUpdate = async (data) => {
@@ -15459,11 +15458,13 @@ function bindDevice() {
     }
     const current = curPage();
     if (!pageId || (current && current.id === pageId) || (p && current && p.id === current.id)) {
-      if (!DEMO && api.deviceStopAnim) {
-        await api.deviceStopAnim({ row, col }).catch(() => {});
+      if (isWindowVisible) refreshSingleCell(row, col);
+      if (!DEMO && !isDeviceAsleep) {
+        if (api.deviceStopAnim) {
+          await api.deviceStopAnim({ row, col }).catch(() => {});
+        }
+        await pushKey(row, col, true);
       }
-      refreshSingleCell(row, col);
-      await pushKey(row, col, true);
       // 关键体验修复：后台进程状态变化时只做无损 DOM 局部更新，绝不重刷整个 renderInspector() 摧毁用户输入框焦点与滚动条！
       if (selected && selected.row === row && selected.col === col) {
         updateInspectorRuntimeStatusOnly(row, col, activeState, windowSubState);

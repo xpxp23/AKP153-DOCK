@@ -542,6 +542,8 @@ namespace AkpInput
         private static IntPtr _guardHwnd = IntPtr.Zero;
         private static readonly object _outLock = new object();
         public static volatile bool _deviceKnownAsleep = false;
+        public static volatile bool _wasSystemSuspended = false;
+        private static long _nativeHidSleepTick = 0;
 
         static void WriteOut(string prefix, string text)
         {
@@ -627,6 +629,7 @@ namespace AkpInput
                     int wp = m.WParam.ToInt32();
                     if (wp == PBT_APMSUSPEND)
                     {
+                        _wasSystemSuspended = true;
                         _hostBlackoutAcked = true;
                         try { DirectHardwareBlackout(); } catch { }
                         EmitEvent("shutdown", "suspend");
@@ -634,8 +637,12 @@ namespace AkpInput
                     else if (wp == PBT_APMRESUMEAUTOMATIC)
                     {
                         _hostBlackoutAcked = false;
-                        _deviceKnownAsleep = false;
-                        EmitEvent("shutdown", "resume");
+                        if (_wasSystemSuspended)
+                        {
+                            _wasSystemSuspended = false;
+                            _deviceKnownAsleep = false;
+                            EmitEvent("shutdown", "resume");
+                        }
                     }
                 }
                 if (m.Msg == WM_QUERYENDSESSION || (m.Msg == WM_ENDSESSION && m.WParam != IntPtr.Zero))
@@ -3619,6 +3626,10 @@ namespace AkpInput
                     int rawId = buf[9];
                     int state = (readBytes > 10) ? buf[10] : 0;
                     if (rawId == 0) continue;
+                    if (_deviceKnownAsleep && ((Environment.TickCount & Int32.MaxValue) - _nativeHidSleepTick) < 450)
+                    {
+                        continue;
+                    }
 
                     if (_nativeHidProfileId == "akp03" && (rawId == 0x50 || rawId == 0x51 || rawId == 0x33 || rawId == 0x60 || rawId == 0x61 || rawId == 0x35 || rawId == 0x90 || rawId == 0x91 || rawId == 0x34))
                     {
@@ -4363,6 +4374,7 @@ namespace AkpInput
 
                     case "set_sleep_state":
                         _deviceKnownAsleep = (parts.Length > 1 && parts[1] == "1");
+                        if (_deviceKnownAsleep) _nativeHidSleepTick = Environment.TickCount & Int32.MaxValue;
                         WriteOut(reqPrefix, "OK");
                         break;
 
@@ -4460,6 +4472,7 @@ namespace AkpInput
                     case "hid_sleep":
                         {
                             _deviceKnownAsleep = true;
+                            _nativeHidSleepTick = Environment.TickCount & Int32.MaxValue;
                             NativeHidSendCmd(new byte[] { 76, 66, 76, 73, 71, 0 });
                             NativeHidSendCmd(new byte[] { 76, 73, 71, 0, 0, 0 });
                             NativeHidSendCmd(new byte[] { 72, 65, 78 });

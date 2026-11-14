@@ -25,7 +25,9 @@ try {
 
 runner.setLoopStateListener((keyId, isRunning, context) => {
   broadcast('macro:loopState', { keyId, isRunning, context });
-  broadcast('device:repaint', {});
+  if (!deviceAsleep) {
+    broadcast('device:repaint', {});
+  }
 });
 
 telemetry.setPomodoroListener((snap, phaseCompleted) => {
@@ -396,11 +398,14 @@ async function triggerHeadlessPushIfNeeded(force = false) {
   } catch (_) {}
 }
 
-function repaintSoon(force = false) {
+function repaintSoon(force = false, wake = false) {
+  if (deviceAsleep && !wake) return;
   if (hasLiveRenderer()) {
-    broadcast('device:repaint', { force: !!force });
+    broadcast('device:repaint', { force: !!force, wake: !!wake });
     if (win.webContents.isLoading()) {
-      setTimeout(() => broadcast('device:repaint', { force: !!force }), 900);
+      setTimeout(() => {
+        if (!deviceAsleep || wake) broadcast('device:repaint', { force: !!force, wake: !!wake });
+      }, 900);
     }
   } else {
     triggerHeadlessPushIfNeeded(force).catch(() => {});
@@ -421,6 +426,9 @@ async function doSleep(force = false, modeOverride = null) {
 }
 
 async function doWake() {
+  sleptBySystemIdle = false;
+  sleptByLockScreen = false;
+  systemSuspended = false;
   const r = await safeRpc('wake', { brightness: config.load().brightness, force: true });
   deviceAsleep = false;
   if (NativeInput && typeof NativeInput.setSleepState === 'function') {
@@ -431,7 +439,7 @@ async function doWake() {
   broadcast('device:sleep-state', { asleep: false });
   log('wake:', JSON.stringify(r));
   pollForegroundAndProcessState(null, true).catch(() => {});
-  repaintSoon(true);
+  repaintSoon(true, true);
   return r;
 }
 
@@ -440,6 +448,8 @@ let mainHwndStr = null;
 let hudWin = null;
 let hudHideTimer = null;
 let sleptBySystemIdle = false;
+let sleptByLockScreen = false;
+let systemSuspended = false;
 let lastRealFgProc = '';
 
 const HUD_OVERLAY_HTML = `<!DOCTYPE html>
@@ -710,21 +720,32 @@ async function openDevice(hard) {
   if (r && r.info && r.info.path) {
     NativeInput.setDevicePath(r.info.path);
   }
-  log('device opened OK' + (hard ? ' (hard reset)' : ''));
+  log('device opened OK' + (hard ? ' (hard reset)' : '') + (deviceAsleep && !hard ? ' (preserving sleep state)' : ''));
+  await safeRpc('setDebounce', { value: cfg.keyDebounceMs || 80 });
+  await safeRpc('setWakePassThrough', { value: cfg.wakePassThrough !== false });
+  if (deviceAsleep && !hard) {
+    const sleepMode = cfg.sleepMode || 'zeros-last';
+    await safeRpc('sleep', { mode: sleepMode, force: true });
+    if (NativeInput && typeof NativeInput.setSleepState === 'function') {
+      NativeInput.setSleepState(true).catch(() => {});
+    }
+    hostError = null;
+    broadcast('host:status', { ready: true, device: true, error: null });
+    return true;
+  }
   if (hard) {
     await safeRpc('reset', { brightness: cfg.brightness });
   } else {
     await safeRpc('wake', { brightness: cfg.brightness, force: true });
   }
   await safeRpc('brightness', { value: cfg.brightness });
-  await safeRpc('setDebounce', { value: cfg.keyDebounceMs || 100 });
   hostError = null;
   deviceAsleep = false;
   if (NativeInput && typeof NativeInput.setSleepState === 'function') {
     NativeInput.setSleepState(false).catch(() => {});
   }
   broadcast('host:status', { ready: true, device: true, error: null });
-  repaintSoon(true);
+  repaintSoon(true, true);
   return true;
 }
 
@@ -781,6 +802,9 @@ async function goToPage(id, why, isAutoSwitch = false) {
 }
 
 async function onWakeByKey(row, col, msg = {}) {
+  sleptBySystemIdle = false;
+  sleptByLockScreen = false;
+  systemSuspended = false;
   deviceAsleep = false;
   lastWakeTime = Date.now();
   lastActivity = Date.now();
@@ -796,7 +820,7 @@ async function onWakeByKey(row, col, msg = {}) {
   if (activeHidEngine === 'native-cs') {
     await safeRpc('wake', { brightness: cfg.brightness, force: true });
   }
-  repaintSoon(true);
+  repaintSoon(true, true);
   showHudOverlay({
     icon: 'sun',
     tag: msg && msg.passThrough ? '唤醒直通' : '已唤醒',
@@ -1421,32 +1445,22 @@ function resetIdleTimer() {
   const minutes = Number(cfg.idleSleepMinutes || 0);
   if (!minutes || minutes <= 0) return;
   idleTimer = setInterval(() => {
-    let sysIdleSec = 0;
-    try {
-      if (powerMonitor && typeof powerMonitor.getSystemIdleTime === 'function') {
-        sysIdleSec = powerMonitor.getSystemIdleTime();
-      }
-    } catch (_) {}
-
+    // 关键修复：当控制台已到达空闲时间熄屏后，绝不再根据 Windows getSystemIdleTime() < 4 自动点亮屏幕！
+    // 原因：1) 用户正在使用电脑键鼠但未触碰控制台时，sysIdleSec 始终为 0，若根据 sysIdleSec 唤醒会导致熄屏后 0.8 秒立即自亮；
+    //       2) 电脑无人值守时，光学鼠标微抖动、手柄轮询或后台进程重置系统空闲计时器也会导致半夜突然自己亮屏；
+    //       3) 现已支持「唤醒首按直通 (wakePassThrough)」，休眠时按任意实体键即可 <5ms 瞬时点亮并直通执行该键动作。
     if (deviceAsleep) {
-      // 800ms 高敏检测：只要系统空闲归零（用户晃动鼠标或敲击键盘点亮了显示器），立即联动唤醒底座，消灭 5 秒盲区
-      if (sleptBySystemIdle && sysIdleSec < 4) {
-        sleptBySystemIdle = false;
-        lastActivity = Date.now();
-        doWake();
-      }
       return;
     }
 
     const consoleIdleMs = Date.now() - lastActivity;
-    const sysIdleMs = sysIdleSec * 1000;
     const thresholdMs = minutes * 60 * 1000;
-    if (consoleIdleMs > thresholdMs && (sysIdleMs === 0 || sysIdleMs > thresholdMs || consoleIdleMs > thresholdMs)) {
+    if (consoleIdleMs >= thresholdMs) {
       sleptBySystemIdle = true;
       doSleep();
       lastActivity = Date.now();
     }
-  }, 800);
+  }, 1000);
 }
 
 /**
@@ -3197,7 +3211,9 @@ function watchConfig() {
       const page = config.currentPage();
       log(`config.json 被外部修改 -> 已重载（当前页「${page.name}」）`);
       broadcast('config:external', { pageId: cfg.currentPage });
-      broadcast('device:repaint', { force: true });
+      if (!deviceAsleep) {
+        broadcast('device:repaint', { force: true });
+      }
     } catch (e) {
       log('外部配置重载失败（文件可能只写了一半）:', e.message);
     }
@@ -3260,8 +3276,10 @@ if (!gotLock) {
       });
       NativeInput.on('volume', (vol) => {
         if (vol) runtimeStore.updateGlobalState('audio', vol);
-        broadcast('audio:state', vol);
-        if (!deviceAsleep) broadcast('device:repaint-strips', {});
+        if (!deviceAsleep) {
+          broadcast('audio:state', vol);
+          broadcast('device:repaint-strips', {});
+        }
       });
       NativeInput.on('audio_device', () => {
         if (!deviceAsleep) broadcast('device:repaint-strips', {});
@@ -3293,9 +3311,13 @@ if (!gotLock) {
       });
       NativeInput.on('shutdown', (payload) => {
         if (payload && payload.mode === 'suspend') {
+          systemSuspended = true;
           doSleep(true, 'blackout').catch(() => {});
         } else if (payload && payload.mode === 'resume') {
-          doWake().catch(() => {});
+          if (systemSuspended) {
+            systemSuspended = false;
+            doWake().catch(() => {});
+          }
         } else {
           prepareExitAndSleep();
         }
@@ -3340,6 +3362,7 @@ if (!gotLock) {
 
     powerMonitor.on('suspend', async () => {
       log('powerMonitor: 捕获到系统待机/快速启动休眠信号，执行 blackout 彻底灭屏...');
+      systemSuspended = true;
       await doSleep(true, 'blackout');
       if (NativeInput && typeof NativeInput.ackHostBlackout === 'function') {
         try { await NativeInput.ackHostBlackout(); } catch (_) {}
@@ -3347,17 +3370,24 @@ if (!gotLock) {
     });
 
     powerMonitor.on('resume', async () => {
+      if (!systemSuspended) {
+        log('powerMonitor: 忽略未经过 suspend 的伪 resume 信号');
+        return;
+      }
+      systemSuspended = false;
       log('powerMonitor: 捕获到系统唤醒恢复信号，唤醒 AKP153 控制台...');
       await doWake();
     });
 
     powerMonitor.on('lock-screen', async () => {
       log('powerMonitor: 捕获到系统锁屏信号 (Win+L)，休眠 AKP153 控制台...');
+      sleptByLockScreen = true;
       await doSleep();
     });
 
     powerMonitor.on('unlock-screen', async () => {
       log('powerMonitor: 捕获到系统解锁信号，唤醒 AKP153 控制台...');
+      sleptByLockScreen = false;
       await doWake();
     });
   }
